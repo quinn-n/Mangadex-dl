@@ -1,0 +1,99 @@
+# Release: tag push only (vX.Y.Z). Agents never tag, push tags or run `gh release`.
+# build: read-only token -> gate + release tests + tarball. publish: SHA256SUMS -> build
+# provenance attestation -> draft release -> upload -> publish.
+# Action SHAs and pixi-version were pinned at /setup (see ci.yml).
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build, test, package (default env)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # SOURCE_DATE_EPOCH from the tagged commit
+
+      - name: ASLR entropy for sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: v0.82.0
+          locked: true
+          environments: default
+          cache: false # the attested artifact builds from a cold, locked install (no restored cache)
+
+      - name: Reproducibility input (best effort, no bit-for-bit promise)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Quality gate
+        run: pixi run check
+
+      - name: Release tests + tarball (package depends on release-test)
+        run: pixi run package
+
+      - name: Tag matches --version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          got=$(build/default/release/e2e-prefix/bin/mangadex-dl --version | head -n 1)
+          want="mangadex-dl ${TAG#v}"
+          if [ "$got" != "$want" ]; then
+            echo "::error::tag $TAG but --version prints '$got' (expected '$want'); bump project(VERSION)"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: build/default/release/mangadex-dl-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release
+      id-token: write # attestation signing
+      attestations: write
+      artifact-metadata: write # recommended by the attest README (artifact storage record); valid key, verified at /setup
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Draft release, upload assets, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --verify-tag --draft --generate-notes --title "$TAG" dist/*.tar.gz dist/SHA256SUMS
+          gh release edit "$TAG" --draft=false

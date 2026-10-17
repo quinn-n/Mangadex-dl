@@ -30,3 +30,33 @@
 *.exe
 *.out
 *.app
+
+# Claude Code: personal settings stay local (copy settings.local.json.example)
+.claude/settings.local.json
+
+# pixi environments (pixi.toml + pixi.lock ARE committed)
+.pixi/
+
+# CMake build trees: build/<env>/<preset>, their lock dirs, e2e-prefix installs, packages
+build/
+/Testing/
+
+# Per-worktree job caps / ccache presets written by /features (never committed)
+CMakeUserPresets.json
+
+# clangd: compile DB symlink and index cache
+compile_commands.json
+.cache/
+
+# Platform / probe / audit artifacts (may contain environment details)
+.platform-runs/
+
+# Coverage raw data
+*.profraw
+*.profdata
+
+# makepkg output when testing packaging/aur/PKGBUILD locally
+packaging/aur/src/
+packaging/aur/pkg/
+packaging/aur/*.pkg.tar.*
+packaging/aur/*.tar.gz

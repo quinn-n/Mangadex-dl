@@ -1,0 +1,18 @@
+# AddressSanitizer runtime suppressions. Wired in by cmake/Sanitizers.cmake (ASAN_OPTIONS suppressions=<abs path>).
+#
+# This file MUST exist, even if it holds only comments: a missing suppressions file is a fatal runtime error.
+#
+# Format: one `<type>:<pattern>` per line, where <pattern> matches a function, source file or module name
+#   interceptor_via_fun:<function>
+#   interceptor_via_lib:<library>
+#   odr_violation:<global>
+#
+# Policy (memory-safety skill):
+# - A suppression is a last resort for a finding in code you do not control (a prebuilt dependency).
+#   A finding in our own code is a bug: fix it.
+# - Every entry carries a reason and an issue link on the comment line directly above it.
+# - A new entry is a review finding for memory-safety-reviewer.
+#
+# Example (do not uncomment without a reason + link):
+# # reason: false positive in prebuilt libfoo's custom allocator; upstream https://example.invalid/issue/123
+# interceptor_via_lib:libfoo.so

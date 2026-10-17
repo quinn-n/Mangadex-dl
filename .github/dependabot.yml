@@ -1,0 +1,15 @@
+# Dependabot keeps the SHA-pinned actions current (it rewrites the SHA and the `# <tag>`
+# comment). It cannot update pixi.lock (no pixi support): refresh that deliberately with
+# `pixi update` (asked) and review the diff. The `vcpkg` ecosystem only applies to the
+# documented vcpkg fallback; `conda` updates manifests but not lockfiles.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

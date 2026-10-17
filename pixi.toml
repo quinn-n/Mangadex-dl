@@ -1,0 +1,125 @@
+# pixi.toml for mangadex-dl, a C++23 command-line tool built with:
+#   pixi (toolchain + deps, one lockfile) · CMake + Ninja (CMakePresets.json)
+#   conda-forge clang (env `default`) + conda-forge gcc (env `gcc`), one solve-group
+#   CLI11 · nlohmann_json · Catch2 v3 · clang-format · clang-tidy · ASan+UBSan dev builds
+#
+# Majors pinned at /setup (2026-10-17) from `pixi search`. clang, clang-tools, llvm-tools and
+# clang-format MUST share one LLVM major (clang-tidy/clangd parse with the compiler's headers and flags).
+#
+# Gotchas (see the build-workflow skill):
+# - Conda compiler activation exports CXXFLAGS/LDFLAGS (-O2 -march=... -isystem ..., an
+#   rpath into the env). CMake seeds CMAKE_CXX_FLAGS / linker flags from them on the FIRST
+#   configure, which silently turns the sanitized Debug build into -O2 and leaks an rpath.
+#   Defence in depth: every configure preset sets those cache variables explicitly, AND
+#   every task that configures or compiles below sets env = { CXXFLAGS = "", LDFLAGS = "" }.
+#   (CMake ignores CPPFLAGS.) CMake seeds from the env only on a binary dir's first
+#   configure; the presets re-assert the explicit values on every configure, and
+#   scripts/preset.sh fails a configure whose cache still shows leak markers (fix:
+#   `pixi run configure --fresh`).
+# - Never set CMAKE_BUILD_PARALLEL_LEVEL or CTEST_PARALLEL_LEVEL in a task env: the env
+#   var beats a preset's `jobs` (CLI -j > env > preset), which would defeat the
+#   per-worktree caps that /features writes into CMakeUserPresets.json (`<preset>-local`).
+# - Non-trivial task logic lives in scripts/*.sh, called via `bash` (pixi's task shell is
+#   deno_task_shell, not bash).
+# - `depends-on` runs in list order and stops at the first failure.
+# - CI installs with `pixi install --locked` (aborts if pixi.lock is stale vs this file);
+#   `--frozen` installs the lock as-is and ignores manifest drift. Never hand-edit pixi.lock.
+# - Encrypted/limited home filesystems (ecryptfs caps file names at ~143 bytes): if
+#   `pixi install` fails with "File name too long", export PIXI_CACHE_DIR (or
+#   RATTLER_CACHE_DIR) to a directory on another filesystem in your shell profile before
+#   launching `claude`. Hard-links from the cache only work on the same filesystem.
+#
+# Heavy tasks are invoked locally as `nice pixi run <task>` (see low-priority-execution);
+# the task definitions themselves stay unwrapped so CI runs at full speed.
+
+[workspace]
+name = "mangadex-dl"            # no `version` here: project(VERSION) in CMakeLists.txt is the single source
+channels = ["conda-forge"]
+platforms = ["linux-64"]        # add osx-arm64 / win-64 only when CI covers them
+# Optional supply-chain guard: don't resolve packages published after this date.
+# exclude-newer = "2026-09-01"
+
+# ---- Shared by both environments ----
+[dependencies]
+cmake = ">=3.31"                # presets schema v10 needs >= 3.31
+ninja = "*"
+cli11 = "2.*"                   # header-only; CLI11::CLI11
+nlohmann_json = "3.*"           # header-only; nlohmann_json::nlohmann_json (+ json_fwd.hpp)
+catch2 = "3.*"                  # conda-forge Catch2 is shared-only (libCatch2.so): fine under ctest
+clang-format = "23.*"           # SAME major as clang/clang-tools; pinned here so the gcc env formats identically
+
+# ---- Compiler features ----
+[feature.clang.dependencies]
+clangxx_linux-64 = "23.*"       # CXX=x86_64-conda-linux-gnu-clang++; pulls compiler-rt (static ASan/UBSan runtimes)
+clang-tools = "23.*"            # clang-tidy, run-clang-tidy (no .py), clangd, clang-include-cleaner, ...
+llvm-tools = "23.*"             # llvm-symbolizer (readable sanitizer stacks), llvm-profdata, llvm-cov
+
+[feature.gcc.dependencies]
+gxx_linux-64 = "16.*"           # CXX=x86_64-conda-linux-gnu-c++; pulls libsanitizer. Its wrapper always adds an
+                                # rpath into the env, so gcc-env release builds are a -Werror/test check, never shipped.
+
+[environments]
+default = { features = ["clang"], solve-group = "main" }
+gcc = { features = ["gcc"], solve-group = "main" }
+
+# ---- Tasks: the shared command vocabulary (`pixi run <task>`, `pixi run -e gcc <task>`) ----
+# Build dirs are keyed by env: build/<env>/<preset> (e.g. build/default/dev, build/gcc/release).
+# scripts/preset.sh takes the per-build-dir lock, picks `<preset>-local` from an untracked
+# CMakeUserPresets.json when one exists, and forwards only whitelisted ctest args.
+[tasks]
+fmt = "bash scripts/format.sh --fix"
+fmt-check = "bash scripts/format.sh --check"
+
+# Sanitized dev build (ASan+UBSan, -O1 -g, -Werror): configure -> build -> ctest.
+configure = { cmd = "bash scripts/preset.sh configure dev", env = { CXXFLAGS = "", LDFLAGS = "" } }
+build = { cmd = "bash scripts/preset.sh build dev", depends-on = ["configure"] }
+test = { cmd = "bash scripts/preset.sh test dev", depends-on = ["build"] }   # `pixi run test -R unit` forwards -R/-L/-E/...
+
+# clang-tidy over the Clang compile DB (build/default/dev). In the gcc env it prints a stated skip.
+lint = { cmd = "bash scripts/lint.sh", depends-on = ["build"] }
+lint-fix = "bash scripts/lint.sh --fix"
+lint-changed = "bash scripts/lint.sh --changed"
+
+# Optimized, hardened release build (-O2, static libstdc++/libgcc, -Werror). The shipped
+# artifact comes from the default (clang) env only.
+_release-configure = { cmd = "bash scripts/preset.sh configure release", env = { CXXFLAGS = "", LDFLAGS = "" } }
+release = { cmd = "bash scripts/preset.sh build release", depends-on = ["_release-configure"] }
+release-test = { cmd = "bash scripts/preset.sh test release", depends-on = ["release"] }
+
+# The quality gate. Fail-fast, in this order. Run both: `nice pixi run check` and
+# `nice pixi run -e gcc check`.
+check = { depends-on = ["fmt-check", "test", "lint", "release"] }
+
+# Compile + run one probe (.claude/skills/platform-testing/probes/ or .platform-runs/ only)
+# with the dev preset's exact sanitizer flags and runtime options.
+# Exit = the probe's own; 125 = compile failure; 2 = rejected path/usage.
+cxx-probe = { cmd = "bash scripts/cxx-probe.sh", depends-on = ["configure"], env = { CXXFLAGS = "", LDFLAGS = "" } }
+
+# Re-bless golden files for E2E cases matching a regex (human-approved; reviewed via git diff).
+bless = { cmd = "bash scripts/bless.sh", depends-on = ["build"] }
+
+# Report-only source coverage (unsanitized clang `cov` preset; skipped in the gcc env).
+cov = { cmd = "bash scripts/cov.sh", env = { CXXFLAGS = "", LDFLAGS = "" } }
+
+# Dependency CVE scan of the installed env (syft conda-meta cataloger -> grype). Prints a
+# coverage statement; a stated no-op (exit 0) when syft/grype are absent. Never installs.
+audit = "bash scripts/audit.sh"
+
+# Release tarball via `cpack --preset release` (refuses sanitized builds and non-default envs).
+package = { cmd = "bash scripts/package.sh", depends-on = ["release-test"] }
+
+# ---- Optional tasks (uncomment when the project needs them) ----
+# ThreadSanitizer: enabled at /setup (threaded tool). Uses the `tsan` configure/build/test presets.
+_tsan-configure = { cmd = "bash scripts/preset.sh configure tsan", env = { CXXFLAGS = "", LDFLAGS = "" } }
+_tsan-build = { cmd = "bash scripts/preset.sh build tsan", depends-on = ["_tsan-configure"] }
+tsan = { cmd = "bash scripts/preset.sh test tsan", depends-on = ["_tsan-build"] }
+#
+# Fuzz corpus replay (clang only; needs a `fuzz` preset with MANGADEX_DL_FUZZ=ON -- see the
+# cpp-testing skill). Time-boxed fuzzing itself is run by hand at low priority, never in CI.
+# _fuzz-configure = { cmd = "bash scripts/preset.sh configure fuzz", env = { CXXFLAGS = "", LDFLAGS = "" } }
+# _fuzz-build = { cmd = "bash scripts/preset.sh build fuzz", depends-on = ["_fuzz-configure"] }
+# fuzz = { cmd = "bash scripts/preset.sh test fuzz -L fuzz-regression", depends-on = ["_fuzz-build"] }
+#
+# Man page from --help/--version (help2man must be present: probe it; verify its options and
+# the exit-0 requirement at use-time). Lint it in CI with groff (see ci-release.md).
+# man = { cmd = "help2man --no-info --no-discard-stderr --name 'Downloads volumes and chapters from Mangadex and converts them into .epub or .pdf files.' --output docs/mangadex-dl.1 build/$PIXI_ENVIRONMENT_NAME/dev/mangadex-dl", depends-on = ["build"] }

@@ -1,0 +1,16 @@
+# LeakSanitizer runtime suppressions. Wired in by cmake/Sanitizers.cmake (LSAN_OPTIONS suppressions=<abs path>).
+#
+# This file MUST exist, even if it holds only comments: a missing suppressions file is a fatal runtime error.
+#
+# Format: one `leak:<pattern>` per line; <pattern> is a substring match on a function, source file or
+# module name anywhere in the leak's allocation stack.
+#
+# Policy (memory-safety skill):
+# - A leak in our own code is a bug: fix the ownership (Rule of Zero, unique_ptr).
+# - Suppress only leaks inside prebuilt dependencies or deliberate process-lifetime singletons that you
+#   cannot change. Every entry carries a reason and an issue link on the comment line directly above it.
+# - A new entry is a review finding for memory-safety-reviewer.
+#
+# Example (do not uncomment without a reason + link):
+# # reason: libfoo caches a process-lifetime table it never frees; upstream https://example.invalid/issue/456
+# leak:libfoo.so

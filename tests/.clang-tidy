@@ -1,0 +1,10 @@
+---
+# Test-only relaxations layered on the root .clang-tidy. Each one is caused by a Catch2 macro expansion,
+# not by code we write. /setup confirms every name exists (clang-tidy --list-checks) and drops missing ones.
+InheritParentConfig: true
+Checks:
+  - -readability-function-cognitive-complexity              # TEST_CASE + SECTION/REQUIRE expand into deeply branched function bodies
+  - -cppcoreguidelines-avoid-non-const-global-variables     # TEST_CASE/TEMPLATE_TEST_CASE register through namespace-scope static AutoReg objects
+  - -bugprone-chained-comparison                            # REQUIRE/CHECK(a == b) decompose as `Catch::Decomposer() <= a == b`
+  - -misc-use-anonymous-namespace                           # TEST_CASE defines `static void C_A_T_C_H_T_E_S_T_n()` at namespace scope
+...

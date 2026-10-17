@@ -1,0 +1,7 @@
+# clangd: use the compile DB of the sanitized dev build (default/clang env).
+# Use the env's clangd (.pixi/envs/default/bin/clangd, same LLVM major as the compiler).
+# The DB names the conda driver (x86_64-conda-linux-gnu-clang++), so editors must let clangd
+# query it: add --query-driver=<absolute repo path>/.pixi/envs/*/bin/* to your editor's clangd
+# arguments (verified at /setup; it is per-machine, so it is not set here).
+CompileFlags:
+  CompilationDatabase: build/default/dev

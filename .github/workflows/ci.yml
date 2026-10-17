@@ -1,0 +1,113 @@
+# CI: the same pixi tasks as local, in both envs. Every `uses:` is pinned by full commit SHA
+# with the tag in a comment; /setup resolves them (gh api) and Dependabot keeps them current.
+# Pinned at /setup on 2026-10-17 (gh api: latest release -> tag ref -> commit); setup-pixi's pixi-version
+# matches the local pixi (v0.82.0). Bump pixi-version deliberately when the local pixi changes.
+name: ci
+
+on:
+  push:
+    branches: [main] # your default branch
+  pull_request: # never pull_request_target
+  schedule:
+    - cron: "23 5 * * 1" # weekly dependency audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: check (${{ matrix.env }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-26.04 # pinned: ubuntu-latest moves between images
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [default, gcc] # default = clang (+ lint), gcc = second compiler
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Sanitizers need ASLR entropy they can map around. Hosted images already set this;
+      # it matters on self-hosted runners and containers. Defensive, never fatal.
+      - name: ASLR entropy for sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: v0.82.0 # exact, e.g. the local `pixi --version`; the action's API can change between minors
+          locked: true # fail if pixi.lock is stale vs pixi.toml
+          environments: ${{ matrix.env }}
+          cache: true
+
+      - name: Quality gate (fmt-check, sanitized tests, lint, release build)
+        run: pixi run -e ${{ matrix.env }} check
+
+      - name: Release tests (unit + E2E + release-check on the release install)
+        run: pixi run -e ${{ matrix.env }} release-test
+
+      # The tool is threaded (CLAUDE.md Project specifics): ThreadSanitizer build + tests,
+      # including the sanitizer-control.data-race positive control.
+      - name: ThreadSanitizer (tsan preset)
+        run: pixi run -e ${{ matrix.env }} tsan
+
+      - name: Man page lint (groff exits 0 on warnings, so fail on any output)
+        if: matrix.env == 'default' && hashFiles('docs/mangadex-dl.1') != ''
+        run: |
+          if ! command -v groff >/dev/null; then
+            echo "::warning::groff is not on this runner; man page lint skipped"
+            exit 0
+          fi
+          out=$(groff -ww -z -man docs/mangadex-dl.1 2>&1)
+          if [ -n "$out" ]; then printf '%s\n' "$out"; exit 1; fi
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-logs-${{ matrix.env }}
+          path: build/*/*/Testing/Temporary/LastTest*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  audit:
+    name: dependency audit
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: v0.82.0
+          locked: true
+          environments: default
+          cache: true
+      # syft + grype in a throwaway env. Verify at /setup that both are on conda-forge
+      # (`pixi search syft`, `pixi search grype`); otherwise use the SHA-pinned Anchore actions.
+      - name: syft (conda-meta cataloger) -> grype, with coverage statement
+        run: pixi exec --spec syft --spec grype -- bash scripts/audit.sh
+
+  # Optional: macOS / Windows. The only way to license those platform tiers. Needs
+  # osx-arm64 / win-64 in pixi.toml `platforms`, matching compiler features, and presets that
+  # don't assume ELF (release-check is Linux-only). Uncomment and adapt deliberately.
+  # check-macos:
+  #   if: github.event_name != 'schedule'
+  #   runs-on: macos-<version>
+  #   steps:
+  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #       with:
+  #         persist-credentials: false
+  #     - uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+  #       with:
+  #         pixi-version: v0.82.0
+  #         locked: true
+  #     - run: pixi run test

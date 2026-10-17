@@ -1,0 +1,6 @@
+# Paths clang-format skips even when a file is passed explicitly (format.sh, format-check hook).
+# Patterns are relative to this file's directory. `*` does not cross `/` here, so `build/*` would only
+# match files directly in build/; `**` matches at any depth (checked with clang-format 23).
+.claude/**
+build/**
+third_party/**

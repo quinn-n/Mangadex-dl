@@ -1,0 +1,5 @@
+---
+# The positive controls contain deliberate memory errors and UB, so linting them produces only noise.
+# This file replaces (does not inherit) the parent configs for this directory. clang-tidy refuses an
+# empty check set ("no checks enabled"), so one harmless check stays on.
+Checks: '-*,readability-duplicate-include'

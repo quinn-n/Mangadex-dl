@@ -1,0 +1,218 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pixi run fmt)",
+      "Bash(pixi run fmt-check)",
+      "Bash(pixi run configure)",
+      "Bash(pixi run configure --fresh)",
+      "Bash(pixi run build)",
+      "Bash(pixi run test)",
+      "Bash(pixi run test -R *)",
+      "Bash(pixi run test -L *)",
+      "Bash(pixi run test -E *)",
+      "Bash(pixi run lint)",
+      "Bash(pixi run release)",
+      "Bash(pixi run release-test)",
+      "Bash(pixi run check)",
+      "Bash(pixi run cxx-probe *)",
+      "Bash(pixi run lint-fix)",
+      "Bash(pixi run lint-changed)",
+      "Bash(pixi run cov)",
+      "Bash(pixi run audit)",
+      "Bash(pixi run package)",
+      "Bash(pixi run -e gcc configure)",
+      "Bash(pixi run -e gcc configure --fresh)",
+      "Bash(pixi run -e gcc build)",
+      "Bash(pixi run -e gcc test)",
+      "Bash(pixi run -e gcc test -R *)",
+      "Bash(pixi run -e gcc test -L *)",
+      "Bash(pixi run -e gcc test -E *)",
+      "Bash(pixi run -e gcc release)",
+      "Bash(pixi run -e gcc release-test)",
+      "Bash(pixi run -e gcc check)",
+      "Bash(pixi run -e gcc cxx-probe *)",
+      "Bash(pixi --version)",
+      "Bash(pixi info)",
+      "Bash(pixi list)",
+      "Bash(pixi list *)",
+      "Bash(pixi tree *)",
+      "Bash(pixi search *)",
+      "Bash(pixi task list)",
+      "Bash(pixi install --locked)",
+      "Bash(pixi install --locked *)",
+      "Bash(pixi run cmake --help*)",
+      "Bash(pixi run cmake --version)",
+      "Bash(pixi run clang-tidy --list-checks*)",
+      "Bash(pixi run clang-tidy --dump-config*)",
+      "Bash(pixi run clang-format --dump-config*)",
+      "Bash(pixi run clang-format --version)",
+      "Bash(cmake --preset *)",
+      "Bash(cmake --build *)",
+      "Bash(cmake --workflow *)",
+      "Bash(cmake --list-presets*)",
+      "Bash(cmake --version)",
+      "Bash(ctest --preset *)",
+      "Bash(command -v *)",
+      "Bash(uname *)",
+      "Bash(nproc)",
+      "Bash(stat -f *)",
+      "Bash(cat /proc/sys/kernel/yama/ptrace_scope)",
+      "Bash(readelf *)",
+      "Bash(objdump -T *)",
+      "Bash(ldd *)",
+      "Bash(file *)",
+      "Bash(setarch x86_64 -R .platform-runs/*)",
+      "Bash(docker info*)",
+      "Bash(docker version*)",
+      "Bash(docker image inspect *)",
+      "Bash(docker image ls*)",
+      "Bash(valgrind --version)",
+      "Bash(wine --version)",
+      "Bash(x86_64-w64-mingw32-g++ --version)",
+      "Bash(aarch64-linux-gnu-g++ --version)",
+      "Bash(qemu-aarch64 --version)",
+      "Bash(ccache --version)",
+      "Bash(sccache --version)",
+      "Bash(syft version)",
+      "Bash(grype version)",
+      "Bash(help2man --version)",
+      "Bash(gh --version)",
+      "Bash(gh auth status)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks*)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch --list*)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -a*)",
+      "Bash(git branch -v*)",
+      "Bash(git branch -r*)",
+      "Bash(git rev-parse *)",
+      "Bash(git show-ref *)",
+      "Bash(git ls-files *)",
+      "Bash(git merge-base *)",
+      "Bash(git worktree list*)",
+      "Bash(git remote get-url *)",
+      "Bash(git status)",
+      "Bash(git diff)"
+    ],
+    "ask": [
+      "Bash(pixi run bless *)",
+      "Bash(pixi run bless)",
+      "Bash(pixi add *)",
+      "Bash(pixi remove *)",
+      "Bash(pixi update *)",
+      "Bash(pixi upgrade *)",
+      "Bash(pixi install)",
+      "Bash(pixi install -e *)",
+      "Bash(cmake -P *)",
+      "Bash(cmake -E *)",
+      "Bash(ctest -S *)",
+      "Bash(cmake --install *)",
+      "Bash(docker run *)",
+      "Bash(git push *)",
+      "Bash(git tag *)",
+      "Bash(git worktree add *)",
+      "Bash(git worktree remove *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh api *)",
+      "Bash(makepkg *)"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(doas *)",
+      "Bash(su *)",
+      "Bash(sysctl -w *)",
+      "Bash(gh release *)",
+      "Bash(git push --tags*)",
+      "Bash(git push --follow-tags*)",
+      "Bash(makepkg -i*)",
+      "Bash(makepkg --install*)",
+      "Bash(docker pull *)",
+      "Bash(docker rmi *)",
+      "Bash(docker system prune*)",
+      "Bash(pacman *)",
+      "Bash(apt *)",
+      "Bash(apt-get *)",
+      "Bash(dnf *)",
+      "Bash(pip install *)",
+      "Bash(pixi global *)",
+      "Bash(pixi clean cache*)",
+      "Edit(**/pixi.lock)",
+      "Edit(**/.env)",
+      "Edit(**/.env.local)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Edit(**/*.pem)",
+      "Edit(**/*.key)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-files.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-check.sh\"",
+            "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cpp-rule-linter.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/diff-secret-scan.sh\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/diff-secret-scan.sh\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

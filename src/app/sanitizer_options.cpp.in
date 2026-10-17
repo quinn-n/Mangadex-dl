@@ -1,0 +1,26 @@
+// sanitizer_options.cpp: compiled-in sanitizer runtime defaults.
+//
+// GENERATED into <build>/generated/sanitizer_options.cpp by cmake/Sanitizers.cmake from
+// src/app/sanitizer_options.cpp.in. Edit the .in template or Sanitizers.cmake, never the generated copy.
+// The option strings have ONE source (Sanitizers.cmake); the same strings reach CTest's ENVIRONMENT
+// and sanitizer-env.txt.
+//
+// Linked only into sanitized executables, via mangadex_dl_add_sanitizer_options(<target>). The runtimes call
+// these hooks at startup. No attributes are needed on either compiler. Keys set in ASAN_OPTIONS /
+// UBSAN_OPTIONS / LSAN_OPTIONS / TSAN_OPTIONS in the environment override these defaults key by key.
+// The effect: an installed sanitized binary run by hand still exits with the reserved code 86 on a
+// finding, prints stacks, and uses the committed suppression files.
+//
+// An empty string means that runtime is not part of this build's sanitizer set.
+
+extern "C" {
+const char* __asan_default_options();
+const char* __ubsan_default_options();
+const char* __lsan_default_options();
+const char* __tsan_default_options();
+
+const char* __asan_default_options() { return "@SAN_ASAN_OPTIONS@"; }
+const char* __ubsan_default_options() { return "@SAN_UBSAN_OPTIONS@"; }
+const char* __lsan_default_options() { return "@SAN_LSAN_OPTIONS@"; }
+const char* __tsan_default_options() { return "@SAN_TSAN_OPTIONS@"; }
+}

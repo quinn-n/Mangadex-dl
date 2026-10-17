@@ -1,0 +1,15 @@
+# UndefinedBehaviorSanitizer runtime suppressions. Wired in by cmake/Sanitizers.cmake (UBSAN_OPTIONS suppressions=<abs path>).
+#
+# This file MUST exist, even if it holds only comments: a missing suppressions file is a fatal runtime error.
+#
+# Format: one `<check>:<pattern>` per line, where <pattern> matches a source file, function or module name,
+#   for example `signed-integer-overflow:third_party/foo/*.c`.
+#
+# IMPORTANT: this project compiles with -fno-sanitize-recover=all, and UBSan runtime suppressions apply only
+# to RECOVERABLE checks. Entries here therefore have NO effect in the dev preset. Fix the code instead.
+# If the behaviour is intended and defined by contract (rare), use a narrowly scoped
+#   __attribute__((no_sanitize("<check>")))
+# on that one function, with a comment that gives the reason and an issue link.
+#
+# Policy (memory-safety skill): every entry carries a reason and an issue link on the comment line above it;
+# a new entry is a review finding for memory-safety-reviewer.

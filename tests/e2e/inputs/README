@@ -1,0 +1,5 @@
+Input fixtures for the installed-binary E2E cases (tests/e2e/cases/*.cmake).
+
+Reference them from a case as `STDIN <file>` (resolved relative to this directory) or as
+`{{INPUTS}}/<file>` inside ARGS or ENV values. Keep fixtures small, deterministic and free of real
+data, credentials or personal paths: they are committed, and goldens may echo them.

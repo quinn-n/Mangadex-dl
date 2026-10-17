@@ -1,0 +1,120 @@
+{
+  "version": 10,
+  "$comment": [
+    "Example CMakePresets.json for a C++23 CLI (pixi + CMake + Ninja). /setup copies it to CMakePresets.json and substitutes @PROJ_UPPER@.",
+    "Schema v10 (CMake >= 3.31) is the first with $comment. No $schema URL is hardcoded: it is version-specific; pin one at /setup only if your editor wants it.",
+    "Build dirs are keyed by pixi env: build/<env>/<preset>. Run presets through pixi (`pixi run test`), never bare cmake: outside pixi PIXI_ENVIRONMENT_NAME and CONDA_PREFIX are empty.",
+    "No preset here sets `jobs`. Per-worktree caps live in the untracked CMakeUserPresets.json as `<preset>-local` presets (written by /features) which scripts/preset.sh selects. Never set CMAKE_BUILD_PARALLEL_LEVEL/CTEST_PARALLEL_LEVEL: CLI -j > env > preset jobs.",
+    "Workflow presets `dev`/`release` are conveniences for humans; the pixi tasks drive configure/build/test separately so the per-worktree cap applies."
+  ],
+  "cmakeMinimumRequired": { "major": 3, "minor": 31, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "$comment": [
+        "Conda activation exports CXXFLAGS/LDFLAGS (-O2 -march=..., an rpath into the env) and CMake seeds the flag cache from them on first configure.",
+        "Every preset therefore sets CMAKE_CXX_FLAGS and BOTH linker flag variables explicitly (empty = no leak); presets pass them as -D on every configure, and the pixi tasks also blank CXXFLAGS/LDFLAGS. scripts/preset.sh fails a configure whose cache still shows leak markers (fix: `pixi run configure --fresh`)."
+      ],
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/$env{PIXI_ENVIRONMENT_NAME}/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
+        "CMAKE_CATCH_DISCOVER_TESTS_DISCOVERY_MODE": "PRE_TEST",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_EXE_LINKER_FLAGS": "",
+        "CMAKE_SHARED_LINKER_FLAGS": "",
+        "@PROJ_UPPER@_WARNINGS_AS_ERRORS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "dev: Debug -O1 -g, ASan+UBSan, -Werror",
+      "$comment": "The everyday sanitized build. RPATH points into the pixi env so the installed E2E binary uses the env's libstdc++, not the host's (verified at /setup with readelf -d / ldd).",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O1 -g",
+        "@PROJ_UPPER@_SANITIZE": "address;undefined",
+        "@PROJ_UPPER@_HARDENING": "OFF",
+        "CMAKE_BUILD_RPATH": "$env{CONDA_PREFIX}/lib",
+        "CMAKE_INSTALL_RPATH": "$env{CONDA_PREFIX}/lib"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "release: -O2, hardened, static libstdc++/libgcc (app), no RPATH, -Werror",
+      "$comment": "The shippable build (default/clang env only). CMakeLists.txt links the app (only) with -static-libstdc++ -static-libgcc when <PROJ>_HARDENING is ON; test executables stay dynamic for conda's shared-only Catch2. release-check gates: PIE, RELRO, BIND_NOW, NX stack, no RPATH/RUNPATH, NEEDED allowlist, glibc floor.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG",
+        "@PROJ_UPPER@_SANITIZE": "",
+        "@PROJ_UPPER@_HARDENING": "ON"
+      }
+    },
+    {
+      "name": "cov",
+      "displayName": "cov: Debug -O0 -g, clang source-based coverage, unsanitized",
+      "$comment": "Clang only (scripts/cov.sh skips it in the gcc env). Report-only; never part of `check`. The `tsan` preset template lives in the build-workflow skill, not here.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g",
+        "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+        "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fprofile-instr-generate",
+        "@PROJ_UPPER@_SANITIZE": "",
+        "@PROJ_UPPER@_HARDENING": "OFF",
+        "CMAKE_BUILD_RPATH": "$env{CONDA_PREFIX}/lib",
+        "CMAKE_INSTALL_RPATH": "$env{CONDA_PREFIX}/lib"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "cov", "configurePreset": "cov" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "$comment": "No `jobs` here: scripts/preset.sh passes -j $(nproc) unless a `<preset>-local` test preset carries the per-worktree cap.",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "dev", "inherits": "test-base", "configurePreset": "dev" },
+    { "name": "release", "inherits": "test-base", "configurePreset": "release" },
+    { "name": "cov", "inherits": "test-base", "configurePreset": "cov" }
+  ],
+  "packagePresets": [
+    {
+      "name": "release",
+      "$comment": "Run via `pixi run package` (scripts/package.sh refuses sanitized builds and non-default envs). Output lands in build/default/release/.",
+      "configurePreset": "release",
+      "generators": ["TGZ"]
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "dev",
+      "steps": [
+        { "type": "configure", "name": "dev" },
+        { "type": "build", "name": "dev" },
+        { "type": "test", "name": "dev" }
+      ]
+    },
+    {
+      "name": "release",
+      "steps": [
+        { "type": "configure", "name": "release" },
+        { "type": "build", "name": "release" },
+        { "type": "test", "name": "release" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to .claude/settings.local.json (gitignored, personal; merged over settings.json). Replace <repo> with this repository's directory name and <tool> with the CLI's binary name (CLAUDE.md Project specifics). additionalDirectories lets /features work in the sibling worktree dir ../<repo>-worktrees/ (or use /add-dir). INTENTIONALLY NOT ALLOWLISTED (keep them gated for explicit approval): git push, gh pr create/edit, git worktree add/remove, docker run, pixi add/update/install (unlocked), and pixi run bless (goldens are human-blessed). Never add Bash(pixi run *) or Bash(cmake *): they would approve arbitrary commands (pixi run executes any program) and un-prefixed installs; the exact task rules in settings.json are deliberate.",
+  "permissions": {
+    "additionalDirectories": [
+      "../<repo>-worktrees"
+    ],
+    "allow": [
+      "Bash(build/default/dev/e2e-prefix/bin/<tool> *)",
+      "Bash(build/default/release/e2e-prefix/bin/<tool> *)",
+      "Bash(build/gcc/dev/e2e-prefix/bin/<tool> *)",
+      "Bash(build/gcc/release/e2e-prefix/bin/<tool> *)",
+      "Bash(pixi run tsan)",
+      "Bash(pixi run fuzz)",
+      "Bash(pixi run man)",
+      "Bash(git worktree list*)",
+      "Bash(git remote get-url *)",
+      "Bash(gh --version)",
+      "Bash(gh auth status)"
+    ]
+  }
+}

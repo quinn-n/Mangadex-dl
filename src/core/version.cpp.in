@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Template. CMakeLists.txt runs configure_file() on it in at-only mode, writing
+// <build dir>/generated/version.cpp. The at-sign PROJECT_VERSION token below is CMake's, not a
+// /setup placeholder. Edit this template, never the generated file.
+#include "mangadex_dl/version.hpp"
+
+#include <string_view>
+
+namespace mangadex_dl {
+
+std::string_view version() noexcept { return "@PROJECT_VERSION@"; }
+
+std::string_view version_line() noexcept { return "mangadex-dl @PROJECT_VERSION@"; }
+
+} // namespace mangadex_dl

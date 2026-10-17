@@ -1,0 +1,29 @@
+---
+# clang-format config. The formatter owns layout, braces and include order; never hand-format.
+# Use only the pixi-pinned clang-format (same LLVM major as the compiler). Output drifts across majors.
+# Keys are checked at /setup with: clang-format --dump-config (an unknown key exits 1).
+# Style debates (indent 2 vs 4, LLVM vs Google, InsertBraces vs tidy brace check): see the cpp-quality skill.
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest                 # validated at /setup
+IndentWidth: 4                   # debate: LLVM default 2
+AccessModifierOffset: -4         # pairs with IndentWidth 4 (public:/private: flush with the class keyword)
+ColumnLimit: 100
+PointerAlignment: Left
+DerivePointerAlignment: false
+InsertBraces: true               # formatter-owned braces; readability-braces-around-statements is off in .clang-tidy
+InsertNewlineAtEOF: true
+LineEnding: LF
+IncludeBlocks: Regroup
+IncludeCategories:               # first match wins; priority = block order
+  - Regex: '^"'                  # project
+    Priority: 1
+  - Regex: '^<[^>]*\.h>$'        # C / POSIX (incl. <sys/…h>)
+    Priority: 4
+  - Regex: '^<[[:alnum:]_.-]+/'  # third-party <lib/…>
+    Priority: 2
+  - Regex: '^<[[:alnum:]_]+>$'   # C++ standard library
+    Priority: 3
+# Deliberately absent (they can change semantics or churn diffs): QualifierAlignment,
+# RemoveParentheses, RemoveSemicolon, EnumTrailingComma.
+...
