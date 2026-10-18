@@ -1,4 +1,4 @@
-Downloads volumes and chapters from Mangadex and converts them into .epub or
+Downloads volumes and chapters from MangaDex and converts them into .epub or
 .pdf files.
 
 
@@ -6,19 +6,22 @@ mangadex-dl [OPTIONS] SUBCOMMAND
 
 
 OPTIONS:
-  -h,     --help              Print this help message and exit
-          --version           Display program version information and exit
-          --json              Write machine-readable JSON to stdout
-  -q,     --quiet             Only print errors
-  -v,     --verbose [0]       Print more detail to stderr (repeatable)
-          --color TEXT:{auto,always,never} [auto]  
-                              Colorize output: auto, always or never
+  -h, --help                        Print this help message and exit
+      --version                     Print the version and exit
+      --json                        Write machine-readable JSON to stdout
+  -q, --quiet                       Only print errors
+  -v, --verbose                     Print more detail to stderr (repeatable)
+      --color WORD [auto]           Color stderr: auto, always or never
 
 SUBCOMMANDS:
-  hello                       Print a greeting
+  download                          Download a MangaDex title as EPUB files
 
 Exit status:
   0   success
   1   runtime failure (including a failed write to stdout)
   2   usage error
+  3   network or API failure (connection, TLS, timeout, server error)
+  4   title not found on MangaDex
+  5   no downloadable chapters matched the language and selection
+  6   incomplete: at least one output file failed
   70  internal error (a bug: please report it)

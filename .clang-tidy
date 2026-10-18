@@ -33,7 +33,7 @@ ExcludeHeaderFilterRegex: '.*/(_deps|third_party|external|vendor|\.pixi|vcpkg_in
 SystemHeaders: false
 FormatStyle: file
 CheckOptions:
-  misc-include-cleaner.IgnoreHeaders: 'CLI/.*;nlohmann/.*;catch2/.*'                         # ;-separated suffix regexes
+  misc-include-cleaner.IgnoreHeaders: 'CLI/.*;nlohmann/.*;catch2/.*;curl/.*'                 # ;-separated suffix regexes (curl/curl.h is curl's umbrella header)
   misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic: true            # aggregates (default false)
   cppcoreguidelines-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic: true  # alias reads only its own key
 ...

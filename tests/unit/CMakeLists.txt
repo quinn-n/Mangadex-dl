@@ -7,7 +7,11 @@
 file(GLOB_RECURSE _mangadex_dl_unit_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 add_executable(mangadex_dl_unit_tests ${_mangadex_dl_unit_sources})
 target_include_directories(mangadex_dl_unit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")   # tests/support/
-target_link_libraries(mangadex_dl_unit_tests PRIVATE mangadex_dl::core Catch2::Catch2WithMain)
+# Core-private headers (testing seams such as fs/output_dir_testing.hpp, net/curl_api.hpp) are reachable
+# from unit tests only; they are never installed or exposed through mangadex_dl::core.
+target_include_directories(mangadex_dl_unit_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/core")
+# curl_api.hpp includes <curl/curl.h>; core links the headers PRIVATE, so the tests need them too.
+target_link_libraries(mangadex_dl_unit_tests PRIVATE mangadex_dl::core mangadex_dl_curl_headers Catch2::Catch2WithMain)
 mangadex_dl_apply_warnings(mangadex_dl_unit_tests)
 # Sanitized builds: compile the runtime defaults (exitcode=86, handle_segv=2, suppressions) into the test
 # binary itself. CTest ENVIRONMENT can't be passed through catch_discover_tests(PROPERTIES): a ';' list

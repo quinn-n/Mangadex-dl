@@ -19,13 +19,38 @@
 #              [STDOUT_FILE /dev/full]                           stdout to a file (write-error cases)
 #              [PIPE_HEAD <n> [EXPECT_PIPE_RESULT <SIGPIPE|n>] [PARENT_IGNORES_SIGPIPE]]
 #              [TIMEOUT <seconds>]                               default 60 (generous: ASan + nice)
+#              [EXPECT_FILES <rel>...]                           each is a non-empty regular file under {{WORK}}
+#              [EXPECT_ABSENT <rel>...]                          nothing (not even a dangling symlink) at each
+#              [EXPECT_NO_GLOB <glob>...]                        no FILE under {{WORK}} matches any glob
+#              [EXPECT_EPUB <rel>...]                            each is a structurally sound EPUB container
 #              [LABELS <label>...])
 #
 # Placeholders usable in ARGS, ENV values and STDIN: {{INPUTS}} (tests/e2e/inputs), {{WORK}} (the
-# per-case temp dir, also $HOME), {{INVALID_UTF8}} (the bytes 0xFF 0xFE).
+# per-case temp dir: also $HOME's parent and the tool's working directory), {{FIXTURES}} (the
+# fixture-mode trees written by the e2e.fixtures fixture: {{FIXTURES}}/{clean,basic,bulk,incomplete,
+# nochapters}, layout in tests/e2e/inputs/README), {{INVALID_UTF8}} (the bytes 0xFF 0xFE). Goldens
+# normalize the {{WORK}}, {{FIXTURES}}, {{INPUTS}} and {{TOOL}} paths back to these placeholders.
 #
-# The test name is e2e.<suite>.<case>, where <suite> is the case file's name (cases/hello.cmake ->
-# "hello"; cases/_edge.cmake -> "edge"). Labels: e2e, plus edge for the edge suite, golden for GOLDEN,
+# The tool runs with its working directory set to {{WORK}}, so relative output paths (`out/x.epub`)
+# land there. The file keywords take paths RELATIVE to {{WORK}} (no leading '/', no '..'), checked
+# after the run and before the driver writes anything of its own into {{WORK}}:
+# - EXPECT_FILES / EXPECT_ABSENT are LITERAL paths (EXISTS / IS_SYMLINK), never globs, so names with
+#   '[' (oneshot EPUBs) work. Names with an unbalanced '[' or ']', or with ';', cannot be passed (CMake
+#   list semantics).
+# - EXPECT_NO_GLOB uses file(GLOB LIST_DIRECTORIES false): '*' matches dot-files, '[' is a character
+#   class. Example: EXPECT_NO_GLOB "out/.*.part-*" (no temp file left behind).
+# - EXPECT_EPUB checks bytes, never trusting an in-process extraction: size >= 60; a local header at 0
+#   with method 0 (STORED), name length 8, extra length 0, name `mimetype`, compressed and uncompressed
+#   size 20 and content `application/epub+zip`; an end-of-central-directory record (no comment) in the
+#   last 22 bytes. Then a CHILD `cmake -P epub_extract_check.cmake` extracts it into
+#   {{WORK}}/epub-check/<n> (a corrupt archive is fatal to the child only) and requires
+#   `mimetype`, `META-INF/container.xml` and `OEBPS/content.opf`. Deep structure is the [cli] tier's job.
+#
+# Every case requires the fixtures e2e_installed (the binary) and e2e_fixtures (the trees); CTest adds
+# both setup tests automatically under -R / -L.
+#
+# The test name is e2e.<suite>.<case>, where <suite> is the case file's name (cases/download.cmake ->
+# "download"; cases/_edge.cmake -> "edge"). Labels: e2e, plus edge for the edge suite, golden for GOLDEN,
 # plus LABELS. Never use PASS_REGULAR_EXPRESSION or WILL_FAIL for contract cases: the first ignores
 # the exit code, and the second only inverts it.
 
@@ -114,6 +139,7 @@ set(CLI_E2E_PREFIX "${PROJECT_BINARY_DIR}/e2e-prefix")
 set(CLI_E2E_INSTALLED_TOOL "${CLI_E2E_PREFIX}/${CMAKE_INSTALL_BINDIR}/mangadex-dl")
 set(CLI_E2E_SPEC_DIR "${PROJECT_BINARY_DIR}/e2e-cases")
 set(CLI_E2E_WORK_ROOT "${PROJECT_BINARY_DIR}/e2e-work")
+set(CLI_E2E_FIXTURES_DIR "${PROJECT_BINARY_DIR}/e2e-fixtures")   # written by the e2e.fixtures test
 
 function(cli_e2e_add_install_fixture)
   add_test(NAME e2e.install
@@ -139,7 +165,7 @@ function(cli_e2e_case)
              EXPECT_ANSI GOLDEN TTY PARENT_IGNORES_SIGPIPE)
   set(_one NAME STDIN EXPECT_EXIT EXPECT_STDOUT_REGEX EXPECT_STDERR_REGEX STDOUT_FILE PIPE_HEAD
            EXPECT_PIPE_RESULT TIMEOUT)
-  set(_multi ARGS ENV LABELS)
+  set(_multi ARGS ENV LABELS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
   cmake_parse_arguments(PARSE_ARGV 0 C "${_flags}" "${_one}" "${_multi}")
 
   if(C_UNPARSED_ARGUMENTS)
@@ -186,6 +212,15 @@ function(cli_e2e_case)
     endif()
   endforeach()
 
+  foreach(_kw IN ITEMS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
+    foreach(_rel IN LISTS C_${_kw})
+      if(_rel STREQUAL "" OR IS_ABSOLUTE "${_rel}" OR _rel MATCHES "(^|/)\\.\\.(/|$)" OR _rel MATCHES "^~")
+        message(FATAL_ERROR "cli_e2e_case(${C_NAME}): ${_kw} '${_rel}' must be a path relative to "
+                            "{{WORK}} without '..' components")
+      endif()
+    endforeach()
+  endforeach()
+
   if(NOT DEFINED C_EXPECT_EXIT)
     set(C_EXPECT_EXIT 0)
   endif()
@@ -217,7 +252,7 @@ function(cli_e2e_case)
       string(APPEND _text "set(CASE_${_var} ON)\n")
     endif()
   endforeach()
-  foreach(_var IN ITEMS ARGS ENV)
+  foreach(_var IN ITEMS ARGS ENV EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
     string(APPEND _text "set(CASE_${_var})\n")
     foreach(_item IN LISTS C_${_var})
       _cli_e2e_quote(_q "${_item}")
@@ -227,6 +262,7 @@ function(cli_e2e_case)
   foreach(_pair IN ITEMS "SUITE;${CLI_E2E_SUITE}" "TEST;${_test}"
                          "DEFAULT_TOOL;${CLI_E2E_INSTALLED_TOOL}"
                          "GOLDEN_DIR;${CLI_E2E_DIR}/golden" "INPUTS_DIR;${CLI_E2E_DIR}/inputs"
+                         "FIXTURES_DIR;${CLI_E2E_FIXTURES_DIR}"
                          "WORK_DIR;${CLI_E2E_WORK_ROOT}/${CLI_E2E_SUITE}.${C_NAME}"
                          "PROJ_UPPER;MANGADEX_DL")
     list(GET _pair 0 _k)
@@ -249,7 +285,7 @@ function(cli_e2e_case)
   list(APPEND _labels ${C_LABELS})
   math(EXPR _ctest_timeout "${C_TIMEOUT} + 30")
   set_tests_properties("${_test}" PROPERTIES
-    FIXTURES_REQUIRED e2e_installed
+    FIXTURES_REQUIRED "e2e_installed;e2e_fixtures"
     LABELS "${_labels}"
     SKIP_RETURN_CODE 77
     TIMEOUT ${_ctest_timeout})

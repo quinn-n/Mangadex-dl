@@ -1,0 +1,52 @@
+Download a MangaDex title as EPUB files
+
+
+mangadex-dl download [OPTIONS] MANGA [DIR]
+
+
+POSITIONALS:
+  MANGA REQUIRED                    UUID or https://mangadex.org/title/<uuid>
+  DIR [.]                           Output directory (created if missing)
+
+OPTIONS:
+  -h, --help                        Print this help message and exit
+      --volumes SPEC [all]          Volumes: all, none or a list like 1,3-5,8-
+      --loose-chapters SPEC [all]   Chapters with no volume (SPEC as --volumes)
+      --layout WORD [volumes]       Split into: volumes, chapters or single file
+  -l, --lang CODE [en]              Language to download (e.g. en, pt-br)
+      --group NAME|UUID             Preferred group; repeat in priority order
+      --data-saver                  Download compressed images (smaller files)
+      --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
+      --title TEXT                  Title for file names and metadata
+      --overwrite                   Replace files that already exist
+  -n, --dry-run                     List the files to write; download nothing
+  -j, --jobs N [4]                  Parallel image downloads, 1 to 8
+      --no-report                   Skip MangaDex@Home reliability reports
+      --version                     Print the version and exit
+      --json                        Write machine-readable JSON to stdout
+  -q, --quiet                       Only print errors
+  -v, --verbose                     Print more detail to stderr (repeatable)
+      --color WORD [auto]           Color stderr: auto, always or never
+
+Examples:
+  Every volume and loose chapter in English, one .epub per volume, into ~/Manga:
+    mangadex-dl download https://mangadex.org/title/<uuid> ~/Manga
+  Volumes 1 to 3 only, in Brazilian Portuguese:
+    mangadex-dl download <uuid> --volumes 1-3 --loose-chapters none -l pt-br
+  Everything in one file, preferring one scanlation group:
+    mangadex-dl download <uuid> --layout single --group "Group Name"
+  Show which files would be written, without downloading anything:
+    mangadex-dl download <uuid> --dry-run
+
+Running the same command again skips the files that already exist, so an
+interrupted or incomplete run can simply be restarted.
+
+Exit status:
+  0   success
+  1   runtime failure (including a failed write to stdout)
+  2   usage error
+  3   network or API failure (connection, TLS, timeout, server error)
+  4   title not found on MangaDex
+  5   no downloadable chapters matched the language and selection
+  6   incomplete: at least one output file failed
+  70  internal error (a bug: please report it)

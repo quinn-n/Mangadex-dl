@@ -8,14 +8,21 @@
 # ---- per-project knobs ----------------------------------------------------------------------------
 # REQUIRED: a subcommand invocation that writes well over 64 KiB of NEWLINE-separated lines to stdout.
 # The SIGPIPE cases need the pipe to fill. Without newlines, `head -n 1` would read everything and the
-# case would prove nothing.
-set(EDGE_BULK_ARGS hello --count 20000)
+# case would prove nothing. The bulk fixture (4000 loose chapters with long titles, no images) makes
+# a dry run with one file per chapter print well over 128 KiB of planned paths, one per line.
+set(EDGE_BULK_ARGS download --dry-run --layout chapters --api-base file://{{FIXTURES}}/bulk
+    33333333-3333-4333-8333-333333333333 out)
 # An invocation that writes exactly one JSON document to stdout (empty = the tool has no --json surface).
-set(EDGE_JSON_ARGS hello --json)
+set(EDGE_JSON_ARGS download --json --dry-run --api-base file://{{FIXTURES}}/clean
+    11111111-1111-4111-8111-111111111111)
 # An invocation whose stdout contains its LAST argument verbatim (for UTF-8 and locale round trips; empty = none).
-set(EDGE_ECHO_ARGS hello)
+# The appended argument becomes DIR, and a dry run prints the planned paths under it.
+set(EDGE_ECHO_ARGS download --dry-run --api-base file://{{FIXTURES}}/clean
+    11111111-1111-4111-8111-111111111111)
 # An invocation that colors stdout when stdout is a TTY (empty = the tool never colors stdout).
-set(EDGE_COLOR_ARGS hello)
+# Empty: stdout is data and is never colored (design "Color"; plan gate decision 7). Only stderr's
+# `warning:`/`error:` prefixes are colored; tests/e2e/cases/download.cmake covers that.
+set(EDGE_COLOR_ARGS "")
 
 if(NOT EDGE_BULK_ARGS)
   message(FATAL_ERROR "tests/e2e/cases/_edge.cmake: EDGE_BULK_ARGS is required (the SIGPIPE cases are mandatory)")

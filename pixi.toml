@@ -47,6 +47,7 @@ cli11 = "2.*"                   # header-only; CLI11::CLI11
 nlohmann_json = "3.*"           # header-only; nlohmann_json::nlohmann_json (+ json_fwd.hpp)
 catch2 = "3.*"                  # conda-forge Catch2 is shared-only (libCatch2.so): fine under ctest
 clang-format = "23.*"           # SAME major as clang/clang-tools; pinned here so the gcc env formats identically
+libcurl = ">=8.23.0,<9"         # headers only at build time (curl/curl.h); the binary dlopen()s libcurl.so.4 at runtime
 
 # ---- Compiler features ----
 [feature.clang.dependencies]

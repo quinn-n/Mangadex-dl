@@ -3,3 +3,55 @@ Input fixtures for the installed-binary E2E cases (tests/e2e/cases/*.cmake).
 Reference them from a case as `STDIN <file>` (resolved relative to this directory) or as
 `{{INPUTS}}/<file>` inside ARGS or ENV values. Keep fixtures small, deterministic and free of real
 data, credentials or personal paths: they are committed, and goldens may echo them.
+
+This file itself doubles as a committed regular file (for example a DIR argument that is a file).
+
+
+Generated MangaDex fixtures ({{FIXTURES}})
+==========================================
+
+The MangaDex data is NOT committed. The `e2e.fixtures` CTest fixture (FIXTURES_SETUP e2e_fixtures,
+required by every cli_e2e_case) runs the test-only `mangadex_dl_fixture_gen <build>/e2e-fixtures`
+(tests/e2e/fixtures/fixture_gen.cpp), which writes five trees from the canned fixtures in
+tests/support/mdx_fixture.hpp, replacing any previous copy:
+
+  {{FIXTURES}}/clean        11111111-1111-4111-8111-111111111111  "Clean Title": vol 1 (ch 1-2),
+                            vol 2 (ch 3), en, one group, PNG/GIF pages, a cover per volume; no skips,
+                            no warnings
+  {{FIXTURES}}/basic        22222222-2222-4222-8222-222222222222  "Basic Title": two groups (dedupe),
+                            loose ch 10 and 10.5, a oneshot, an external chapter, pages == 0, an
+                            isUnavailable chapter, an fr chapter, JPEG/PNG/GIF/WebP pages, covers with
+                            volume null and locale null
+  {{FIXTURES}}/bulk         33333333-3333-4333-8333-333333333333  4000 loose en chapters with a long
+                            title and no images: for dry runs (well over 128 KiB of output)
+  {{FIXTURES}}/incomplete   44444444-4444-4444-8444-444444444444  vol 1 complete; vol 2 lists a page
+                            whose file is missing
+  {{FIXTURES}}/nochapters   55555555-5555-4555-8555-555555555555  only de chapters
+
+Point the tool at one with `--api-base file://{{FIXTURES}}/<name>`. Any other manga id (for example
+66666666-6666-4666-8666-666666666666) has no manga document, so it is a 404 (not found).
+
+Layout of one tree (<root> = {{FIXTURES}}/<name>), matching the fixture transport's URL mapping:
+
+  <root>/api/manga/<mangaId>.json                    GET /manga/<id>?includes[]=...
+  <root>/api/manga/<mangaId>/feed/offset-<n>.json    GET /manga/<id>/feed?...&offset=<n>
+                                                     (n = 0, 500, 1000, ...; offset-0 always exists)
+  <root>/api/cover/offset-<n>.json                   GET /cover?manga[]=<id>&limit=100&offset=<n>
+                                                     (n = 0, 100, ...; offset-0 always exists)
+  <root>/api/at-home/server/<chapterId>.json         GET /at-home/server/<chapterId>
+  <root>/uploads/covers/<mangaId>/<fileName>         cover images
+  <root>/at-home/data/<hash>/<file>                  page images ({baseUrl}/data/<hash>/<file>)
+  <root>/at-home/data-saver/<hash>/<file>            the same bytes ({baseUrl}/data-saver/...)
+
+Rules the fixtures follow (and tests may rely on):
+- JSON shapes are MangaDex's (docs/design/download-factcheck.md, cluster F), with a few extra fields
+  parsers must ignore. Feed pages hold EVERY language: fixture mode ignores the query string except
+  `offset`, so the client filters by language itself.
+- Every at-home `baseUrl` is `https://fixture.invalid`. Page names are p001.<ext>, ... (data) and
+  s001.<ext>, ... (data-saver).
+- A chapter without images has no at-home document (a 404). A "missing" page is listed in the
+  at-home document but has no file (a 404 at fetch time).
+- PNG and GIF images are real and decodable. JPEG and WebP images are header-only: sniffable (JPEG
+  SOF0, WebP VP8X) but not decodable.
+- Ids, hashes and file names match ^[A-Za-z0-9][A-Za-z0-9._-]*$. Titles never contain '[', ']' or
+  ';' (the CMake driver cannot pass them in file assertions).
