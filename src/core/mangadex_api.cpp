@@ -525,12 +525,16 @@ std::string manga_request_url(std::string_view api, const MangaId& id) {
 
 std::string feed_request_url(std::string_view api, const MangaId& id, std::string_view lang,
                              std::size_t offset) {
+    // includeExternalUrl and includeEmptyPages are deliberately omitted. Observed against the live
+    // API on 2026-10-18: they are filters, not opt-ins. `=1` returns ONLY external / ONLY
+    // empty-page chapters (a normal 61-chapter title gave total 0), `=0` excludes them, and
+    // omitting them applies no filter. Omitting them lets external and empty chapters arrive so the
+    // planner reports them as `external` / `no_pages` skips. Do not re-add either parameter.
     return std::format("{}/manga/{}/feed?translatedLanguage[]={}&limit={}&offset={}"
                        "&order[volume]=asc&order[chapter]=asc&includes[]=scanlation_group"
                        "&contentRating[]=safe&contentRating[]=suggestive"
                        "&contentRating[]=erotica&contentRating[]=pornographic"
-                       "&includeExternalUrl=1&includeEmptyPages=1&includeFuturePublishAt=0"
-                       "&includeUnavailable=1",
+                       "&includeFuturePublishAt=0&includeUnavailable=1",
                        api, id.str(), encode_component(lang), feed_page_limit, offset);
 }
 

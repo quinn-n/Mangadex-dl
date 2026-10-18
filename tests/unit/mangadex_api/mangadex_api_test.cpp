@@ -740,8 +740,7 @@ TEST_CASE("feed_request_url sends every parameter in a fixed order", "[mangadex_
     const std::string tail = "&order[volume]=asc&order[chapter]=asc&includes[]=scanlation_group"
                              "&contentRating[]=safe&contentRating[]=suggestive"
                              "&contentRating[]=erotica&contentRating[]=pornographic"
-                             "&includeExternalUrl=1&includeEmptyPages=1&includeFuturePublishAt=0"
-                             "&includeUnavailable=1";
+                             "&includeFuturePublishAt=0&includeUnavailable=1";
     CHECK(md::feed_request_url("https://api.mangadex.org", md::MangaId{}, "en", 0) ==
           "https://api.mangadex.org/manga/00000000-0000-0000-0000-000000000000/feed"
           "?translatedLanguage[]=en&limit=500&offset=0" +
@@ -754,6 +753,22 @@ TEST_CASE("feed_request_url sends every parameter in a fixed order", "[mangadex_
     CHECK(md::feed_request_url("https://a", md::MangaId{}, "en&x=1#f", 0)
               .starts_with("https://a/manga/00000000-0000-0000-0000-000000000000/feed"
                            "?translatedLanguage[]=en%26x%3D1%23f&limit=500"));
+}
+
+// Regression: MangaDex treats includeEmptyPages=1 / includeExternalUrl=1 as filters (only empty /
+// only external chapters), so sending them made every normal title look empty (exit 5).
+TEST_CASE("feed_request_url never sends the includeEmptyPages or includeExternalUrl filters",
+          "[mangadex_api][urls][regression]") {
+    using namespace std::string_view_literals;
+    for (const std::string_view lang : {"en"sv, "pt-br"sv}) {
+        for (const std::size_t offset : {std::size_t{0}, std::size_t{500}}) {
+            CAPTURE(lang, offset);
+            const std::string url =
+                md::feed_request_url("https://api.mangadex.org", md::MangaId{}, lang, offset);
+            CHECK(url.find("includeEmptyPages") == std::string::npos);
+            CHECK(url.find("includeExternalUrl") == std::string::npos);
+        }
+    }
 }
 
 TEST_CASE("cover_request_url pages by 100", "[mangadex_api][urls]") {

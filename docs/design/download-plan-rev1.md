@@ -36,7 +36,8 @@ New assumptions (use-time checks, not blocking):
 
 ## T6
 - Depth pre-scan (64) **mandatory** before every parse; never `dump()`/copy/`==` unvalidated json; extract into model structs immediately; wrap extraction in `try { … } catch (const nlohmann::json::exception&)` → Errc::network.
-- Feed URL params, fixed order: `translatedLanguage[]=<lang>&limit=500&offset=<n>&order[volume]=asc&order[chapter]=asc&includes[]=scanlation_group&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic&includeExternalUrl=1&includeEmptyPages=1&includeFuturePublishAt=0&includeUnavailable=1`.
+- Feed URL params, fixed order: `translatedLanguage[]=<lang>&limit=500&offset=<n>&order[volume]=asc&order[chapter]=asc&includes[]=scanlation_group&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic&includeFuturePublishAt=0&includeUnavailable=1`.
+  - 2026-10-18 correction: `includeExternalUrl=1&includeEmptyPages=1` were removed. On the live API they are filters (`=1` returns only external / only empty-page chapters, so a normal title came back with `total: 0` and exit 5; `=0` excludes them; omitted = no filter). Never re-add them; the planner already reports external and empty chapters as `external` / `no_pages` skips.
 - Cover URL: `manga[]=<id>&limit=100&offset=<n>`; `volume`/`locale` nullable.
 - Tolerant parsing: unknown fields ignored; only `id`, `pages`, title map, `hash`, `data`, `baseUrl` required.
 - Tests added: 1e6-deep input rejected by pre-scan (no ASan overflow); depth 64 ok / 65 rejected; wrong-type field → network; null cover volume/locale; exact URL strings; unavailable chapter parses `unavailable = true`.

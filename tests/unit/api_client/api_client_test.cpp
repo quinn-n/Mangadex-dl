@@ -552,10 +552,12 @@ TEST_CASE("ApiClient: the feed URL carries every explicit parameter", "[api_clie
          {"translatedLanguage[]=pt-br", "limit=500", "offset=0", "order[volume]=asc",
           "order[chapter]=asc", "includes[]=scanlation_group", "contentRating[]=safe",
           "contentRating[]=suggestive", "contentRating[]=erotica", "contentRating[]=pornographic",
-          "includeExternalUrl=1", "includeEmptyPages=1", "includeFuturePublishAt=0",
-          "includeUnavailable=1"}) {
+          "includeFuturePublishAt=0", "includeUnavailable=1"}) {
         CHECK_THAT(url, ContainsSubstring(std::string{param}));
     }
+    // MangaDex treats these as filters (=1 means ONLY such chapters), so they must never be sent.
+    CHECK_THAT(url, !ContainsSubstring("includeExternalUrl"));
+    CHECK_THAT(url, !ContainsSubstring("includeEmptyPages"));
     CHECK(requests[0].max_body_bytes == md::max_api_json_bytes);
 }
 
