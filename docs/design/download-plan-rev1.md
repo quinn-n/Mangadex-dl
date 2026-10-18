@@ -82,6 +82,7 @@ New assumptions (use-time checks, not blocking):
 - 429 via `decide_retry` (≤ 2 attempts); give up → exit 3 "rate limited until <UTC time>".
 - `fetch_page`: 403 from an image host returns immediately (T14 refreshes). MD@H report on **every** image fetch from a non-mangadex.org `baseUrl`, success and failure (failure: `success:false, bytes:0, cached:false`, duration so far; transport errors too); best-effort, never retried.
 - Tests: 403/400 manga → network + message; 429 no header → one 60 s fake sleep then network; 404 page and transport error each → failure report with `bytes:0`; mangadex.org host → no report; feed URL carries every explicit param.
+- 2026-10-18 correction (live: the report endpoint hung, so every image cost ~12 s): `fetch_page` never sends the report itself. It queues the body for a background reporter thread owned by the client (bounded queue of 64, drop when full; 3 s connect and stall timeouts; disabled after 3 consecutive failures; stopped with the client, so the POST in flight is cancelled and the queue discarded). Never make the report synchronous again.
 
 ## T14
 - Any `fetch_page` failure triggers an at-home refresh for that chapter (≤ 3 per chapter), including image-host 403.

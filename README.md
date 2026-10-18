@@ -274,6 +274,12 @@ a small best-effort report to `https://api.mangadex.network/report`: the image U
 request succeeded, whether it was served from cache, the number of bytes, and the duration.
 Reports are never retried and never affect the result of the run.
 
+Reports are sent in the background and never slow the download down: each one is queued and
+sent by a separate thread, and gives up after 3 seconds without a connection or without data.
+If the report endpoint fails 3 times in a row, reports stop for the rest of the run (`-vv`
+shows `MangaDex@Home reports disabled: endpoint not responding`). When many reports are waiting,
+new ones are dropped, and reports still waiting when the download ends are discarded.
+
 `--no-report` turns these reports off. Nothing else is sent anywhere.
 
 ## Environment and configuration

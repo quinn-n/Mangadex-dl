@@ -3,7 +3,8 @@
 // The MangaDex API client (api_client.hpp; download plan T12 + rev1).
 //
 // Every request goes through one retry loop (State::perform):
-//   limiter(s) -> Transport::fetch -> trace -> [MD@H report] -> decide_retry -> sleep or return.
+//   limiter(s) -> Transport::fetch -> trace -> [queue MD@H report] -> decide_retry -> sleep or
+//   return.
 // - Limiters: the shared API limiter for API documents and covers, plus the at-home limiter for
 //   /at-home/server. Page images skip the API limiter (image hosts are exempt from the API rate
 //   limit; --jobs bounds their concurrency) unless the image URL's host is mangadex.org or a
@@ -14,10 +15,18 @@
 // - Status mapping happens after the loop: 2xx is success, 404 on the title is Errc::not_found,
 //   everything else is Errc::network as `<url>: <reason>` (403/400 with a hint, 429 with the UTC
 //   time the limit ends). A stop request is Errc::interrupted, wherever it lands.
+// - MD@H reports are best-effort and never delay a download: fetch_page only queues the report
+//   body (a bounded queue; a full queue drops the report) and returns. One background thread
+//   (Reporter, started on the first report) sends them in order with 3 s connect/stall limits and
+//   stops sending for the rest of the run after report_failure_limit consecutive failures. The
+//   client's destructor stops it at once: the POST in flight is cancelled by the thread's stop
+//   token and the queued reports are discarded.
 //
 // Thread safety: the transport, clock, trace sink and limiters are thread-safe by contract; the
 // configuration is immutable after construction; the jitter function is called under its own
 // mutex. Nothing here keeps a view into a response or a request beyond the call that made it.
+// The reporter thread touches only its own queue (under its mutex), the transport, the clock and
+// the trace sink; never a DownloadObserver.
 #include "mangadex_dl/api_client.hpp"
 
 #include "mangadex_dl/error.hpp"
@@ -27,11 +36,14 @@
 #include "mangadex_dl/net/retry.hpp"
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
+#include "signal_block.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <format>
 #include <functional>
@@ -42,6 +54,8 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -54,7 +68,12 @@ using std::chrono::milliseconds;
 inline constexpr std::string_view report_endpoint = "https://api.mangadex.network/report";
 /// The report answer is ignored; anything larger than this is cut off as too_large.
 inline constexpr std::size_t max_report_response_bytes = std::size_t{64} * 1024;
-inline constexpr std::chrono::seconds report_timeout{5};
+/// A report that cannot connect, or that stalls, within this long is abandoned.
+inline constexpr std::chrono::seconds report_timeout{3};
+/// Reports waiting for the reporter thread; one more is dropped, never waited for.
+inline constexpr std::size_t report_queue_capacity = 64;
+/// Consecutive failed reports (transport error or non-2xx) that disable reports for the run.
+inline constexpr int report_failure_limit = 3;
 
 /// Attempts per logical request, whatever RetryConfig says (decide_retry clamps its attempt
 /// number at 64, so a huge max_attempts would otherwise retry forever).
@@ -98,6 +117,171 @@ saturating_later(std::chrono::system_clock::time_point now, milliseconds wait) n
 
 static_assert(feed_page_limit <= feed_offset_cap && cover_page_limit <= feed_offset_cap);
 
+/// The -vv line for one request attempt (no-op without a sink).
+void trace_request(TraceSink* trace, std::string_view method, std::string_view url,
+                   const TransportResult& result, milliseconds elapsed) {
+    if (trace == nullptr) {
+        return;
+    }
+    if (result.has_value()) {
+        trace->trace(
+            std::format("{} {} -> {} ({} ms)", method, url, result->status, elapsed.count()));
+    } else {
+        trace->trace(std::format("{} {} -> error: {} ({} ms)", method, url, result.error().message,
+                                 elapsed.count()));
+    }
+}
+
+/// Sends MD@H report bodies to one URL from a background thread, in submission order, so that
+/// no caller ever waits for the report endpoint. Thread-safe: submit() may be called from any
+/// number of threads. Borrows the transport, the clock and the (nullable) trace sink, which
+/// outlive the ApiClient that owns this object.
+class Reporter {
+public:
+    Reporter(Transport& transport, Clock& clock, TraceSink* trace, std::string url)
+        : transport_(&transport), clock_(&clock), trace_(trace), url_(std::move(url)) {}
+    Reporter(const Reporter&) = delete;
+    Reporter& operator=(const Reporter&) = delete;
+    Reporter(Reporter&&) = delete;
+    Reporter& operator=(Reporter&&) = delete;
+    /// thread_ is the last member, so it is destroyed first: request_stop (which wakes the wait
+    /// and cancels the POST in flight through its token) and join, before anything it uses goes.
+    /// Reports still queued are discarded.
+    ~Reporter() = default;
+
+    /// Queues one report body and returns at once. Starts the thread on the first call. Does
+    /// nothing once reports are disabled; drops the report when the queue is full.
+    void submit(std::string body) {
+        bool first_drop = false;
+        bool queued = false;
+        bool no_thread = false;
+        {
+            const std::scoped_lock lock{mutex_};
+            if (disabled_) {
+                return;
+            }
+            if (queue_.size() >= report_queue_capacity) {
+                first_drop = !drop_traced_;
+                drop_traced_ = true;
+            } else {
+                queue_.push_back(std::move(body));
+                queued = start_locked();
+                no_thread = !queued;
+            }
+        }
+        if (queued) {
+            ready_.notify_one();
+        }
+        // Traced outside the lock (the sink has its own); each at most once per run.
+        if (first_drop) {
+            trace("MangaDex@Home report queue full; dropping reports (only the first drop is "
+                  "traced)");
+        }
+        if (no_thread) {
+            trace("MangaDex@Home reports disabled: could not start the reporter thread");
+        }
+    }
+
+private:
+    /// Starts the thread unless it runs already. False (and reports disabled, the queue
+    /// cleared) when it cannot be started. Called with mutex_ held.
+    [[nodiscard]] bool start_locked() {
+        if (thread_.joinable()) {
+            return true;
+        }
+        try {
+            // Like every core thread, the reporter starts with SIGINT/SIGTERM/SIGPIPE blocked,
+            // whatever the calling thread's mask; the caller's mask is restored on scope exit.
+            const detail::ScopedAsyncSignalBlock blocked{};
+            // `this` outlives the thread: thread_ is joined in ~Reporter before any member dies.
+            thread_ = std::jthread{[this](const std::stop_token& stop) { run(stop); }};
+            return true;
+        } catch (const std::system_error&) {
+            // Best-effort by contract: without a thread there are simply no reports.
+            disabled_ = true;
+            queue_.clear();
+            return false;
+        }
+    }
+
+    /// The thread: sends queued reports until a stop request or until reports are disabled.
+    void run(const std::stop_token& stop) noexcept {
+        try {
+            int failures = 0; // consecutive; this thread only
+            std::unique_lock lock{mutex_};
+            // wait() is true when a report is queued (even after a stop request, hence the
+            // second test) and false on a stop request with an empty queue.
+            while (ready_.wait(lock, stop, [this] { return !queue_.empty(); }) &&
+                   !stop.stop_requested()) {
+                std::string body = std::move(queue_.front());
+                queue_.pop_front();
+                lock.unlock();
+                const bool ok = send(std::move(body), stop);
+                if (stop.stop_requested()) {
+                    return; // a cancelled POST says nothing about the endpoint
+                }
+                failures = ok ? 0 : failures + 1;
+                lock.lock();
+                if (failures >= report_failure_limit) {
+                    disabled_ = true;
+                    queue_.clear();
+                    lock.unlock();
+                    trace("MangaDex@Home reports disabled: endpoint not responding");
+                    return;
+                }
+            }
+        } catch (...) {
+            // An exception must not leave the thread (std::terminate), and a report failure is
+            // ignored by contract (download spec): stop reporting for the rest of the run.
+            disable();
+        }
+    }
+
+    /// One POST, never retried; the answer is ignored except for success.
+    [[nodiscard]] bool send(std::string body, const std::stop_token& stop) {
+        // `post` lives until fetch() returns, as Transport requires.
+        const HttpRequest post{
+            .method = HttpMethod::post,
+            .url = url_,
+            .body = std::move(body),
+            .content_type = "application/json",
+            .max_body_bytes = max_report_response_bytes,
+            .connect_timeout = report_timeout,
+            .stall_timeout = report_timeout,
+            .cancel = stop, // ~Reporter's stop request aborts the transfer
+        };
+        const auto start = clock_->now();
+        const TransportResult answer = transport_->fetch(post);
+        const milliseconds elapsed = std::max(
+            std::chrono::duration_cast<milliseconds>(clock_->now() - start), milliseconds{0});
+        trace_request(trace_, "POST", post.url, answer, elapsed);
+        return answer.has_value() && is_success(answer->status);
+    }
+
+    void disable() noexcept {
+        const std::scoped_lock lock{mutex_};
+        disabled_ = true;
+        queue_.clear();
+    }
+
+    void trace(std::string line) const {
+        if (trace_ != nullptr) {
+            trace_->trace(std::move(line));
+        }
+    }
+
+    Transport* transport_ = nullptr; ///< borrowed; never null
+    Clock* clock_ = nullptr;         ///< borrowed; never null
+    TraceSink* trace_ = nullptr;     ///< borrowed; nullable
+    std::string url_{};              ///< never modified after construction
+    std::mutex mutex_{};
+    std::condition_variable_any ready_{};
+    std::deque<std::string> queue_{}; ///< guarded by mutex_; at most report_queue_capacity
+    bool drop_traced_ = false;        ///< guarded by mutex_
+    bool disabled_ = false;           ///< guarded by mutex_
+    std::jthread thread_{};           ///< started under mutex_; must stay the last member
+};
+
 /// One logical GET (possibly several attempts).
 struct GetSpec {
     std::string url{};
@@ -139,7 +323,12 @@ struct ApiClient::State {
           std::function<std::uint32_t(std::uint32_t)> jitter_fn, TraceSink* trace_sink)
         : transport(&transport_ref), clock(&clock_ref), config(std::move(client_config)),
           trace(trace_sink), api_limiter(clock_ref, config.api_interval),
-          at_home_limiter(clock_ref, config.at_home_interval), jitter(std::move(jitter_fn)) {}
+          at_home_limiter(clock_ref, config.at_home_interval), jitter(std::move(jitter_fn)) {
+        if (config.endpoints.report_url.has_value()) {
+            reporter = std::make_unique<Reporter>(transport_ref, clock_ref, trace_sink,
+                                                  *config.endpoints.report_url);
+        }
+    }
 
     // ---- the retry loop ----------------------------------------------------------------------
 
@@ -252,25 +441,16 @@ struct ApiClient::State {
 
     void trace_attempt(std::string_view method, std::string_view url, const TransportResult& result,
                        milliseconds elapsed) const {
-        if (trace == nullptr) {
-            return;
-        }
-        if (result.has_value()) {
-            trace->trace(
-                std::format("{} {} -> {} ({} ms)", method, url, result->status, elapsed.count()));
-        } else {
-            trace->trace(std::format("{} {} -> error: {} ({} ms)", method, url,
-                                     result.error().message, elapsed.count()));
-        }
+        trace_request(trace, method, url, result, elapsed);
     }
 
-    /// One best-effort MD@H report for one image attempt: success or failure, never retried,
-    /// the answer ignored. Skipped without a report URL, for mangadex.org hosts, and when the
-    /// attempt ended because of a stop request (that says nothing about the node).
+    /// Queues one best-effort MD@H report for one image attempt (success or failure) and
+    /// returns at once; the reporter thread sends it, never retried, the answer ignored. Skipped
+    /// without a report URL, for mangadex.org hosts, and when the attempt ended because of a
+    /// stop request (that says nothing about the node).
     void send_report(std::string_view image_url, const TransportResult& result,
-                     milliseconds elapsed, const std::stop_token& stop) {
-        if (!config.endpoints.report_url.has_value() || is_mangadex_org_host(image_url) ||
-            stop.stop_requested() ||
+                     milliseconds elapsed, const std::stop_token& stop) const {
+        if (reporter == nullptr || is_mangadex_org_host(image_url) || stop.stop_requested() ||
             (!result.has_value() && result.error().kind == TransportErrc::cancelled)) {
             return;
         }
@@ -282,20 +462,7 @@ struct ApiClient::State {
             .bytes = success ? result->body.size() : 0U,
             .duration_ms = static_cast<std::uint64_t>(elapsed.count()), // since() is >= 0
         };
-        // `post.body` lives until fetch() returns, as Transport requires.
-        const HttpRequest post{
-            .method = HttpMethod::post,
-            .url = *config.endpoints.report_url,
-            .body = at_home_report_json(report),
-            .content_type = "application/json",
-            .max_body_bytes = max_report_response_bytes,
-            .connect_timeout = report_timeout,
-            .stall_timeout = report_timeout,
-            .cancel = stop,
-        };
-        const auto start = clock->now();
-        const TransportResult answer = transport->fetch(post);
-        trace_attempt("POST", post.url, answer, since(start));
+        reporter->submit(at_home_report_json(report));
     }
 
     // ---- status mapping ----------------------------------------------------------------------
@@ -411,6 +578,9 @@ struct ApiClient::State {
     RateLimiter at_home_limiter;
     std::mutex jitter_mutex{};
     std::function<std::uint32_t(std::uint32_t)> jitter{}; ///< guarded by jitter_mutex
+    /// MD@H reports (null without a report URL). The last member: destroyed first, so its thread
+    /// is stopped and joined while everything else is still alive.
+    std::unique_ptr<Reporter> reporter{};
 };
 
 ApiClient::ApiClient(Transport& transport, Clock& clock, ClientConfig config,

@@ -2,7 +2,8 @@
 //
 // Core-private (not under include/): blocks the asynchronous signals in the calling thread while
 // new threads are created, so every core worker thread (FetchPool workers, the InterruptBridge
-// poller) starts with them blocked. Used by fetch_pool.cpp and interrupt.cpp.
+// poller, the ApiClient's MD@H reporter) starts with them blocked. Used by fetch_pool.cpp,
+// interrupt.cpp and api_client.cpp.
 #pragma once
 
 // NOLINTNEXTLINE(modernize-deprecated-headers): pthread_sigmask and sigset_t are POSIX <signal.h>

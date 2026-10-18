@@ -28,7 +28,10 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -46,6 +49,9 @@
 #include <utility>
 #include <vector>
 
+// NOLINTNEXTLINE(modernize-deprecated-headers): pthread_sigmask is POSIX <signal.h>
+#include <signal.h>
+
 namespace {
 
 namespace md = mangadex_dl;
@@ -61,14 +67,21 @@ constexpr std::string_view report_url = "https://api.mangadex.network/report";
 constexpr std::string_view node = "https://abc123.node.example"; ///< an MD@H node
 constexpr std::string_view hash = "abcdef0123456789";
 
+/// How long a test waits for the client's background reporter. Only a failing test ever waits
+/// this long; a passing one is woken as soon as the condition holds (no sleeps).
+constexpr std::chrono::seconds wait_limit{20};
+
 /// A TraceSink that keeps every line (thread-safe).
 class RecordingTrace final : public md::TraceSink {
 public:
     RecordingTrace() = default;
 
     void trace(std::string line) override {
-        const std::scoped_lock lock{mutex_};
-        lines_.push_back(std::move(line));
+        {
+            const std::scoped_lock lock{mutex_};
+            lines_.push_back(std::move(line));
+        }
+        changed_.notify_all();
     }
 
     [[nodiscard]] std::vector<std::string> lines() const {
@@ -76,10 +89,100 @@ public:
         return lines_;
     }
 
+    /// Waits (up to wait_limit) until at least `n` lines were traced. True when they were.
+    [[nodiscard]] bool wait_for_lines(std::size_t n) const {
+        std::unique_lock lock{mutex_};
+        return changed_.wait_for(lock, wait_limit, [this, n] { return lines_.size() >= n; });
+    }
+
+    /// Waits (up to wait_limit) until a line containing `part` was traced.
+    [[nodiscard]] bool wait_for_line_containing(std::string_view part) const {
+        std::unique_lock lock{mutex_};
+        return changed_.wait_for(lock, wait_limit, [this, part] {
+            return std::ranges::any_of(
+                lines_, [part](const std::string& line) { return line.contains(part); });
+        });
+    }
+
+    /// How many lines contain `part`.
+    [[nodiscard]] std::size_t count_containing(std::string_view part) const {
+        const std::scoped_lock lock{mutex_};
+        return static_cast<std::size_t>(std::ranges::count_if(
+            lines_, [part](const std::string& line) { return line.contains(part); }));
+    }
+
 private:
     mutable std::mutex mutex_{};
+    mutable std::condition_variable changed_{};
     std::vector<std::string> lines_{}; ///< guarded by mutex_
 };
+
+/// Holds report POSTs inside the transport (an endpoint that never answers) until open() is
+/// called or the request's own stop token is requested, like a stalled TLS connection that only
+/// the transfer's cancel token can abort.
+class ReportGate {
+public:
+    ReportGate() = default;
+
+    /// Called from the transport hook: blocks until open() or a stop on `cancel`.
+    void hold(const std::stop_token& cancel) {
+        std::unique_lock lock{mutex_};
+        ++entered_;
+        changed_.notify_all();
+        static_cast<void>(changed_.wait(lock, cancel, [this] { return open_; }));
+    }
+
+    void open() {
+        {
+            const std::scoped_lock lock{mutex_};
+            open_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    /// Waits (up to wait_limit) until `n` POSTs have entered hold().
+    [[nodiscard]] bool wait_entered(std::size_t n) {
+        std::unique_lock lock{mutex_};
+        return changed_.wait_for(lock, wait_limit, [this, n] { return entered_ >= n; });
+    }
+
+private:
+    std::mutex mutex_{};
+    std::condition_variable_any changed_{};
+    std::size_t entered_ = 0; ///< guarded by mutex_
+    bool open_ = false;       ///< guarded by mutex_
+};
+
+/// Runs `work` on a helper thread and waits up to wait_limit for it to return. On a timeout,
+/// `unblock` runs (it must make `work` end, e.g. by requesting a stop) before the helper is
+/// joined, so a failing test fails instead of hanging. True when `work` finished in time.
+[[nodiscard]] bool finishes_in_time(const std::function<void()>& work,
+                                    const std::function<void()>& unblock) {
+    struct Done {
+        std::mutex mutex{};
+        std::condition_variable changed{};
+        bool done = false; ///< guarded by mutex
+    };
+    Done done; // declared before the helper, which borrows it and `work`; joined below
+    bool in_time = false;
+    {
+        const std::jthread helper{[work_ptr = &work, done_ptr = &done] {
+            (*work_ptr)();
+            {
+                const std::scoped_lock lock{done_ptr->mutex};
+                done_ptr->done = true;
+            }
+            done_ptr->changed.notify_all();
+        }};
+        std::unique_lock lock{done.mutex};
+        in_time = done.changed.wait_for(lock, wait_limit, [&done] { return done.done; });
+        lock.unlock();
+        if (!in_time) {
+            unblock();
+        }
+    } // joins the helper
+    return in_time;
+}
 
 /// Records the arguments the client passes to its jitter function and answers `answer`.
 struct JitterLog {
@@ -96,6 +199,31 @@ struct JitterLog {
         log->args.push_back(max);
         return log->answer;
     };
+}
+
+/// Whether SIGINT, SIGTERM and SIGPIPE are all blocked in the calling thread. No Catch2 macros:
+/// it also runs on the reporter thread.
+[[nodiscard]] bool async_signals_blocked() noexcept {
+    // NOLINTNEXTLINE(misc-include-cleaner): POSIX sigset_t; glibc defines it in a bits/ header
+    sigset_t mask{};
+    if (pthread_sigmask(SIG_BLOCK, nullptr, &mask) != 0) {
+        return false;
+    }
+    return sigismember(&mask, SIGINT) == 1 && sigismember(&mask, SIGTERM) == 1 &&
+           sigismember(&mask, SIGPIPE) == 1;
+}
+
+/// The calling thread's whole signal mask, as sigismember results for signals 1..64.
+[[nodiscard]] std::array<int, 64> signal_mask_snapshot() {
+    sigset_t mask{};
+    REQUIRE(pthread_sigmask(SIG_BLOCK, nullptr, &mask) == 0);
+    std::array<int, 64> members{};
+    int signal = 1;
+    for (int& member : members) {
+        member = sigismember(&mask, signal);
+        ++signal;
+    }
+    return members;
 }
 
 /// No limiter spacing, so the only sleeps are retry waits.
@@ -495,12 +623,22 @@ TEST_CASE("ApiClient: a stop request gives interrupted", "[api_client][stop]") {
     }
     SECTION("during a page fetch: no report is sent for it") {
         const std::string page = node_page_url("p001.png");
-        transport.set_on_fetch(
-            [src = &source](const md::HttpRequest&) { static_cast<void>(src->request_stop()); });
+        transport.set_on_fetch([src = &source](const md::HttpRequest& request) {
+            if (request.url.ends_with("p001.png")) {
+                static_cast<void>(src->request_stop());
+            }
+        });
+        transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
         CHECK(error_code(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png",
                                            source.get_token())) == md::Errc::interrupted);
+        // A later page is a barrier: reports are sent in order, so a report for the interrupted
+        // page would have been sent before this one.
+        REQUIRE(client.fetch_page(node_server(), md::ImageQuality::data, "p002.png", {}));
+        REQUIRE(transport.wait_for_answered(md::HttpMethod::post, 1, wait_limit));
         CHECK(transport.count(page) == 1);
-        CHECK(posts(transport).empty());
+        const std::vector<RecordedRequest> sent = posts(transport);
+        REQUIRE(sent.size() == 1);
+        CHECK_THAT(sent[0].body, ContainsSubstring(node_page_url("p002.png")));
     }
     SECTION("while waiting for the rate limiter") {
         md::ApiClient limited{transport, clock, md::ClientConfig{}, {}, nullptr};
@@ -777,11 +915,31 @@ TEST_CASE("ApiClient: fetch_cover reads from the uploads host", "[api_client][co
 
 // ---- MD@H reports
 // ---------------------------------------------------------------------------------
+//
+// Reports are sent by the client's background reporter thread, so every test waits for the POSTs
+// it expects (FakeTransport::wait_for_answered, RecordingTrace::wait_for_*) and then destroys the
+// client, which joins the reporter, before it checks the totals.
+
+namespace {
+
+constexpr std::size_t report_queue_capacity = 64;   ///< api_client.cpp's report queue bound
+constexpr std::size_t report_failure_threshold = 3; ///< consecutive failures that disable reports
+constexpr std::string_view reports_disabled =
+    "MangaDex@Home reports disabled: endpoint not responding";
+constexpr std::string_view report_queue_full = "MangaDex@Home report queue full";
+
+[[nodiscard]] md::Result<std::string> fetch_node_page(md::ApiClient& client, std::string_view file,
+                                                      std::stop_token stop = {}) {
+    return client.fetch_page(node_server(), md::ImageQuality::data, file, std::move(stop));
+}
+
+} // namespace
 
 TEST_CASE("ApiClient: every image attempt from an MD@H node is reported", "[api_client][report]") {
     FakeClock clock; // declared first: the transport's hook borrows it
     FakeTransport transport;
-    md::ApiClient client{transport, clock, reporting_config(), {}, nullptr};
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, nullptr);
     const std::string url = node_page_url("p001.png");
     // Each GET takes 42 ms of virtual time; the report POSTs take none.
     transport.set_on_fetch([clk = &clock](const md::HttpRequest& request) {
@@ -795,11 +953,17 @@ TEST_CASE("ApiClient: every image attempt from an MD@H node is reported", "[api_
         return md::at_home_report_json(md::AtHomeReport{
             .url = url, .success = success, .cached = cached, .bytes = bytes, .duration_ms = 42});
     };
+    // Waits for `n` answered report POSTs, then joins the reporter by destroying the client.
+    const auto settle = [&transport, &client](std::size_t n) {
+        CHECK(transport.wait_for_answered(md::HttpMethod::post, n, wait_limit));
+        client.reset();
+        return posts(transport);
+    };
 
     SECTION("success, cached") {
         transport.push(url, md::HttpResponse{.status = 200, .body = "12345", .x_cache = "HIT"});
-        REQUIRE(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png", {}));
-        const std::vector<RecordedRequest> sent = posts(transport);
+        REQUIRE(fetch_node_page(*client, "p001.png"));
+        const std::vector<RecordedRequest> sent = settle(1);
         REQUIRE(sent.size() == 1);
         CHECK(sent[0].url == report_url);
         CHECK(sent[0].content_type == "application/json");
@@ -807,25 +971,23 @@ TEST_CASE("ApiClient: every image attempt from an MD@H node is reported", "[api_
     }
     SECTION("a 404 reports a failure with zero bytes") {
         transport.push(url, md::HttpResponse{.status = 404, .body = "nope", .x_cache = "HIT"});
-        CHECK(error_code(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png",
-                                           {})) == md::Errc::network);
-        const std::vector<RecordedRequest> sent = posts(transport);
+        CHECK(error_code(fetch_node_page(*client, "p001.png")) == md::Errc::network);
+        const std::vector<RecordedRequest> sent = settle(1);
         REQUIRE(sent.size() == 1);
         CHECK(sent[0].body == report_body(false, false, 0));
     }
     SECTION("a transport error reports a failure with zero bytes") {
         transport.push_error(url, md::TransportErrc::tls, "certificate verify failed");
-        CHECK(error_code(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png",
-                                           {})) == md::Errc::network);
-        const std::vector<RecordedRequest> sent = posts(transport);
+        CHECK(error_code(fetch_node_page(*client, "p001.png")) == md::Errc::network);
+        const std::vector<RecordedRequest> sent = settle(1);
         REQUIRE(sent.size() == 1);
         CHECK(sent[0].body == report_body(false, false, 0));
     }
-    SECTION("a retried attempt is reported each time") {
+    SECTION("a retried attempt is reported each time, in order") {
         transport.push_status(url, 503);
         transport.push(url, md::HttpResponse{.status = 200, .body = "123", .x_cache = "MISS"});
-        REQUIRE(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png", {}));
-        const std::vector<RecordedRequest> sent = posts(transport);
+        REQUIRE(fetch_node_page(*client, "p001.png"));
+        const std::vector<RecordedRequest> sent = settle(2);
         REQUIRE(sent.size() == 2);
         CHECK(sent[0].body == report_body(false, false, 0));
         CHECK(sent[1].body == report_body(true, false, 3));
@@ -833,14 +995,15 @@ TEST_CASE("ApiClient: every image attempt from an MD@H node is reported", "[api_
     SECTION("a failing report is never retried and does not fail the page") {
         transport.push_status(url, 200, "ok");
         transport.push_status(std::string{report_url}, 503);
-        REQUIRE(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png", {}));
-        CHECK(posts(transport).size() == 1);
+        REQUIRE(fetch_node_page(*client, "p001.png"));
+        CHECK(settle(1).size() == 1);
         CHECK(clock.sleeps().empty());
     }
     CHECK(transport.drained());
 }
 
-TEST_CASE("ApiClient: report POSTs use a 5 s timeout and the stop token", "[api_client][report]") {
+TEST_CASE("ApiClient: report POSTs use 3 s timeouts and stop with the client",
+          "[api_client][report]") {
     struct Seen {
         std::mutex mutex{};
         std::vector<md::HttpRequest> posts{}; ///< guarded by mutex
@@ -848,7 +1011,8 @@ TEST_CASE("ApiClient: report POSTs use a 5 s timeout and the stop token", "[api_
     Seen seen; // declared first: the transport's hook borrows it
     FakeTransport transport;
     FakeClock clock;
-    md::ApiClient client{transport, clock, reporting_config(), {}, nullptr};
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, nullptr);
     transport.set_on_fetch([out = &seen](const md::HttpRequest& request) {
         if (request.method == md::HttpMethod::post) {
             const std::scoped_lock lock{out->mutex};
@@ -856,15 +1020,23 @@ TEST_CASE("ApiClient: report POSTs use a 5 s timeout and the stop token", "[api_
         }
     });
     transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
-    const std::stop_source source;
+    const std::stop_source page_stop;
 
-    REQUIRE(
-        client.fetch_page(node_server(), md::ImageQuality::data, "p001.png", source.get_token()));
-    REQUIRE(seen.posts.size() == 1);
-    CHECK(seen.posts[0].connect_timeout == std::chrono::seconds{5});
-    CHECK(seen.posts[0].stall_timeout == std::chrono::seconds{5});
-    source.request_stop();
-    CHECK(seen.posts[0].cancel.stop_requested());
+    REQUIRE(fetch_node_page(*client, "p001.png", page_stop.get_token()));
+    REQUIRE(transport.wait_for_answered(md::HttpMethod::post, 1, wait_limit));
+    std::vector<md::HttpRequest> sent;
+    {
+        const std::scoped_lock lock{seen.mutex}; // the hook stored the request before answering
+        sent = seen.posts;
+    }
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].connect_timeout == std::chrono::seconds{3});
+    CHECK(sent[0].stall_timeout == std::chrono::seconds{3});
+    // The POST is cancelled by the client's own stop (its destruction), not by the page's token.
+    static_cast<void>(page_stop.request_stop());
+    CHECK_FALSE(sent[0].cancel.stop_requested());
+    client.reset();
+    CHECK(sent[0].cancel.stop_requested());
 }
 
 TEST_CASE("ApiClient: no report for mangadex.org hosts or without a report URL",
@@ -873,38 +1045,220 @@ TEST_CASE("ApiClient: no report for mangadex.org hosts or without a report URL",
     FakeClock clock;
     transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
     md::AtHomeServer server = node_server();
+    server.base_url = "https://uploads.mangadex.org";
 
     SECTION("mangadex.org host") {
-        md::ApiClient client{transport, clock, reporting_config(), {}, nullptr};
-        server.base_url = "https://uploads.mangadex.org";
-        REQUIRE(client.fetch_page(server, md::ImageQuality::data, "p001.png", {}));
+        std::optional<md::ApiClient> client;
+        client.emplace(transport, clock, reporting_config(), nullptr, nullptr);
+        REQUIRE(client->fetch_page(server, md::ImageQuality::data, "p001.png", {}));
+        // A node page afterwards is a barrier: reports are sent in order, so a report for the
+        // mangadex.org page would have been sent before this one.
+        REQUIRE(fetch_node_page(*client, "p002.png"));
+        REQUIRE(transport.wait_for_answered(md::HttpMethod::post, 1, wait_limit));
+        client.reset();
+        const std::vector<RecordedRequest> sent = posts(transport);
+        REQUIRE(sent.size() == 1);
+        CHECK_THAT(sent[0].body, ContainsSubstring(node_page_url("p002.png")));
+        CHECK(transport.requests().size() == 3);
     }
     SECTION("no report URL") {
-        md::ApiClient client{transport, clock, unlimited_config(), {}, nullptr};
-        REQUIRE(client.fetch_page(server, md::ImageQuality::data, "p001.png", {}));
+        {
+            md::ApiClient client{transport, clock, unlimited_config(), nullptr, nullptr};
+            REQUIRE(client.fetch_page(server, md::ImageQuality::data, "p001.png", {}));
+            REQUIRE(fetch_node_page(client, "p002.png"));
+        }
+        CHECK(transport.requests().size() == 2);
+        CHECK(posts(transport).empty());
     }
-    CHECK(transport.requests().size() == 1);
-    CHECK(posts(transport).empty());
+}
+
+TEST_CASE("ApiClient: a stuck report endpoint never delays page fetches", "[api_client][report]") {
+    ReportGate gate; // declared first: the transport's hook borrows it
+    FakeTransport transport;
+    FakeClock clock;
+    RecordingTrace trace;
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, &trace);
+    // Like the live endpoint: every POST hangs until the transfer is cancelled.
+    transport.set_on_fetch([g = &gate](const md::HttpRequest& request) {
+        if (request.method == md::HttpMethod::post) {
+            g->hold(request.cancel);
+        }
+    });
+    transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
+    std::stop_source page_stop; // ends the work if a page fetch waits for its report
+
+    constexpr int pages = 20;
+    int fetched = 0;
+    CHECK(finishes_in_time(
+        [&client, &fetched, token = page_stop.get_token()] {
+            for (int i = 0; i < pages; ++i) {
+                if (fetch_node_page(*client, "p001.png", token).has_value()) {
+                    ++fetched;
+                }
+            }
+        },
+        [&page_stop] { static_cast<void>(page_stop.request_stop()); }));
+    CHECK(fetched == pages);
+    CHECK(gate.wait_entered(1)); // the reporter is stuck in the first POST
+
+    // Destroying the client cancels the stuck POST and discards the queued reports at once.
+    CHECK(finishes_in_time([&client] { client.reset(); }, [&gate] { gate.open(); }));
+    CHECK(posts(transport).size() == 1);
+    CHECK(transport.count(node_page_url("p001.png")) == static_cast<std::size_t>(pages));
+    CHECK(trace.count_containing("GET ") == static_cast<std::size_t>(pages));
+}
+
+TEST_CASE("ApiClient: a full report queue drops reports instead of blocking",
+          "[api_client][report]") {
+    ReportGate gate; // declared first: the transport's hook borrows it
+    FakeTransport transport;
+    FakeClock clock;
+    RecordingTrace trace;
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, &trace);
+    transport.set_on_fetch([g = &gate](const md::HttpRequest& request) {
+        if (request.method == md::HttpMethod::post) {
+            g->hold(request.cancel);
+        }
+    });
+    transport.set_fallback(md::HttpResponse{.status = 204, .body = {}});
+    std::stop_source page_stop;
+    const auto unblock = [&page_stop, &gate] {
+        static_cast<void>(page_stop.request_stop());
+        gate.open();
+    };
+
+    // The first report is taken off the queue and hangs; then the queue fills up.
+    bool first_ok = false; // Catch2 assertions stay on the test thread
+    CHECK(finishes_in_time(
+        [&client, &first_ok] { first_ok = fetch_node_page(*client, "p001.png").has_value(); },
+        unblock));
+    CHECK(first_ok);
+    REQUIRE(gate.wait_entered(1));
+    constexpr std::size_t extra = 10;
+    std::size_t fetched = 0;
+    CHECK(finishes_in_time(
+        [&client, &fetched, token = page_stop.get_token()] {
+            for (std::size_t i = 0; i < report_queue_capacity + extra; ++i) {
+                if (fetch_node_page(*client, "p002.png", token).has_value()) {
+                    ++fetched;
+                }
+            }
+        },
+        unblock));
+    CHECK(fetched == report_queue_capacity + extra);
+    CHECK(trace.count_containing(report_queue_full) == 1); // traced once, not per drop
+
+    // Once the endpoint answers, exactly the queued reports are sent; the dropped ones never are.
+    gate.open();
+    CHECK(transport.wait_for_answered(md::HttpMethod::post, 1 + report_queue_capacity, wait_limit));
+    client.reset();
+    CHECK(posts(transport).size() == 1 + report_queue_capacity);
+}
+
+TEST_CASE("ApiClient: repeated report failures disable reports for the run",
+          "[api_client][report]") {
+    FakeTransport transport;
+    FakeClock clock;
+    RecordingTrace trace;
+    std::optional<md::ApiClient> client;
+    const std::string page = node_page_url("p001.png");
+
+    SECTION("after three consecutive failures, no more reports are sent") {
+        client.emplace(transport, clock, reporting_config(), nullptr, &trace);
+        // Every report fails like the live endpoint did; every page succeeds.
+        transport.set_fallback(std::unexpected(
+            md::TransportError{.kind = md::TransportErrc::timeout, .message = "too slow"}));
+        constexpr int first = 10;
+        for (int i = 0; i < first; ++i) {
+            transport.push_status(page, 200, "img");
+            REQUIRE(fetch_node_page(*client, "p001.png"));
+        }
+        REQUIRE(trace.wait_for_line_containing(reports_disabled));
+        for (int i = 0; i < 5; ++i) {
+            transport.push_status(page, 200, "img");
+            REQUIRE(fetch_node_page(*client, "p001.png"));
+        }
+        client.reset();
+        CHECK(posts(transport).size() == report_failure_threshold);
+        CHECK(trace.count_containing(reports_disabled) == 1);
+    }
+    SECTION("a success in between resets the count") {
+        client.emplace(transport, clock, reporting_config(), nullptr, &trace);
+        transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
+        transport.push_status(std::string{report_url}, 503);
+        transport.push_error(std::string{report_url}, md::TransportErrc::timeout, "too slow");
+        transport.push_status(std::string{report_url}, 204);
+        transport.push_status(std::string{report_url}, 503);
+        transport.push_status(std::string{report_url}, 500);
+        constexpr std::size_t pages = 6; // the sixth report gets the fallback 200
+        for (std::size_t i = 0; i < pages; ++i) {
+            REQUIRE(fetch_node_page(*client, "p001.png"));
+        }
+        CHECK(transport.wait_for_answered(md::HttpMethod::post, pages, wait_limit));
+        client.reset();
+        CHECK(posts(transport).size() == pages);
+        CHECK(trace.count_containing(reports_disabled) == 0);
+    }
+    CHECK(transport.drained());
+}
+
+TEST_CASE("ApiClient: the reporter thread starts with SIGINT SIGTERM and SIGPIPE blocked",
+          "[api_client][report]") {
+    REQUIRE_FALSE(async_signals_blocked()); // otherwise inheritance alone would pass the test
+    std::atomic<int> masked_posts{0};       // declared first: the transport's hook borrows it
+    FakeTransport transport;
+    FakeClock clock;
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, nullptr);
+    transport.set_on_fetch([masked = &masked_posts](const md::HttpRequest& request) {
+        if (request.method == md::HttpMethod::post && async_signals_blocked()) {
+            masked->fetch_add(1);
+        }
+    });
+    transport.set_fallback(md::HttpResponse{.status = 200, .body = "img"});
+    const std::array<int, 64> before = signal_mask_snapshot();
+
+    REQUIRE(fetch_node_page(*client, "p001.png")); // starts the reporter thread
+    CHECK(signal_mask_snapshot() == before);       // the caller's mask is restored exactly
+    REQUIRE(fetch_node_page(*client, "p002.png"));
+    REQUIRE(transport.wait_for_answered(md::HttpMethod::post, 2, wait_limit));
+    client.reset();
+    CHECK(masked_posts.load() == 2);
+    CHECK(signal_mask_snapshot() == before);
 }
 
 // ---- tracing ------------------------------------------------------------------------------------
 
 TEST_CASE("ApiClient: every request is traced", "[api_client][trace]") {
+    RecordingTrace trace; // declared first: the clock's hook borrows it
     FakeTransport transport;
     FakeClock clock;
-    RecordingTrace trace;
-    md::ApiClient client{transport, clock, reporting_config(), {}, &trace};
+    std::optional<md::ApiClient> client;
+    client.emplace(transport, clock, reporting_config(), nullptr, &trace);
     const std::string url = node_page_url("p001.png");
     transport.push_error(url, md::TransportErrc::timeout, "stalled for 30 s");
     transport.push_status(url, 200, "img");
     transport.set_fallback(md::HttpResponse{.status = 204});
+    // The retry backoff advances the virtual clock. Hold it until the first report's POST line
+    // is traced (its elapsed time is measured before the line), so that POST reads 0 ms.
+    clock.set_on_sleep([sink = &trace] { static_cast<void>(sink->wait_for_lines(2)); });
 
-    REQUIRE(client.fetch_page(node_server(), md::ImageQuality::data, "p001.png", {}));
-    CHECK(trace.lines() ==
+    REQUIRE(fetch_node_page(*client, "p001.png"));
+    REQUIRE(trace.wait_for_lines(4));
+    client.reset();
+    // The GETs are traced in order on the calling thread; the report POSTs on the reporter.
+    std::vector<std::string> gets;
+    std::vector<std::string> report_lines;
+    for (std::string& line : trace.lines()) {
+        (line.starts_with("POST ") ? report_lines : gets).push_back(std::move(line));
+    }
+    CHECK(gets ==
           std::vector<std::string>{std::format("GET {} -> error: stalled for 30 s (0 ms)", url),
-                                   std::format("POST {} -> 204 (0 ms)", report_url),
-                                   std::format("GET {} -> 200 (0 ms)", url),
-                                   std::format("POST {} -> 204 (0 ms)", report_url)});
+                                   std::format("GET {} -> 200 (0 ms)", url)});
+    CHECK(report_lines ==
+          std::vector<std::string>(2, std::format("POST {} -> 204 (0 ms)", report_url)));
 }
 
 // ---- concurrency --------------------------------------------------------------------------------
@@ -1053,9 +1407,11 @@ TEST_CASE("ApiClient: concurrent retries, reports, jitter and tracing", "[api_cl
     for (std::size_t t = 0; t < threads; ++t) {
         CHECK(results[t] == files[t]);
     }
+    // The reporter thread sends the POSTs: wait for all of their trace lines.
+    CHECK(trace.wait_for_lines(4 * threads)); // 2 GETs and 2 POSTs each
     CHECK(transport.drained());
     CHECK(posts(transport).size() == 2 * threads);
-    CHECK(trace.lines().size() == 4 * threads); // 2 GETs and 2 POSTs each
+    CHECK(trace.lines().size() == 4 * threads);
     CHECK(jitter.args.size() == threads);
 }
 
