@@ -5,14 +5,16 @@
 # in this env, so "sanitizer-clean" is NOT licensed (memory-safety and platform-testing skills).
 # Label: sanitizer-control. Names: sanitizer-control.<n>.
 #
-# These binaries are never linted for the bug they contain on purpose; each carries a NOLINT with a reason.
+# These binaries are not linted for the bug they contain on purpose: the directory's .clang-tidy replaces
+# the parent configs with a single harmless check.
 
 set(_mangadex_dl_ctl_driver "${CMAKE_CURRENT_SOURCE_DIR}/run_control.cmake")
 
 # _mangadex_dl_add_control(<name> <source> MARKER <regex> [EXIT <n>] [LINK_CATCH2] [DEFAULTS_ONLY] [O0])
 #   EXIT          exact exit code to require (default: any nonzero)
 #   DEFAULTS_ONLY run with *SAN_OPTIONS unset, proving the compiled-in defaults (sanitizer_options.cpp)
-#   O0            build at -O0 (stack residue at -O1 can hide a leak)
+#   O0            build at -O0 (stack residue at -O1 can hide a leak; -O0 keeps each scoped local in
+#                 its own poisoned stack slot for use-after-scope)
 function(_mangadex_dl_add_control name source)
   cmake_parse_arguments(PARSE_ARGV 2 C "LINK_CATCH2;DEFAULTS_ONLY;O0" "MARKER;EXIT;TARGET" "")
   if(NOT C_TARGET)
@@ -63,6 +65,12 @@ if("address" IN_LIST MANGADEX_DL_SANITIZE)
   # handle_segv=2 keeps ASan's accurate report in charge.
   _mangadex_dl_add_control(catch2-segv "${CMAKE_CURRENT_SOURCE_DIR}/catch2_segv.cpp"
     MARKER "ERROR: AddressSanitizer: SEGV" LINK_CATCH2)
+  # The dangling-view class: a std::string_view outliving its owner. First a destroyed long (heap)
+  # std::string, then a block-scoped stack buffer (-O0, so the buffer keeps its own poisoned slot).
+  _mangadex_dl_add_control(dangling-view-heap "${CMAKE_CURRENT_SOURCE_DIR}/dangling_view_heap.cpp"
+    MARKER "ERROR: AddressSanitizer: heap-use-after-free" EXIT 86)
+  _mangadex_dl_add_control(dangling-view-scope "${CMAKE_CURRENT_SOURCE_DIR}/dangling_view_scope.cpp"
+    MARKER "ERROR: AddressSanitizer: stack-use-after-scope" EXIT 86 O0)
 endif()
 
 if("undefined" IN_LIST MANGADEX_DL_SANITIZE)

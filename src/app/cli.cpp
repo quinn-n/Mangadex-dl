@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "cli.hpp"
 
-#include "cmd_hello.hpp"
+#include "cmd_download.hpp"
+#include "cmd_download_output.hpp"
 #include "command.hpp"
+#include "exit_help.hpp"
 #include "io.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/version.hpp"
@@ -24,7 +26,7 @@ namespace mangadex_dl::app {
 namespace {
 
 constexpr std::string_view app_description{
-    "Downloads volumes and chapters from Mangadex and converts them into .epub or .pdf files."};
+    "Downloads volumes and chapters from MangaDex and converts them into .epub or .pdf files."};
 
 /// Everything the root app binds to. Owned by run() and declared before the CLI::App.
 struct Invocation {
@@ -43,23 +45,73 @@ struct Invocation {
     return ColorMode::automatic; // "auto"; IsMember has already rejected anything else
 }
 
-/// Mirrors exit_codes.hpp so --help (and the help2man page) document the table.
-[[nodiscard]] std::string exit_status_footer() {
-    return std::format("Exit status:\n"
-                       "  {:<3} success\n"
-                       "  {:<3} runtime failure (including a failed write to stdout)\n"
-                       "  {:<3} usage error\n"
-                       "  {:<3} internal error (a bug: please report it)",
-                       exit_code::success, exit_code::failure, exit_code::usage,
-                       exit_code::internal);
+/// "Run 'mangadex-dl --help' ..." or, once a subcommand was reached, "Run 'mangadex-dl download
+/// --help' ...": the one hint line every usage error ends with.
+[[nodiscard]] std::string help_hint(const CLI::App& app) {
+    const std::vector<CLI::App*> reached = app.get_subcommands();
+    if (reached.empty()) {
+        return std::format("Run '{} --help' for more information.\n", tool_name);
+    }
+    return std::format("Run '{} {} --help' for more information.\n", tool_name,
+                       reached.front()->get_name());
+}
+
+/// The text App::exit prints for a parse error (never for --help or --version):
+/// `mangadex-dl: error: <message>` plus the hint line. `app` is the root app (run() calls its
+/// exit()). Without a subcommand, the "subcommand required" error becomes "unknown command 'x'"
+/// or "unknown option '-x'" for the first non-empty leftover, or "missing command". User text
+/// goes through terminal_safe.
+[[nodiscard]] std::string failure_text(const CLI::App* app, const CLI::Error& error) {
+    if (app->get_subcommands().empty()) {
+        const std::string name = error.get_name();
+        if (name == "RequiredError" || name == "ExtrasError") {
+            // The first non-empty leftover decides: an option the root doesn't know, or a word
+            // that isn't a command. Empty words ('') say nothing, so they count as no command.
+            for (const std::string& word : app->remaining()) {
+                if (word.empty()) {
+                    continue;
+                }
+                if (word.starts_with('-')) {
+                    return std::format("{}: error: unknown option '{}'\n{}", tool_name,
+                                       terminal_safe(word), help_hint(*app));
+                }
+                return std::format("{}: error: unknown command '{}' (the only command is "
+                                   "'download')\n{}",
+                                   tool_name, terminal_safe(word), help_hint(*app));
+            }
+            return std::format("{}: error: missing command; try '{} download --help'\n", tool_name,
+                               tool_name);
+        }
+    }
+    std::string_view message{error.what()};
+    const std::string own_prefix = std::format("{}: ", tool_name);
+    if (message.starts_with(own_prefix)) { // CLI11 names the app in some messages (ExtrasError)
+        message.remove_prefix(own_prefix.size());
+    }
+    return std::format("{}: error: {}\n{}", tool_name, terminal_safe(message), help_hint(*app));
+}
+
+/// Help layout: names in a 36-column left column (long names aligned at column 6), descriptions
+/// wrapped at 44, so every line fits 80 columns. Footers are pre-aligned text. The formatter is
+/// held by shared pointer, so a const App still configures it (and subcommands share it).
+void configure_help(const CLI::App& app) {
+    const std::shared_ptr<CLI::FormatterBase> formatter = app.get_formatter();
+    formatter->column_width(36);
+    formatter->long_option_alignment_ratio(0.17F);
+    formatter->right_column_width(44);
+    formatter->enable_footer_formatting(false); // keep the tables' alignment
 }
 
 void add_global_options(CLI::App& app, Invocation& inv) {
     app.add_flag("--json", inv.globals.json, "Write machine-readable JSON to stdout");
     app.add_flag("-q,--quiet", inv.globals.quiet, "Only print errors");
-    app.add_flag("-v,--verbose", inv.globals.verbose, "Print more detail to stderr (repeatable)");
-    app.add_option("--color", inv.color_word, "Colorize output: auto, always or never")
-        ->check(CLI::IsMember({"auto", "always", "never"}))
+    // option_text only replaces the help column's " [0]" (the counter's default_str, which CLI11
+    // needs for parsing); it changes nothing else.
+    app.add_flag("-v,--verbose", inv.globals.verbose, "Print more detail to stderr (repeatable)")
+        ->option_text(" ");
+    app.add_option("--color", inv.color_word, "Color stderr: auto, always or never")
+        ->type_name("WORD")
+        ->check(CLI::IsMember({"auto", "always", "never"}).description(""))
         ->capture_default_str();
 }
 
@@ -74,13 +126,16 @@ int run(std::span<const char* const> args, Io& io) {
     CLI::App app{std::string{app_description}, std::string{tool_name}};
     app.fallthrough(); // before any add_subcommand: subcommands copy it when they are created
     app.require_subcommand(1);
-    app.set_version_flag("--version", std::string{version_line()}); // no -v: that is --verbose
+    // Before any add_subcommand: subcommands copy the formatter and the failure message.
+    configure_help(app);
+    app.failure_message(failure_text);
+    app.set_version_flag("--version", std::string{version_line()},
+                         "Print the version and exit"); // no -v: that is --verbose
     app.footer(exit_status_footer());
-    app.get_formatter()->enable_footer_formatting(false); // keep the table's alignment
     add_global_options(app, inv);
 
     // Registration list, one line per subcommand (a serialization point: one track at a time).
-    commands.push_back(register_hello(app, inv.selected));
+    commands.push_back(register_download(app, inv.selected));
 
     // argc may be 0 (execve with an empty argv). Never index argv[0] unchecked; give CLI11 a name.
     const std::string argv0{tool_name};
@@ -88,7 +143,7 @@ int run(std::span<const char* const> args, Io& io) {
     const std::span<const char* const> argv =
         args.empty() ? std::span<const char* const>{fallback} : args;
     if (!std::in_range<int>(argv.size())) {
-        std::print(io.err, "{}: too many arguments\n", tool_name);
+        std::print(io.err, "{}: error: too many arguments\n", tool_name);
         return exit_code::usage;
     }
 
@@ -103,7 +158,8 @@ int run(std::span<const char* const> args, Io& io) {
 
     inv.globals.color = to_color_mode(inv.color_word);
     if (inv.selected == nullptr) { // require_subcommand(1) makes this a bug, not a usage error
-        std::print(io.err, "{}: no command was selected\n", tool_name);
+        std::print(io.err, "{}: error: no command was selected (a bug: please report it)\n",
+                   tool_name);
         return exit_code::internal;
     }
     return inv.selected->run(io, inv.globals);

@@ -19,6 +19,8 @@ set_property(CACHE MANGADEX_DL_SANITIZE PROPERTY STRINGS "" "address;undefined" 
 option(MANGADEX_DL_HARDENING "Release hardening flags (OpenSSF set, probed per compiler)" OFF)
 option(MANGADEX_DL_HARDENING_EXTRA "Opt-in -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing" OFF)
 option(MANGADEX_DL_WARNINGS_AS_ERRORS "Per-target COMPILE_WARNING_AS_ERROR (presets/CI: ON; packagers: OFF)" OFF)
+# The release binary currently needs exactly GLIBC_2.28 (renameat2, used for no-clobber publish),
+# so there is no headroom: any newer glibc symbol fails release-check.binary.
 set(MANGADEX_DL_GLIBC_FLOOR "2.28" CACHE STRING "Highest GLIBC_x.y symbol version the release binary may require")
 option(MANGADEX_DL_LIFETIME_SAFETY "Clang -Wlifetime-safety-permissive (advisory, probed)" OFF)
 option(MANGADEX_DL_FUZZ "Build libFuzzer targets + corpus-replay tests (clang only)" OFF)
@@ -57,6 +59,22 @@ find_package(nlohmann_json CONFIG REQUIRED)
 # 2.28 floor) provides only in libpthread. The tool is also threaded by design.
 find_package(Threads REQUIRED)
 
+# libcurl: HEADERS ONLY, never linked. The core dlopen()s libcurl.so.4 (then
+# libcurl-gnutls.so.4) at runtime and binds the few entry points it needs with dlsym, so the
+# release binary keeps NEEDED within glibc (no static libcurl: there is no static OpenSSL/zlib
+# to go with it) and works against whatever libcurl the host ships.
+# Documented exception to find_package(<Pkg> CONFIG REQUIRED): conda-forge ships no
+# CURLConfig.cmake, and FindCURL's CURL::libcurl would link the library, which is exactly what
+# we avoid. find_path stays manager-agnostic: any system with curl/curl.h installed works.
+# An IMPORTED target's include directories are consumed as SYSTEM (-isystem).
+find_path(MANGADEX_DL_CURL_INCLUDE_DIR NAMES curl/curl.h REQUIRED
+  DOC "Directory containing curl/curl.h (headers only; libcurl is dlopen()ed at runtime)")
+add_library(mangadex_dl_curl_headers INTERFACE IMPORTED)
+set_target_properties(mangadex_dl_curl_headers PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${MANGADEX_DL_CURL_INCLUDE_DIR}")
+# dlopen/dlsym live in libdl below glibc 2.34 (the 2.28 floor); CMAKE_DL_LIBS is "dl" there.
+message(STATUS "mangadex-dl: curl headers: ${MANGADEX_DL_CURL_INCLUDE_DIR}; CMAKE_DL_LIBS: ${CMAKE_DL_LIBS}")
+
 include("${PROJECT_SOURCE_DIR}/cmake/ProjectWarnings.cmake")
 
 # ---- version: project(VERSION) -> one generated TU (a bump recompiles one file) ------
@@ -76,6 +94,13 @@ target_include_directories(mangadex_dl_core
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src/core")
 target_link_libraries(mangadex_dl_core PUBLIC nlohmann_json::nlohmann_json)
+# curl headers + libdl stay PRIVATE (the transport is an implementation detail of core; no
+# curl type appears in include/mangadex_dl/). Threads is PUBLIC: the core's fetch pool and
+# interrupt handling use std::thread / pthread_sigmask, so every consumer links pthread.
+# A STATIC library still forwards its PRIVATE link items (libdl) to the final link.
+target_link_libraries(mangadex_dl_core
+  PRIVATE mangadex_dl_curl_headers ${CMAKE_DL_LIBS}
+  PUBLIC Threads::Threads)
 mangadex_dl_apply_warnings(mangadex_dl_core)
 
 # ---- the executable: a thin CLI layer over the core ----------------------------------

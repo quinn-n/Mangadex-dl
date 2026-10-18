@@ -17,12 +17,19 @@
 #   scripts/bless.sh sets, and only after every other assertion passed.
 # - CLI_E2E_TOOL (env) overrides the binary under test (a release install, an extracted package, /usr/bin).
 # - TTY cases run under util-linux `script`. Without it the case exits 77, which CTest reports as skipped.
+# - The tool's working directory is the case's {{WORK}} dir (created first), for every mode: plain,
+#   STDOUT_FILE, the PIPE_HEAD pipeline (both commands) and the TTY `script` wrapper.
+# - File assertions (EXPECT_FILES / EXPECT_ABSENT / EXPECT_NO_GLOB / EXPECT_EPUB) are relative to
+#   {{WORK}} and run right after the tool exits, before the driver writes any file of its own there.
+#   EXPECT_EPUB is byte-level here; extraction runs in a child `cmake -P epub_extract_check.cmake`,
+#   because file(ARCHIVE_EXTRACT) on a corrupt archive is a fatal error that would abort this script.
 
 cmake_minimum_required(VERSION 3.31...4.4)
 
 if(NOT DEFINED CASE_SPEC OR NOT EXISTS "${CASE_SPEC}")
   message(FATAL_ERROR "run_case.cmake: pass -DCASE_SPEC=<generated spec file> (got '${CASE_SPEC}')")
 endif()
+set(_driver_dir "${CMAKE_CURRENT_LIST_DIR}")   # before include(): the spec file must not change it
 include("${CASE_SPEC}")
 
 set(_marker_re "ERROR: (Address|Leak|Memory)Sanitizer|WARNING: ThreadSanitizer|runtime error:|AddressSanitizer:DEADLYSIGNAL")
@@ -46,6 +53,7 @@ endif()
 function(_expand out value)
   string(REPLACE "{{INPUTS}}" "${CASE_INPUTS_DIR}" value "${value}")
   string(REPLACE "{{WORK}}" "${CASE_WORK_DIR}" value "${value}")
+  string(REPLACE "{{FIXTURES}}" "${CASE_FIXTURES_DIR}" value "${value}")
   string(REPLACE "{{INVALID_UTF8}}" "${_invalid_utf8}" value "${value}")
   set(${out} "${value}" PARENT_SCOPE)
 endfunction()
@@ -127,6 +135,8 @@ set(_out "")
 set(_err "")
 set(_rc "")
 set(_head_rc "0")
+# The tool runs in {{WORK}}; make sure it exists right before every WORKING_DIRECTORY use below.
+file(MAKE_DIRECTORY "${CASE_WORK_DIR}")
 if(CASE_TTY)
   find_program(_script NAMES script)
   set(_script_ok FALSE)
@@ -147,6 +157,7 @@ if(CASE_TTY)
     string(APPEND _line " '${_q}'")
   endforeach()
   execute_process(COMMAND "${_script}" -qec "${_line}" /dev/null
+                  WORKING_DIRECTORY "${CASE_WORK_DIR}"
                   INPUT_FILE /dev/null
                   OUTPUT_VARIABLE _out ERROR_VARIABLE _script_err RESULT_VARIABLE _rc
                   TIMEOUT ${CASE_TIMEOUT})
@@ -157,6 +168,7 @@ if(CASE_TTY)
 elseif(DEFINED CASE_PIPE_HEAD)
   execute_process(COMMAND ${_cmd}
                   COMMAND head -n "${CASE_PIPE_HEAD}"
+                  WORKING_DIRECTORY "${CASE_WORK_DIR}"
                   ${_input_args}
                   OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULTS_VARIABLE _results
                   TIMEOUT ${CASE_TIMEOUT})
@@ -164,10 +176,12 @@ elseif(DEFINED CASE_PIPE_HEAD)
   list(GET _results 1 _head_rc)
 elseif(DEFINED CASE_STDOUT_FILE)
   execute_process(COMMAND ${_cmd} ${_input_args}
+                  WORKING_DIRECTORY "${CASE_WORK_DIR}"
                   OUTPUT_FILE "${CASE_STDOUT_FILE}" ERROR_VARIABLE _err RESULT_VARIABLE _rc
                   TIMEOUT ${CASE_TIMEOUT})
 else()
   execute_process(COMMAND ${_cmd} ${_input_args}
+                  WORKING_DIRECTORY "${CASE_WORK_DIR}"
                   OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc
                   TIMEOUT ${CASE_TIMEOUT})
 endif()
@@ -194,6 +208,103 @@ function(_explain_exit out code)
   set(${out} "${_why}" PARENT_SCOPE)
 endfunction()
 
+# ---- 3a. files under {{WORK}} (first: nothing below has written into {{WORK}} yet) -------------------
+foreach(_rel IN LISTS CASE_EXPECT_FILES)
+  set(_p "${CASE_WORK_DIR}/${_rel}")
+  if(IS_SYMLINK "${_p}" OR NOT EXISTS "${_p}" OR IS_DIRECTORY "${_p}")
+    _fail_with("EXPECT_FILES: '${_rel}' is not a regular file under {{WORK}}")
+  else()
+    file(SIZE "${_p}" _size)
+    if(_size EQUAL 0)
+      _fail_with("EXPECT_FILES: '${_rel}' is empty")
+    endif()
+  endif()
+endforeach()
+foreach(_rel IN LISTS CASE_EXPECT_ABSENT)
+  set(_p "${CASE_WORK_DIR}/${_rel}")
+  if(EXISTS "${_p}" OR IS_SYMLINK "${_p}")
+    _fail_with("EXPECT_ABSENT: '${_rel}' exists under {{WORK}}")
+  endif()
+endforeach()
+if(CASE_EXPECT_NO_GLOB AND CASE_WORK_DIR MATCHES "[][*?]")
+  _fail_with("EXPECT_NO_GLOB: the work dir '${CASE_WORK_DIR}' contains glob metacharacters")
+else()
+  foreach(_glob IN LISTS CASE_EXPECT_NO_GLOB)
+    file(GLOB _matches LIST_DIRECTORIES false RELATIVE "${CASE_WORK_DIR}" "${CASE_WORK_DIR}/${_glob}")
+    if(_matches)
+      list(JOIN _matches ", " _shown_matches)
+      _fail_with("EXPECT_NO_GLOB: '${_glob}' matches: ${_shown_matches}")
+    endif()
+  endforeach()
+endif()
+
+# EXPECT_EPUB: byte-level OCF checks, then extraction in a child process.
+string(HEX "application/epub+zip" _mimetype_hex)
+set(_epub_index 0)
+foreach(_rel IN LISTS CASE_EXPECT_EPUB)
+  set(_p "${CASE_WORK_DIR}/${_rel}")
+  set(_n ${_epub_index})
+  math(EXPR _epub_index "${_epub_index} + 1")
+  if(IS_SYMLINK "${_p}" OR NOT EXISTS "${_p}" OR IS_DIRECTORY "${_p}")
+    _fail_with("EXPECT_EPUB: '${_rel}' is not a regular file under {{WORK}}")
+    continue()
+  endif()
+  file(SIZE "${_p}" _size)
+  if(_size LESS 60)
+    _fail_with("EXPECT_EPUB: '${_rel}' is ${_size} bytes (an EPUB container is at least 60)")
+    continue()
+  endif()
+  file(READ "${_p}" _head OFFSET 0 LIMIT 58 HEX)
+  string(TOLOWER "${_head}" _head)
+  set(_bad "")
+  # Each item is <hex offset> | <expected hex> | <what>. `_head` is the first 58 bytes as hex, so a
+  # hex offset is 2 x the byte offset. ZIP local file header (APPNOTE 4.3.7), all little-endian:
+  #   byte  0 (hex  0) signature 0x04034b50       byte 14 (hex 28) CRC-32 (not checked)
+  #   byte  4 (hex  8) version needed (n/c)       byte 18 (hex 36) compressed size, 4 bytes = 20
+  #   byte  6 (hex 12) general flags (n/c)        byte 22 (hex 44) uncompressed size, 4 bytes = 20
+  #   byte  8 (hex 16) compression method = 0     byte 26 (hex 52) file name length, 2 bytes = 8
+  #   byte 10 (hex 20) DOS time (n/c)             byte 28 (hex 56) extra field length, 2 bytes = 0
+  #   byte 12 (hex 24) DOS date (n/c)
+  #   byte 30 (hex 60) file name "mimetype" (8)   byte 38 (hex 76) data "application/epub+zip" (20)
+  foreach(_check IN ITEMS "0|504b0304|local file header signature"
+                          "16|0000|compression method 0 (STORED)"
+                          "36|14000000|compressed size 20"
+                          "44|14000000|uncompressed size 20"
+                          "52|0800|file name length 8"
+                          "56|0000|extra field length 0"
+                          "60|6d696d6574797065|first entry name 'mimetype'"
+                          "76|${_mimetype_hex}|content 'application/epub+zip'")
+    string(REPLACE "|" ";" _check "${_check}")
+    list(GET _check 0 _at)
+    list(GET _check 1 _want)
+    list(GET _check 2 _what)
+    string(LENGTH "${_want}" _len)
+    string(SUBSTRING "${_head}" ${_at} ${_len} _got)
+    if(NOT _got STREQUAL _want)
+      string(APPEND _bad " ${_what} (want ${_want}, got ${_got})")
+    endif()
+  endforeach()
+  math(EXPR _eocd_at "${_size} - 22")
+  file(READ "${_p}" _eocd OFFSET ${_eocd_at} LIMIT 4 HEX)
+  string(TOLOWER "${_eocd}" _eocd)
+  if(NOT _eocd STREQUAL "504b0506")
+    string(APPEND _bad " end-of-central-directory record in the last 22 bytes (got ${_eocd})")
+  endif()
+  if(NOT _bad STREQUAL "")
+    _fail_with("EXPECT_EPUB: '${_rel}':${_bad}")
+    continue()
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" "-DARCHIVE=${_p}" "-DDEST=${CASE_WORK_DIR}/epub-check/${_n}"
+                          -P "${_driver_dir}/epub_extract_check.cmake"
+                  OUTPUT_VARIABLE _x_out ERROR_VARIABLE _x_err RESULT_VARIABLE _x_rc
+                  TIMEOUT ${CASE_TIMEOUT})
+  if(NOT (_x_rc MATCHES "^[0-9]+$" AND _x_rc EQUAL 0))
+    string(STRIP "${_x_out}${_x_err}" _x_msg)
+    _fail_with("EXPECT_EPUB: '${_rel}' failed extraction (${_x_rc}): ${_x_msg}")
+  endif()
+endforeach()
+
+# ---- 3b. exit code and streams -------------------------------------------------------------------
 if(DEFINED CASE_PIPE_HEAD)
   if(NOT "${_rc}" STREQUAL "${CASE_EXPECT_PIPE_RESULT}")
     _explain_exit(_why "${_rc}")
@@ -300,6 +411,7 @@ if(CASE_GOLDEN)
   set(_norm_err "${_err}")
   foreach(_v IN ITEMS _norm_out _norm_err)
     string(REPLACE "${CASE_WORK_DIR}" "{{WORK}}" ${_v} "${${_v}}")
+    string(REPLACE "${CASE_FIXTURES_DIR}" "{{FIXTURES}}" ${_v} "${${_v}}")
     string(REPLACE "${CASE_INPUTS_DIR}" "{{INPUTS}}" ${_v} "${${_v}}")
     string(REPLACE "${_tool}" "{{TOOL}}" ${_v} "${${_v}}")
   endforeach()

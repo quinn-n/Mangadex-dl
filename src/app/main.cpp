@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The firewall. main() holds no logic: it restores SIGPIPE, runs the CLI, turns any escaped
-// exception into an exit code, and flushes and checks stdout. It returns; it never calls std::exit.
+// exception into an exit code, flushes and checks stdout, and re-raises a pending SIGINT/SIGTERM.
+// It returns; it never calls std::exit.
 // Keep this file to main() alone: tests compile every other src/app/ file into the CLI test binary.
 #include "cli.hpp"
 #include "io.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/exit_codes.hpp"
+#include "mangadex_dl/interrupt.hpp"
 
 #include <cstddef>
 #include <exception>
@@ -37,5 +39,11 @@ int main(int argc, char** argv) {
         mangadex_dl::app::last_resort("unknown exception");
         rc = mangadex_dl::exit_code::internal;
     }
-    return mangadex_dl::app::finish_stdout(rc);
+    rc = mangadex_dl::app::finish_stdout(rc);
+    // Signal deaths only: if SIGINT/SIGTERM arrived during the run, the command has already unwound
+    // (its RAII cleanup ran, its handlers are restored) and stdout is flushed, so die by that
+    // signal now and let the shell see 130/143. 128+n is never returned by hand. No-op when none
+    // pending.
+    mangadex_dl::reraise_pending_interrupt();
+    return rc;
 }

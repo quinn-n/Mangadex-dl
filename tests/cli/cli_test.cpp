@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <format>
 #include <string>
 
 using mangadex_dl::test::run_cli;
@@ -30,5 +31,50 @@ TEST_CASE("an unknown option is a usage error: exit 2, nothing on stdout", "[cli
     const auto r = run_cli({"--definitely-not-an-option"});
     CHECK(r.exit_code == 2); // never a raw CLI11 code (100-114)
     CHECK(r.out.empty());
-    CHECK_FALSE(r.err.empty());
+    CHECK(r.err == "mangadex-dl: error: unknown option '--definitely-not-an-option'\n"
+                   "Run 'mangadex-dl --help' for more information.\n");
+}
+
+TEST_CASE("the root help lists the download subcommand and no scaffold example", "[cli][help]") {
+    const auto r = run_cli({"--help"});
+    CHECK(r.exit_code == 0);
+    CHECK(r.out.contains("SUBCOMMANDS:"));
+    CHECK(r.out.contains("\n  download "));
+    CHECK(!r.out.contains("hello"));
+    CHECK(r.err.empty());
+}
+
+TEST_CASE("the root help footer documents every exit code, 3-6 included", "[cli][help]") {
+    const auto r = run_cli({"--help"});
+    REQUIRE(r.exit_code == 0);
+    CHECK(r.out.contains("Exit status:\n"));
+    // One row per code, in exit_codes.hpp order: "  <code padded to 3> <meaning>".
+    for (const int code : {0, 1, 2, 3, 4, 5, 6, 70}) {
+        INFO("exit code " << code);
+        CHECK(r.out.contains(std::format("\n  {:<3} ", code)));
+    }
+    CHECK(r.out.contains("network"));
+    CHECK(r.out.contains("not found"));
+    CHECK(r.out.contains("no downloadable chapters"));
+    CHECK(r.out.contains("incomplete"));
+    CHECK(r.err.empty());
+}
+
+TEST_CASE("download --help exits 0 and documents the public options only",
+          "[cli][help][download]") {
+    const auto r = run_cli({"download", "--help"});
+    CHECK(r.exit_code == 0);
+    CHECK(r.out.contains("--no-report"));
+    CHECK(r.out.contains("--dry-run"));
+    CHECK(!r.out.contains("--api-base")); // hidden: a test and loopback seam, not a user option
+    CHECK(r.err.empty());
+}
+
+TEST_CASE("an unknown subcommand is a usage error: exit 2, nothing on stdout", "[cli][usage]") {
+    const auto r = run_cli({"hello"});
+    CHECK(r.exit_code == 2);
+    CHECK(r.out.empty());
+    CHECK(r.err == "mangadex-dl: error: unknown command 'hello' (the only command is "
+                   "'download')\n"
+                   "Run 'mangadex-dl --help' for more information.\n");
 }

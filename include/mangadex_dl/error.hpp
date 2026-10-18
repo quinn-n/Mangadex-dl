@@ -14,9 +14,14 @@ namespace mangadex_dl {
 
 /// Error categories. Each maps to exactly one exit code (see exit_code_for).
 enum class Errc {
-    failure, ///< expected runtime failure (missing file, permission, malformed data)
-    usage,   ///< the invocation is invalid in a way the parser cannot see
-    io,      ///< a read or write on a file or stream failed
+    failure,     ///< expected runtime failure (missing file, permission, malformed data)
+    usage,       ///< the invocation is invalid in a way the parser cannot see
+    io,          ///< a read or write on a file or stream failed
+    network,     ///< the network or the API failed (connect, TLS, timeout, retries, bad response)
+    not_found,   ///< the requested title does not exist
+    no_chapters, ///< nothing downloadable matched the language and selection
+    incomplete,  ///< at least one output file failed while others may have been written
+    interrupted, ///< SIGINT/SIGTERM arrived; the run unwound and cleaned up its temporaries
 };
 
 [[nodiscard]] constexpr int exit_code_for(Errc code) noexcept {
@@ -25,6 +30,18 @@ enum class Errc {
         return exit_code::usage;
     case Errc::failure:
     case Errc::io:
+        return exit_code::failure;
+    case Errc::network:
+        return exit_code::network;
+    case Errc::not_found:
+        return exit_code::not_found;
+    case Errc::no_chapters:
+        return exit_code::no_chapters;
+    case Errc::incomplete:
+        return exit_code::incomplete;
+    case Errc::interrupted:
+        // Only a fallback: main() re-raises the pending signal after finish_stdout(), so the shell
+        // sees the signal death (130/143). The code is returned only if re-raising is impossible.
         return exit_code::failure;
     }
     return exit_code::internal; // only reachable through an out-of-range enum value

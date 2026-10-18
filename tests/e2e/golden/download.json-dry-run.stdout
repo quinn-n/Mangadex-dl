@@ -1,0 +1,86 @@
+{
+  "format_version": 1,
+  "dry_run": true,
+  "layout": "volumes",
+  "manga": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "title": "Clean Title",
+    "url": "https://mangadex.org/title/11111111-1111-4111-8111-111111111111",
+    "language": "en",
+    "direction": "rtl"
+  },
+  "epubs": [
+    {
+      "path": "out/Clean Title - Vol. 01.epub",
+      "kind": "volume",
+      "volume": "1",
+      "chapter": null,
+      "status": "planned",
+      "replaced": false,
+      "pages": 5,
+      "bytes": 0,
+      "error": null,
+      "chapters": [
+        {
+          "id": "11111111-0001-4000-8000-000000000001",
+          "volume": "1",
+          "chapter": "1",
+          "title": "Beginnings",
+          "groups": [
+            {
+              "id": "11111111-0002-4000-8000-000000000001",
+              "name": "Clean Scans"
+            }
+          ],
+          "pages": 3
+        },
+        {
+          "id": "11111111-0001-4000-8000-000000000002",
+          "volume": "1",
+          "chapter": "2",
+          "title": "Middles",
+          "groups": [
+            {
+              "id": "11111111-0002-4000-8000-000000000001",
+              "name": "Clean Scans"
+            }
+          ],
+          "pages": 2
+        }
+      ]
+    },
+    {
+      "path": "out/Clean Title - Vol. 02.epub",
+      "kind": "volume",
+      "volume": "2",
+      "chapter": null,
+      "status": "planned",
+      "replaced": false,
+      "pages": 2,
+      "bytes": 0,
+      "error": null,
+      "chapters": [
+        {
+          "id": "11111111-0001-4000-8000-000000000003",
+          "volume": "2",
+          "chapter": "3",
+          "title": "Endings",
+          "groups": [
+            {
+              "id": "11111111-0002-4000-8000-000000000001",
+              "name": "Clean Scans"
+            }
+          ],
+          "pages": 2
+        }
+      ]
+    }
+  ],
+  "skipped_chapters": [],
+  "summary": {
+    "planned": 2,
+    "written": 0,
+    "exists": 0,
+    "failed": 0
+  }
+}

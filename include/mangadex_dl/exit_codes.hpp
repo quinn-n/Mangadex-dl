@@ -16,6 +16,16 @@ inline constexpr int usage = 2;
 
 // 3-63: tool-specific failures. Add them here, documented, before any code returns them.
 
+/// download: the plan could not be built because of the network or the API (connection, TLS,
+/// timeout, 5xx or 429 retries exhausted, a malformed or oversized API response).
+inline constexpr int network = 3;
+/// download: the title id does not exist on MangaDex (the API answered 404).
+inline constexpr int not_found = 4;
+/// download: the title exists, but nothing downloadable matched the language and selection.
+inline constexpr int no_chapters = 5;
+/// download: at least one output file failed; others may have been written.
+inline constexpr int incomplete = 6;
+
 /// An exception reached main(): a bug. Tests assert it never appears.
 inline constexpr int internal = 70;
 /// The ASan/UBSan/LSan exitcode in sanitized dev builds. Never returned by code.
