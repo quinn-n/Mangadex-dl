@@ -41,6 +41,8 @@ Examples:
 Running the same command again skips the files that already exist, so an
 interrupted or incomplete run can simply be restarted.
 
+For many titles at once, see 'mangadex-dl batch --help'.
+
 Exit status:
   0   success
   1   runtime failure (including a failed write to stdout)
@@ -49,4 +51,5 @@ Exit status:
   4   title not found on MangaDex
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
+  7   batch: titles failed in more than one way (see the per-title results)
   70  internal error (a bug: please report it)

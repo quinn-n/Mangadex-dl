@@ -35,21 +35,23 @@ TEST_CASE("an unknown option is a usage error: exit 2, nothing on stdout", "[cli
                    "Run 'mangadex-dl --help' for more information.\n");
 }
 
-TEST_CASE("the root help lists the download subcommand and no scaffold example", "[cli][help]") {
+TEST_CASE("the root help lists the download and batch subcommands and no scaffold example",
+          "[cli][help]") {
     const auto r = run_cli({"--help"});
     CHECK(r.exit_code == 0);
     CHECK(r.out.contains("SUBCOMMANDS:"));
     CHECK(r.out.contains("\n  download "));
+    CHECK(r.out.contains("\n  batch "));
     CHECK(!r.out.contains("hello"));
     CHECK(r.err.empty());
 }
 
-TEST_CASE("the root help footer documents every exit code, 3-6 included", "[cli][help]") {
+TEST_CASE("the root help footer documents every exit code, 3-7 included", "[cli][help]") {
     const auto r = run_cli({"--help"});
     REQUIRE(r.exit_code == 0);
     CHECK(r.out.contains("Exit status:\n"));
     // One row per code, in exit_codes.hpp order: "  <code padded to 3> <meaning>".
-    for (const int code : {0, 1, 2, 3, 4, 5, 6, 70}) {
+    for (const int code : {0, 1, 2, 3, 4, 5, 6, 7, 70}) {
         INFO("exit code " << code);
         CHECK(r.out.contains(std::format("\n  {:<3} ", code)));
     }
@@ -57,6 +59,7 @@ TEST_CASE("the root help footer documents every exit code, 3-6 included", "[cli]
     CHECK(r.out.contains("not found"));
     CHECK(r.out.contains("no downloadable chapters"));
     CHECK(r.out.contains("incomplete"));
+    CHECK(r.out.contains("\n  7   batch: titles failed in more than one way"));
     CHECK(r.err.empty());
 }
 
@@ -74,7 +77,6 @@ TEST_CASE("an unknown subcommand is a usage error: exit 2, nothing on stdout", "
     const auto r = run_cli({"hello"});
     CHECK(r.exit_code == 2);
     CHECK(r.out.empty());
-    CHECK(r.err == "mangadex-dl: error: unknown command 'hello' (the only command is "
-                   "'download')\n"
+    CHECK(r.err == "mangadex-dl: error: unknown command 'hello' (commands: download, batch)\n"
                    "Run 'mangadex-dl --help' for more information.\n");
 }

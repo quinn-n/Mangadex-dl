@@ -28,8 +28,10 @@ struct Captured {
 };
 
 // argv[0] is supplied; pass only the arguments. Arguments are copied, so temporaries are safe here.
+// `stdin_fd` becomes Io::stdin_fd: borrowed (the caller opens and closes it); the default -1 is a
+// closed stdin, so no in-process test ever reads the test runner's own stdin.
 [[nodiscard]] inline Captured run_cli(std::initializer_list<std::string> args, Tty tty = {},
-                                      app::EnvSnapshot env = {}) {
+                                      app::EnvSnapshot env = {}, int stdin_fd = -1) {
     std::vector<std::string> storage{"mangadex-dl"};
     storage.insert(storage.end(), args.begin(), args.end());
     std::vector<const char*> argv;
@@ -45,7 +47,8 @@ struct Captured {
                .stdin_tty = tty.stdin_tty,
                .stdout_tty = tty.stdout_tty,
                .stderr_tty = tty.stderr_tty,
-               .env = env};
+               .env = env,
+               .stdin_fd = stdin_fd};
     Captured result;
     result.exit_code = app::run(std::span<const char* const>{argv}, io);
     result.out = out.str();

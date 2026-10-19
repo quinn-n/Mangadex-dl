@@ -578,14 +578,13 @@ TEST_CASE("a CLI11 parse error shares the 'error:' format and points at download
 TEST_CASE("root usage errors: missing command, unknown command, unknown option, empty word",
           "[cli][usage]") {
     const std::string hint = "Run 'mangadex-dl --help' for more information.\n";
-    const std::string missing = "mangadex-dl: error: missing command; try 'mangadex-dl download "
-                                "--help'\n";
+    const std::string missing = "mangadex-dl: error: missing command; try 'mangadex-dl --help'\n";
     struct Case {
         std::vector<std::string> args{};
         std::string expected{};
     };
     const std::string unknown_pre = "mangadex-dl: error: unknown command '";
-    const std::string unknown_post = "' (the only command is 'download')\n" + hint;
+    const std::string unknown_post = "' (commands: download, batch)\n" + hint;
     const std::string option_pre = "mangadex-dl: error: unknown option '--foo'\n";
     const std::vector<Case> cases{
         {.args = {}, .expected = missing},

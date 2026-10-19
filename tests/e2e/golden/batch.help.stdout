@@ -1,0 +1,71 @@
+Download every title listed in a CSV file
+
+
+mangadex-dl batch [OPTIONS] FILE [DIR]
+
+
+POSITIONALS:
+  FILE REQUIRED                     CSV file listing titles ('-' reads stdin)
+  DIR [.]                           Output directory (created if missing)
+
+OPTIONS:
+  -h, --help                        Print this help message and exit
+      --volumes SPEC [all]          Volumes: all, none or a list like 1,3-5,8-
+      --loose-chapters SPEC [all]   Chapters with no volume (SPEC as --volumes)
+      --layout WORD [volumes]       Split into: volumes, chapters or single file
+  -l, --lang CODE [en]              Language to download (e.g. en, pt-br)
+      --group NAME|UUID             Preferred group; repeat in priority order
+      --data-saver                  Download compressed images (smaller files)
+      --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
+      --overwrite                   Replace files that already exist
+  -n, --dry-run                     List the files to write; download nothing
+  -j, --jobs N [4]                  Parallel image downloads, 1 to 8
+      --no-report                   Skip MangaDex@Home reliability reports
+      --fail-fast                   Stop at the first title that fails
+      --version                     Print the version and exit
+      --json                        Write machine-readable JSON to stdout
+  -q, --quiet                       Only print errors
+  -v, --verbose                     Print more detail to stderr (repeatable)
+      --color WORD [auto]           Color stderr: auto, always or never
+
+CSV file:
+  UTF-8, comma-separated, "double quotes" around fields that contain commas.
+  Blank lines and lines starting with '#' are ignored. Without a header row,
+  each line is one title (UUID or https://mangadex.org/title/<uuid>). With a
+  header row, these columns are recognised (any order; an empty cell means
+  "use the command-line value"):
+    manga            the title, as MANGA in 'download' (required)
+    title            --title for this row
+    dir              subdirectory of DIR for this row
+    volumes, loose-chapters, layout, lang, group, direction
+                     as the options; group lists NAME|NAME in priority order
+    note             ignored
+  For example:
+    manga,title,dir
+    https://mangadex.org/title/<uuid>,,
+    <uuid>,My Title,series/my-title
+
+Examples:
+  Everything in the list, into ~/Manga:
+    mangadex-dl batch titles.csv ~/Manga
+  Show what would be written, without downloading anything:
+    mangadex-dl batch titles.csv ~/Manga --dry-run
+  A list from another command:
+    grep -v '^#done' titles.csv | mangadex-dl batch - ~/Manga
+
+Running the same command again skips the files that already exist, so an
+interrupted or incomplete batch can simply be restarted.
+
+Symlinks inside DIR are followed: don't point DIR at a directory that others
+can write to. Each title costs several API requests: a long list is a long run.
+
+Exit status:
+  0   success
+  1   runtime failure (including a failed write to stdout)
+  2   usage error
+  3   network or API failure (connection, TLS, timeout, server error)
+  4   title not found on MangaDex
+  5   no downloadable chapters matched the language and selection
+  6   incomplete: at least one output file failed
+  7   batch: titles failed in more than one way (see the per-title results)
+  70  internal error (a bug: please report it)
