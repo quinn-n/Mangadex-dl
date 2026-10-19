@@ -239,7 +239,7 @@ Unchanged; there are no new codes.
 - **`plan_error`:** a complete file → `exists`; an incomplete one → `failed`, the old file kept.
 - **Edge suite:**
   - `> /dev/full` during an update → exit 1 + `write error`, and the file is complete.
-  - `| head -1` across two updates → 141, and every `.epub` is a valid zip.
+  - `| head -1` across two updates → exit 0 (plan D7, fact-check V18: two short buffered lines reach the pipe in one write at exit), one line, and every `.epub` a valid zip; SIGPIPE → 141 stays proven by the bulk edge cases.
   - stdin is never read, and there is no ANSI when output is not a TTY.
 - **Hostile archives**, each of which must classify as foreign or fall back, never crash, and stay sanitizer-clean:
   - truncation;
@@ -358,7 +358,7 @@ Unchanged; there are no new codes.
     - An up-to-date re-run case.
     - This needs a new driver keyword (`PRE_RUN`).
 18. `[e2e]` Bless requests: `e2e.download.help` and `e2e.download.json-dry-run`.
-19. `[edge]` After an update: `> /dev/full` → exit 1 + `write error`, and the file is complete. `| head -1` across two updates → 141, and every `.epub` is a valid zip.
+19. `[edge]` After an update: `> /dev/full` → exit 1 + `write error`, and the file is complete. `| head -1` across two updates → exit 0 (plan D7, fact-check V18: two short buffered lines reach the pipe in one write at exit), one line, and every `.epub` a valid zip; SIGPIPE → 141 stays proven by the bulk edge cases.
 20. `[tty-pty]` Progress appears while updating. The note isn't coloured. `warning:` is yellow, and plain under `NO_COLOR`.
 21. `[human]` Rebuilt and fresh EPUBs open in ≥ 2 readers, and epubcheck accepts `META-INF/mangadex-dl.json` (V1).
 22. `[human]` Live: on an ongoing series with a new chapter, only that chapter is fetched (`-vv`), with no 429 storm.
