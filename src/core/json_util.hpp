@@ -48,15 +48,17 @@ struct ParseLimits {
     Errc code = Errc::network;
 };
 
-/// Parses one untrusted JSON document: the size cap (max_api_json_bytes), the depth pre-scan
-/// (max_json_depth), then nlohmann's non-throwing parser (strict: no comments, no trailing data,
-/// valid UTF-8 only). Every failure is Errc::network; `what` names the document in the message
-/// (a string literal, never response data).
+/// Parses one untrusted JSON document: the size cap (max_api_json_bytes), the rejection of a
+/// leading UTF-8 BOM and of any raw NUL byte, the depth pre-scan (max_json_depth), then nlohmann's
+/// non-throwing parser (strict: no comments, no trailing data, valid UTF-8 only). The BOM and NUL
+/// checks exist because nlohmann skips a BOM and treats a raw NUL as the end of input; valid JSON
+/// never contains a raw NUL (a string must escape it as \u0000). Every failure is Errc::network;
+/// `what` names the document in the message (a string literal, never response data).
 [[nodiscard]] Result<Json> parse_untrusted(std::string_view text, std::string_view what);
 
-/// As above, with caller-chosen limits and error class: the byte cap, then one pre-scan for the
-/// depth and the separator count, then the strict non-throwing parse. Every failure carries
-/// `limits.code`.
+/// As above, with caller-chosen limits and error class: the byte cap, then the BOM and raw NUL
+/// rejection (always on), then one pre-scan for the depth and the separator count, then the strict
+/// non-throwing parse. Every failure carries `limits.code`.
 [[nodiscard]] Result<Json> parse_untrusted(std::string_view text, std::string_view what,
                                            const ParseLimits& limits);
 

@@ -18,6 +18,9 @@ namespace {
 
 inline constexpr std::size_t mebibyte = std::size_t{1024} * 1024;
 
+/// U+FEFF encoded as UTF-8. nlohmann silently skips it at the start of the input.
+inline constexpr std::string_view utf8_bom = "\xEF\xBB\xBF";
+
 /// The document as named in a message: the API wording for Errc::network (unchanged from before
 /// ParseLimits existed), the bare `what` for any other category.
 [[nodiscard]] std::string subject(Errc code, std::string_view what) {
@@ -118,6 +121,15 @@ Result<Json> parse_untrusted(std::string_view text, std::string_view what,
             .message = std::format("{} is larger than {}", subject(limits.code, what),
                                    size_text(limits.max_bytes)),
         });
+    }
+    // After the byte cap, so both scans are bounded. nlohmann would skip a leading BOM and take a
+    // raw NUL as the end of input (`doc\0junk` parses as `doc`); valid JSON never holds a raw NUL
+    // (a string must escape it as \u0000).
+    if (text.starts_with(utf8_bom)) {
+        return std::unexpected(malformed(limits.code, what, "starts with a UTF-8 byte order mark"));
+    }
+    if (text.contains('\0')) {
+        return std::unexpected(malformed(limits.code, what, "contains a raw NUL byte"));
     }
     switch (prescan(text, limits.max_depth, limits.max_separators)) {
     case Scan::ok:
