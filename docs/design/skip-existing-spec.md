@@ -130,7 +130,7 @@ Buffers: CD ≤ 8 MiB, plus manifest text ≤ 16 MiB (freed after parsing), plus
 
 ### Decision rules (pure core function, table-tested)
 
-**Matching.** Each planned chapter matches at most one held chapter, and the first rule that applies wins:
+**Matching.** Each planned chapter matches at most one held chapter, and the first rule that applies wins. The rules run as three passes over the whole plan (all id matches, then all number matches, then loose-into-volume), so a number match never takes a held chapter that another planned chapter matches by id:
 1. The same id, case-insensitive.
 2. The same key: (normalised volume or none, normalised chapter). A null or empty chapter label is keyed by id only, as dedupe does.
 3. A planned (v≠none, c) against a leftover held (none, c): a loose chapter that was later given a volume.
@@ -198,7 +198,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - `reused_chapters`: [ids]. In a real run it excludes fallbacks; in a dry run it lists matched chapters, structurally checked only.
 - **Existing keys:**
   - `epubs[].chapters` lists what the file holds, with substitutions applied; `pages` is the held count.
-  - `skipped_chapters` is reconciled. When held release H is kept instead of the planned release P, H's `duplicate` entry is removed and P is added as `{reason:"duplicate", kept:H}`. This is a pure function, and a dry run applies it to matched chapters.
+  - `skipped_chapters` is reconciled. When held release H is kept instead of the planned release P, H's `duplicate` entry is removed and P is added as `{reason:"duplicate", kept:H}`. Any other release whose entry said `kept:P` is rewritten to `kept:H`, so `kept` always names a release the file holds. This is a pure function, and a dry run applies it to matched chapters.
   - `summary` is unchanged.
 - **stdout:** one path per written file, now including updates.
 - **stderr** (all hidden by `-q`; passed through `terminal_safe`):

@@ -288,7 +288,7 @@ Open item: only V1 (human).
   - **Separator bound (V16):** `max_manifest_separators = 1 << 21` (2,097,152). The justification goes in a code comment and a test:
     - An EPUB holds at most `zip_max_entries` (65534) entries, and every page costs two (image + XHTML). So a file has at most about 32764 pages, and therefore at most 32764 chapters.
     - Our writer emits about 20 separators per chapter, plus 4 per group, plus 1 per image. That is about 1.2M for 32764 chapters with 4 groups each: well under 2^21.
-    - Only a pathological file at the entry cap with more than about 11 groups per chapter would exceed it. That file would be classified `foreign` (a warning; `--overwrite` fixes it), which is accepted.
+    - Only a pathological file at the entry cap with more than 8 groups per chapter (exact count: `17 + C*(20+5g) + I` separators; T4 pins it with static_asserts) would exceed it. That file would be classified `foreign` (a warning; `--overwrite` fixes it), which is accepted.
   - **`manifest_to_json`:** `ordered_json`, keys in the order `format, generator, identifier, opf_crc32` (8 lowercase hex), `cover` (null or `{file_name, entry}`), `chapters[{id, volume, chapter, title, groups[{id,name}], publish_at, updated_at, quality ("data"|"data-saver"), images[]}]`. Written with `dump(-1, ' ', false, replace)` (V14 ✅). No clock, no version.
   - **`parse_manifest`:**
     - Cap `max_manifest_bytes`, depth `max_manifest_depth`, separators `max_manifest_separators`, non-throwing parse, `FieldReader`.
@@ -839,7 +839,7 @@ Notes:
 9. **D9:** a pre-pass read error falls back to download. During the build copy, any fault fails the file.
 10. **D10:** the `EXPECT_UNCHANGED` driver keyword.
 11. **D11:** the dry-run inspection reads local headers but never page data.
-12. **D12 (new, V16):** `max_manifest_separators = 1 << 21`. A pathological file at the zip entry cap with more than about 11 groups per chapter would be classified `foreign`, which is accepted.
+12. **D12 (new, V16):** `max_manifest_separators = 1 << 21`. A pathological file at the zip entry cap with more than 8 groups per chapter (exact count: `17 + C*(20+5g) + I` separators; T4 pins it with static_asserts) would be classified `foreign`, which is accepted.
 
 **Riskiest task: T10.** De-risked by the frozen interfaces, batches 2–3 proving every component (including T6's races and the ctime and ABA cases), the batch-1 fixtures, the FakeTransport hooks, and the gcc and tsan gates. **Second risk:** hostile bytes in T5 and T9, mitigated by exhaustive truncation, byte flips, fixed-seed fuzzing and the `-O2` release-test.
 
