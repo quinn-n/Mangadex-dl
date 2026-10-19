@@ -2,7 +2,6 @@
 #include "json_util.hpp"
 
 #include "mangadex_dl/error.hpp"
-#include "mangadex_dl/mangadex_api.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -17,15 +16,42 @@
 namespace mangadex_dl::json_util {
 namespace {
 
-[[nodiscard]] Error malformed(std::string_view what, std::string_view detail) {
-    return Error{.code = Errc::network,
-                 .message = std::format("malformed MangaDex API response ({}): {}", what, detail)};
+inline constexpr std::size_t mebibyte = std::size_t{1024} * 1024;
+
+/// The document as named in a message: the API wording for Errc::network (unchanged from before
+/// ParseLimits existed), the bare `what` for any other category.
+[[nodiscard]] std::string subject(Errc code, std::string_view what) {
+    if (code == Errc::network) {
+        return std::format("MangaDex API response ({})", what);
+    }
+    return std::string{what};
 }
 
-} // namespace
+[[nodiscard]] Error malformed(Errc code, std::string_view what, std::string_view detail) {
+    return Error{.code = code,
+                 .message = std::format("malformed {}: {}", subject(code, what), detail)};
+}
 
-bool depth_ok(std::string_view text, std::size_t max_depth) noexcept {
+[[nodiscard]] std::string size_text(std::size_t bytes) {
+    if (bytes % mebibyte == 0) {
+        return std::format("{} MiB", bytes / mebibyte);
+    }
+    return std::format("{} bytes", bytes);
+}
+
+enum class Scan {
+    ok,
+    too_deep,
+    too_many_separators,
+};
+
+/// One linear, allocation-free pass over `text`: nesting depth and structural separators
+/// (`,` `:` `[` `{`) outside strings. `max_separators == 0` disables the separator bound. Stops at
+/// the first violation.
+[[nodiscard]] Scan prescan(std::string_view text, std::size_t max_depth,
+                           std::size_t max_separators) noexcept {
     std::size_t depth = 0;
+    std::size_t separators = 0;
     bool in_string = false;
     bool escaped = false;
     for (const char c : text) {
@@ -47,8 +73,13 @@ bool depth_ok(std::string_view text, std::size_t max_depth) noexcept {
         case '{':
             ++depth;
             if (depth > max_depth) {
-                return false;
+                return Scan::too_deep;
             }
+            ++separators;
+            break;
+        case ',':
+        case ':':
+            ++separators;
             break;
         case ']':
         case '}':
@@ -61,28 +92,50 @@ bool depth_ok(std::string_view text, std::size_t max_depth) noexcept {
         default:
             break;
         }
+        // separators grows by at most one per byte, so it never wraps.
+        if (max_separators != 0 && separators > max_separators) {
+            return Scan::too_many_separators;
+        }
     }
-    return true;
+    return Scan::ok;
+}
+
+} // namespace
+
+bool depth_ok(std::string_view text, std::size_t max_depth) noexcept {
+    return prescan(text, max_depth, 0) != Scan::too_deep;
 }
 
 Result<Json> parse_untrusted(std::string_view text, std::string_view what) {
-    if (text.size() > max_api_json_bytes) {
+    return parse_untrusted(text, what, ParseLimits{});
+}
+
+Result<Json> parse_untrusted(std::string_view text, std::string_view what,
+                             const ParseLimits& limits) {
+    if (text.size() > limits.max_bytes) {
         return std::unexpected(Error{
-            .code = Errc::network,
-            .message = std::format("MangaDex API response ({}) is larger than {} MiB", what,
-                                   max_api_json_bytes / (std::size_t{1024} * 1024)),
+            .code = limits.code,
+            .message = std::format("{} is larger than {}", subject(limits.code, what),
+                                   size_text(limits.max_bytes)),
         });
     }
-    if (!depth_ok(text, max_json_depth)) {
+    switch (prescan(text, limits.max_depth, limits.max_separators)) {
+    case Scan::ok:
+        break;
+    case Scan::too_deep:
+        return std::unexpected(malformed(
+            limits.code, what, std::format("nested deeper than {} levels", limits.max_depth)));
+    case Scan::too_many_separators:
         return std::unexpected(
-            malformed(what, std::format("nested deeper than {} levels", max_json_depth)));
+            malformed(limits.code, what,
+                      std::format("more than {} structural separators", limits.max_separators)));
     }
     // allow_exceptions = false: a syntax error, trailing data or ill-formed UTF-8 yields a
     // "discarded" value instead of throwing. Comments stay disallowed (ignore_comments = false).
     Json doc = Json::parse(text.begin(), text.end(), nullptr, /*allow_exceptions=*/false,
                            /*ignore_comments=*/false);
     if (doc.is_discarded()) {
-        return std::unexpected(malformed(what, "not valid JSON"));
+        return std::unexpected(malformed(limits.code, what, "not valid JSON"));
     }
     return doc;
 }
@@ -192,6 +245,8 @@ void FieldReader::wrong_type(std::string_view key) {
     fail(std::format("'{}' has the wrong type", key));
 }
 
-Error FieldReader::error() const { return malformed(what_, error_.value_or("unknown error")); }
+Error FieldReader::error() const {
+    return malformed(code_, what_, error_.value_or("unknown error"));
+}
 
 } // namespace mangadex_dl::json_util
