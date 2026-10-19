@@ -218,7 +218,7 @@ Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
   unchanged, and the error ends with ` (the existing file was kept)`, for example
   `mangadex-dl: error: <path>: the existing file changed or could not be read during the update (the existing file was kept)`.
   Ctrl-C and `SIGTERM` during an update also leave the old file unchanged.
-- With `-v`, each file gets one line: `<path>: up to date (N chapters)`, or
+- With `-v`, each file gets one line: `<path>: up to date (N chapters)` (`(1 chapter)` for one), or
   `updating <path>: 1 new chapter, 2 reused (Ch. 4)`. The labels name the new chapters: at most
   five, then `and K more`.
 - With `--dry-run`, existing files are looked at the same way, but only the zip directory and
@@ -463,7 +463,9 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   final name. A finished `.epub` is never a partial one.
 - An existing file is replaced only with `--overwrite`, or when it is a file made by
   `mangadex-dl` that only lacks chapters (see [Running again](#running-again)). Any other
-  existing file is left alone, including a file that appears while the download is running.
+  existing file is left alone, including a file that appears while the download is running,
+  which gets its own warning:
+  `mangadex-dl: warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`.
 - An update replaces the old file only if it is still the file that was inspected (the same
   inode, size, modification time and change time). If it changed in the meantime, the new
   version is discarded and the file is left alone with `changed while it was being updated`.

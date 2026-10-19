@@ -210,6 +210,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - Diverged: `warning: <path>: MangaDex lists N chapters this file lacks, but the file holds M chapters MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)`.
   - Damaged held chapter: `warning: <path>: Ch. 3 in the existing file is damaged; downloading it again`.
   - Failed update: `error: <path>: <error> (the existing file was kept)`.
+  - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`. Added in T11 after review.
 - **`-v`:**
   - `<path>: up to date (N chapters)`
   - `updating <path>: 1 new chapter, 2 reused (Ch. 4)` (≤ 5 labels, then `and K more`)

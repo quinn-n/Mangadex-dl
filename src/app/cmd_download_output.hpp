@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// What `download` prints (download plan T13): the stdout path stream, warnings and errors on
-// stderr, -v/-vv detail, the TTY progress line, and the --json report. The download itself only
-// talks to the DownloadObserver interface; this file turns its events into terminal output.
+// What `download` prints (download plan T13, skip-existing plan T11): the stdout path stream,
+// warnings and errors on stderr, -v/-vv detail, the TTY progress line, and the --json report. The
+// download itself only talks to the DownloadObserver interface; this file turns its events into
+// terminal output.
 #pragma once
 
 #include "command.hpp"
@@ -49,11 +50,14 @@ void print_report_json(Io& io, const RunReport& report);
 /// Turns DownloadObserver events into console output. Not thread-safe: run_download calls every
 /// event on its calling thread. Holds `io` by pointer: the Io must outlive this observer.
 ///
-/// - stdout: `<path>\n` for each written file, and each planned file in a dry run; nothing with
-///   --json. Existing (skipped) files are never listed.
+/// - stdout: `<path>\n` for each written file (updates included), and each planned file in a dry
+///   run; nothing with --json. Files left alone (status exists) are never listed.
 /// - stderr: `mangadex-dl: warning: ...` (not with -q), `mangadex-dl: error: ...` for a failed
-///   file (always), -v per-file detail ("would write"/"would replace" in a dry run, "wrote") and
-///   dedupe detail, -vv per-request trace lines.
+///   file (always; a failed update of an incomplete file ends " (the existing file was kept)"),
+///   -v per-file detail ("would write"/"would replace"/"would update" in a dry run, "wrote",
+///   "<path>: up to date (N chapters)") and dedupe detail, -vv per-request trace lines. A file
+///   that appeared under the name while ours was being written gets its own warning. Every
+///   message, the run's own warnings and -v lines included, passes through terminal_safe.
 /// - progress (policy.progress only): one line rewritten with '\r' and padded with spaces, cleared
 ///   before any other stderr line and at finish(). No cursor escapes.
 class ConsoleObserver final : public DownloadObserver {
@@ -74,12 +78,17 @@ public:
 
     /// Call once run_download has returned, on every path (success, Error, interruption) and
     /// before print_error / print_report_json: clears the progress line and prints the single
-    /// "N files already exist" warning (not with -q). Idempotent.
+    /// "N files are already up to date" note (no `warning:` prefix, never colored, not with -q).
+    /// It counts files left alone as up to date (existing == complete) only. Idempotent.
     void finish();
 
 private:
+    /// The stderr detail for a file left alone (status exists): counts it toward the note when
+    /// it is up to date, warns when it appeared during the run.
+    void left_alone(const EpubOutcome& outcome);
     void warning(std::string_view message);
-    void verbose_line(std::string_view message);
+    /// "mangadex-dl: <message>" on stderr, terminal_safe, uncolored (-v lines and the note).
+    void plain_line(std::string_view message);
     void draw_progress();
     void clear_progress();
 
@@ -95,8 +104,8 @@ private:
     std::size_t pages_total_ = 0;
     std::size_t drawn_width_ = 0; ///< bytes of the progress line on screen; 0 = nothing drawn
 
-    std::size_t exists_ = 0;
-    bool exists_reported_ = false;
+    std::size_t up_to_date_ = 0; ///< files left alone because they hold every chapter
+    bool up_to_date_reported_ = false;
 };
 
 } // namespace mangadex_dl::app

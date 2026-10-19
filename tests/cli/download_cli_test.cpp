@@ -567,8 +567,8 @@ TEST_CASE("a re-run skips existing files; --overwrite rewrites them byte for byt
     const Captured again = run_args(tree.download(out));
     CHECK(again.exit_code == 0);
     CHECK(again.out.empty());
-    CHECK(again.err ==
-          "mangadex-dl: warning: 2 files already exist; pass --overwrite to replace them\n");
+    CHECK(again.err == "mangadex-dl: 2 files are already up to date; pass --overwrite to "
+                       "download them again\n");
     CHECK(snapshot(out) == first);
 
     const Captured overwritten = run_args(tree.download(out, {"--overwrite"}));

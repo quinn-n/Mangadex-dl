@@ -18,7 +18,7 @@ OPTIONS:
       --data-saver                  Download compressed images (smaller files)
       --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
       --title TEXT                  Title for file names and metadata
-      --overwrite                   Replace files that already exist
+      --overwrite                   Re-download files even if up to date
   -n, --dry-run                     List the files to write; download nothing
   -j, --jobs N [4]                  Parallel image downloads, 1 to 8
       --no-report                   Skip MangaDex@Home reliability reports
@@ -38,8 +38,10 @@ Examples:
   Show which files would be written, without downloading anything:
     mangadex-dl download <uuid> --dry-run
 
-Running the same command again skips the files that already exist, so an
-interrupted or incomplete run can simply be restarted.
+Running the same command again skips files that already hold every chapter
+and rebuilds a file when MangaDex has added chapters to it, downloading only
+the new ones, so an interrupted run can be restarted and a series kept up to
+date.
 
 Exit status:
   0   success

@@ -53,8 +53,10 @@ constexpr std::string_view download_footer{
     "  Show which files would be written, without downloading anything:\n"
     "    mangadex-dl download <uuid> --dry-run\n"
     "\n"
-    "Running the same command again skips the files that already exist, so an\n"
-    "interrupted or incomplete run can simply be restarted.\n"
+    "Running the same command again skips files that already hold every chapter\n"
+    "and rebuilds a file when MangaDex has added chapters to it, downloading only\n"
+    "the new ones, so an interrupted run can be restarted and a series kept up to\n"
+    "date.\n"
     "\n"};
 
 /// The User-Agent MangaDex asks for: identifies the tool, never spoofed, no Via header.
@@ -207,7 +209,7 @@ public:
                "--title", [title = &args_.title](const std::string& value) { *title = value; },
                "Title for file names and metadata")
             ->type_name("TEXT");
-        sub.add_flag("--overwrite", args_.overwrite, "Replace files that already exist");
+        sub.add_flag("--overwrite", args_.overwrite, "Re-download files even if up to date");
         sub.add_flag("-n,--dry-run", args_.dry_run, "List the files to write; download nothing");
         sub.add_option("-j,--jobs", args_.jobs, "Parallel image downloads, 1 to 8")
             ->type_name("N")
@@ -254,7 +256,7 @@ public:
         ConsoleObserver observer{io, policy};
         const Result<RunReport> report = run_download(*options, services, observer);
         // On every path, before anything else is printed: clears the progress line and prints
-        // the "N files already exist" notice.
+        // the "N files are already up to date" note.
         observer.finish();
 
         if (!report) {
