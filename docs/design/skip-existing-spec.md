@@ -282,7 +282,7 @@ Unchanged; there are no new codes.
 | `clean-grown` | `clean` + vol 2 ch 4 (A) | all |
 | `clean-grown-reuse-only` | same API docs as `clean-grown` | **only ch 4** |
 | `clean-regrouped` | ch 1–3 by group B (new UUIDs, A gone) | none |
-| `clean-regrouped-grown` | B's ch 1–2 + vol 1 ch 2.5 (B) | **only ch 2.5** |
+| `clean-regrouped-grown` | B's ch 1–3 + vol 1 ch 2.5 (B) | **only ch 2.5** |
 | `clean-mixed-reference` | A's ch 1–2 + B's ch 2.5 | all |
 | `clean-diverged` | vol 2: ch 3 gone, ch 4 new | all |
 
@@ -332,7 +332,7 @@ Unchanged; there are no new codes.
 11. `[cli]` **Regrouped + grown:** `clean`, then `clean-regrouped-grown`:
     - Vol. 01 is rebuilt with A's ch 1–2 (reused, not served) + B's ch 2.5 (downloaded);
     - contributors are A then B;
-    - `skipped_chapters` lists B's ch 1–2 as duplicates with `kept` = A's ids;
+    - `skipped_chapters` lists B's ch 1–3 as duplicates with `kept` = A's ids (ch 3 via the complete Vol. 02);
     - `-v` prints the kept-release lines;
     - the file is byte-identical to a fresh `clean-mixed-reference` download;
     - Vol. 02 is complete.
