@@ -92,7 +92,7 @@ There are no new flags and no new exit codes.
    - `ENOENT` → absent.
    - `EACCES`/`EPERM`/`EIO` → **foreign** ("cannot be read").
    - Any other errno → `Errc::failure`, exit 1.
-   - Record the identity `(st_dev, st_ino, st_size, st_mtim)`.
+   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
    - In a real run, **keep the fd open until publish**. Every later read goes through it.
 2. **Zip structure.**
    - `pread` loops retry `EINTR`; a short read means foreign.
