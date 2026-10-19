@@ -23,13 +23,18 @@
 #              [EXPECT_ABSENT <rel>...]                          nothing (not even a dangling symlink) at each
 #              [EXPECT_NO_GLOB <glob>...]                        no FILE under {{WORK}} matches any glob
 #              [EXPECT_EPUB <rel>...]                            each is a structurally sound EPUB container
+#              [PRE_RUN <arg>...]                                run `<tool> <arg>...` once first, in {{WORK}}
+#              [EXPECT_UNCHANGED <rel>...]                       needs PRE_RUN: each file's bytes survive the run
 #              [LABELS <label>...])
 #
 # Placeholders usable in ARGS, ENV values and STDIN: {{INPUTS}} (tests/e2e/inputs), {{WORK}} (the
 # per-case temp dir: also $HOME's parent and the tool's working directory), {{FIXTURES}} (the
 # fixture-mode trees written by the e2e.fixtures fixture: {{FIXTURES}}/{clean,basic,bulk,incomplete,
-# nochapters}, layout in tests/e2e/inputs/README), {{INVALID_UTF8}} (the bytes 0xFF 0xFE). Goldens
-# normalize the {{WORK}}, {{FIXTURES}}, {{INPUTS}} and {{TOOL}} paths back to these placeholders.
+# nochapters} and the clean-* variants for re-run cases {{FIXTURES}}/{clean-grown,
+# clean-grown-reuse-only,clean-regrouped,clean-regrouped-served,clean-regrouped-grown,
+# clean-mixed-reference,clean-diverged}, layout in tests/e2e/inputs/README), {{INVALID_UTF8}} (the
+# bytes 0xFF 0xFE). Goldens normalize the {{WORK}}, {{FIXTURES}}, {{INPUTS}} and {{TOOL}} paths back
+# to these placeholders.
 #
 # The tool runs with its working directory set to {{WORK}}, so relative output paths (`out/x.epub`)
 # land there. The file keywords take paths RELATIVE to {{WORK}} (no leading '/', no '..'), checked
@@ -45,6 +50,18 @@
 #   last 22 bytes. Then a CHILD `cmake -P epub_extract_check.cmake` extracts it into
 #   {{WORK}}/epub-check/<n> (a corrupt archive is fatal to the child only) and requires
 #   `mimetype`, `META-INF/container.xml` and `OEBPS/content.opf`. Deep structure is the [cli] tier's job.
+#
+# PRE_RUN prepares {{WORK}} with one earlier run of the same tool (a re-run case). The driver runs
+# `<tool> <arg>...` once, after the hermetic env and the ENV overrides and before the main command, in
+# {{WORK}}, with stdin /dev/null whatever STDIN says, and never under TTY / PIPE_HEAD / STDOUT_FILE (those
+# apply to the main command only, and all of them combine with PRE_RUN). Its args take the same
+# placeholders as ARGS and the same limits (no empty item, no ';'). It must exit exactly 0 and print no
+# sanitizer marker on stderr; otherwise the case fails at once with "pre-run failed (exit N ...)" and the
+# main command never runs. Its stdout and stderr stay in driver variables (never files in {{WORK}}) and
+# are shown only when the case fails. The CTest TIMEOUT becomes 2 x TIMEOUT + 30 (each run gets TIMEOUT).
+# - EXPECT_UNCHANGED (literal paths relative to {{WORK}}, like EXPECT_FILES) requires PRE_RUN. Each path
+#   must be a regular file (not a symlink) after the pre-run, or the case fails as a pre-run failure. Its
+#   file(SHA256) then has to be identical after the main run, and it must still be a regular file.
 #
 # Every case requires the fixtures e2e_installed (the binary) and e2e_fixtures (the trees); CTest adds
 # both setup tests automatically under -R / -L.
@@ -165,11 +182,21 @@ function(cli_e2e_case)
              EXPECT_ANSI GOLDEN TTY PARENT_IGNORES_SIGPIPE)
   set(_one NAME STDIN EXPECT_EXIT EXPECT_STDOUT_REGEX EXPECT_STDERR_REGEX STDOUT_FILE PIPE_HEAD
            EXPECT_PIPE_RESULT TIMEOUT)
-  set(_multi ARGS ENV LABELS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
+  set(_multi ARGS ENV LABELS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB PRE_RUN
+             EXPECT_UNCHANGED)
   cmake_parse_arguments(PARSE_ARGV 0 C "${_flags}" "${_one}" "${_multi}")
 
   if(C_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "cli_e2e_case(${C_NAME}): unknown arguments: ${C_UNPARSED_ARGUMENTS}")
+  endif()
+  foreach(_kw IN ITEMS PRE_RUN EXPECT_UNCHANGED)
+    if(_kw IN_LIST C_KEYWORDS_MISSING_VALUES)
+      message(FATAL_ERROR "cli_e2e_case(${C_NAME}): ${_kw} needs at least one value")
+    endif()
+  endforeach()
+  if(DEFINED C_EXPECT_UNCHANGED AND NOT DEFINED C_PRE_RUN)
+    message(FATAL_ERROR "cli_e2e_case(${C_NAME}): EXPECT_UNCHANGED needs PRE_RUN (the files it checks are "
+                        "hashed after the pre-run)")
   endif()
   if(NOT C_NAME MATCHES "^[A-Za-z0-9_-]+$")
     message(FATAL_ERROR "cli_e2e_case: NAME '${C_NAME}' must match [A-Za-z0-9_-]+")
@@ -205,14 +232,16 @@ function(cli_e2e_case)
     message(FATAL_ERROR "cli_e2e_case(${C_NAME}): under TTY both streams share the terminal; "
                         "assert on stdout (the merged output) instead of EXPECT_STDERR_*")
   endif()
-  foreach(_a IN LISTS C_ARGS)
-    if(_a STREQUAL "")
-      message(FATAL_ERROR "cli_e2e_case(${C_NAME}): empty ARGS item. CMake drops empty list elements, "
-                          "and a ';' inside an argument splits it, so neither can be passed")
-    endif()
+  foreach(_kw IN ITEMS ARGS PRE_RUN)
+    foreach(_a IN LISTS C_${_kw})
+      if(_a STREQUAL "")
+        message(FATAL_ERROR "cli_e2e_case(${C_NAME}): empty ${_kw} item. CMake drops empty list elements, "
+                            "and a ';' inside an argument splits it, so neither can be passed")
+      endif()
+    endforeach()
   endforeach()
 
-  foreach(_kw IN ITEMS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
+  foreach(_kw IN ITEMS EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB EXPECT_UNCHANGED)
     foreach(_rel IN LISTS C_${_kw})
       if(_rel STREQUAL "" OR IS_ABSOLUTE "${_rel}" OR _rel MATCHES "(^|/)\\.\\.(/|$)" OR _rel MATCHES "^~")
         message(FATAL_ERROR "cli_e2e_case(${C_NAME}): ${_kw} '${_rel}' must be a path relative to "
@@ -252,7 +281,8 @@ function(cli_e2e_case)
       string(APPEND _text "set(CASE_${_var} ON)\n")
     endif()
   endforeach()
-  foreach(_var IN ITEMS ARGS ENV EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB)
+  foreach(_var IN ITEMS ARGS ENV EXPECT_FILES EXPECT_ABSENT EXPECT_NO_GLOB EXPECT_EPUB PRE_RUN
+                        EXPECT_UNCHANGED)
     string(APPEND _text "set(CASE_${_var})\n")
     foreach(_item IN LISTS C_${_var})
       _cli_e2e_quote(_q "${_item}")
@@ -283,7 +313,11 @@ function(cli_e2e_case)
     list(APPEND _labels golden)
   endif()
   list(APPEND _labels ${C_LABELS})
-  math(EXPR _ctest_timeout "${C_TIMEOUT} + 30")
+  if(DEFINED C_PRE_RUN)
+    math(EXPR _ctest_timeout "2 * ${C_TIMEOUT} + 30")   # the pre-run and the main run get TIMEOUT each
+  else()
+    math(EXPR _ctest_timeout "${C_TIMEOUT} + 30")
+  endif()
   set_tests_properties("${_test}" PROPERTIES
     FIXTURES_REQUIRED "e2e_installed;e2e_fixtures"
     LABELS "${_labels}"

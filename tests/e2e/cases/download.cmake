@@ -16,6 +16,8 @@
 #                    temp file left behind; never with a name that contains '[')
 #   EXPECT_EPUB      success-clean (both volumes), layout-single, webp-warning (the oneshot, whose name
 #                    contains '[' and ']': the literal-path keywords must cope)
+#   PRE_RUN          rerun-unchanged (the same command twice: the pre-run writes, the main run re-runs)
+#   EXPECT_UNCHANGED rerun-unchanged (both volumes keep their bytes across the re-run)
 #
 # Stderr color (plan gate decision 7: stdout is data and never colored, so _edge.cmake's
 # EDGE_COLOR_ARGS is empty and the color precedence is proven here, on stderr's `warning:` prefix):
@@ -99,6 +101,16 @@ cli_e2e_case(NAME layout-chapters
              EXPECT_STDERR_EMPTY
              EXPECT_FILES "out/Clean Title - Vol. 01 Ch. 001.epub" "out/Clean Title - Vol. 01 Ch. 002.epub"
                           "out/Clean Title - Vol. 02 Ch. 003.epub"
+             EXPECT_NO_GLOB "out/.*.part-*")
+
+# ---- re-runs (PRE_RUN prepares {{WORK}} with one earlier run) ----------------------------------------
+# The same command twice: the second run leaves both volumes byte-unchanged, lists nothing on stdout and
+# leaves no temp file. Stderr is deliberately not asserted yet (its note changes with skip-existing).
+cli_e2e_case(NAME rerun-unchanged
+             PRE_RUN download ${_download_clean_api} ${_download_clean_id} out
+             ARGS download ${_download_clean_api} ${_download_clean_id} out
+             EXPECT_EXIT 0 EXPECT_STDOUT_EMPTY
+             EXPECT_UNCHANGED "out/Clean Title - Vol. 01.epub" "out/Clean Title - Vol. 02.epub"
              EXPECT_NO_GLOB "out/.*.part-*")
 
 # ---- tool-specific exit codes ------------------------------------------------------------------------
