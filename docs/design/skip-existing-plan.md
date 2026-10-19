@@ -167,7 +167,7 @@ Open item: only V1 (human).
     - `struct ZipEntryRecord{std::string name{}; std::uint16_t flags = 0, method = 0; std::uint32_t crc32 = 0, compressed_size = 0, uncompressed_size = 0, local_header_offset = 0;}`
     - `enum class ZipFault{read_error, short_read, size_out_of_range, no_end_record, unsupported, bad_directory, duplicate_name, bad_local_header, data_out_of_bounds};`
     - `struct ZipError{ZipFault fault = ZipFault::bad_directory; int error = 0;}`
-    - `class ZipIndex{ static std::expected<ZipIndex, ZipError> read(ReadSource&); const ZipEntryRecord* find(std::string_view) const noexcept LIFETIMEBOUND; const std::vector<ZipEntryRecord>& entries() const noexcept LIFETIMEBOUND; std::uint64_t central_directory_offset() const noexcept; }` Move-only value. Entries are kept in CD order; the index is immutable after `read`.
+    - `class ZipIndex{ static std::expected<ZipIndex, ZipError> read(ReadSource&); const ZipEntryRecord* find(std::string_view) const& noexcept LIFETIMEBOUND; find(std::string_view) const&& = delete; const std::vector<ZipEntryRecord>& entries() const& noexcept LIFETIMEBOUND; entries() const&& = delete; std::uint64_t central_directory_offset() const noexcept; }` Move-only value. Entries are kept in CD order; the index is immutable after `read`.
     - `[[nodiscard]] std::expected<std::uint64_t, ZipError> locate_entry_data(ReadSource&, const ZipIndex&, const ZipEntryRecord&);` returns the first data byte. It guarantees the local header agrees with the CD and that the data lies within `[0, cd_offset)`.
   - **`existing_epub.hpp`:**
     - `enum class ForeignReason{not_regular, unreadable, not_ours, other_book, changed_by_other_program, newer_format, changed_during_update};`

@@ -381,7 +381,7 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
 }
 
 /// Opens `path` as a directory descriptor for reading (O_RDONLY | O_DIRECTORY), or the errno.
-[[nodiscard]] std::expected<UniqueFd, int> open_existing(const std::filesystem::path& path) {
+[[nodiscard]] std::expected<UniqueFd, int> open_directory(const std::filesystem::path& path) {
     const std::string name = path.empty() ? std::string{"."} : path.string();
     const int fd = open_at(AT_FDCWD, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) {
@@ -593,7 +593,7 @@ Result<OutputDir> OutputDir::open(const std::filesystem::path& path, bool create
         }
         fd = std::move(*made);
     } else {
-        std::expected<UniqueFd, int> opened = open_existing(path);
+        std::expected<UniqueFd, int> opened = open_directory(path);
         if (!opened) {
             return std::unexpected(
                 fs_error("cannot open directory", path.string(), opened.error()));
@@ -608,7 +608,7 @@ Result<OutputDir> OutputDir::open(const std::filesystem::path& path, bool create
 }
 
 Result<std::optional<OutputDir>> OutputDir::open_if_exists(const std::filesystem::path& path) {
-    std::expected<UniqueFd, int> opened = open_existing(path);
+    std::expected<UniqueFd, int> opened = open_directory(path);
     if (!opened) {
         if (opened.error() == ENOENT) {
             return std::optional<OutputDir>{};

@@ -2,7 +2,8 @@
 //
 // The output directory: no-clobber checks, temporary files and atomic publish, all relative to
 // one directory file descriptor. Linux only (O_TMPFILE + linkat, renameat2 fallback).
-// Frozen interface (download plan T1); implemented in src/core/fs/output_dir.cpp.
+// Frozen interface (download plan T1, extended by skip-existing plan T1); implemented in
+// src/core/fs/output_dir.cpp.
 #pragma once
 
 #include "mangadex_dl/attributes.hpp"
@@ -10,6 +11,7 @@
 #include "mangadex_dl/zip.hpp"
 
 #include <cstddef>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -17,6 +19,7 @@
 #include <string_view>
 #include <utility>
 
+#include <sys/types.h>
 #include <unistd.h>
 
 namespace mangadex_dl {
@@ -63,6 +66,49 @@ enum class PublishOutcome {
     written,  ///< the name did not exist; the file is now in place
     replaced, ///< overwrite: an existing file of that name was atomically replaced
     exists,   ///< no-clobber: the name already existed (file, symlink or directory); untouched
+};
+
+/// What identifies one existing file between inspection and publish: the inode (device and
+/// number) plus its size, modification and status-change times, as fstat reported them. Native
+/// types, assigned straight from `struct stat`. Any chmod, link-count change or rewrite updates
+/// the ctime, so it compares unequal (conservatively "changed").
+struct FileIdentity {
+    dev_t device{};
+    ino_t inode{};
+    off_t size{};
+    time_t mtime_sec{};
+    long mtime_nsec{};
+    time_t ctime_sec{};
+    long ctime_nsec{};
+
+    friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
+};
+
+/// How OutputDir::open_existing ended.
+enum class ExistingOpen {
+    absent,      ///< no such name (or it vanished before the open)
+    opened,      ///< a regular file, open read-only in ExistingHandle::fd
+    not_regular, ///< a directory, symlink, FIFO, socket or device; never opened (or closed again)
+    unreadable,  ///< EACCES, EPERM or EIO
+};
+
+/// The result of OutputDir::open_existing. Move-only (it owns the descriptor). A moved-from
+/// handle keeps `status == opened` but its `fd` holds -1, so consumers check `fd.valid()`.
+struct ExistingHandle {
+    ExistingOpen status = ExistingOpen::absent;
+    /// Valid only for opened (O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC). For an update, keep
+    /// it open until publish_replacing returns: `identity` is only meaningful while it is (V5).
+    UniqueFd fd{};
+    FileIdentity identity{}; ///< for opened: from fstat on `fd`
+    int error = 0;           ///< the errno that decided unreadable, or not_regular when the
+                             ///< open failed; 0 when fstat decided
+};
+
+/// How OutputDir::publish_replacing ended.
+enum class ReplaceOutcome {
+    replaced, ///< the name still had the expected identity and was atomically replaced
+    written,  ///< the name had vanished; the file was published without clobbering
+    changed,  ///< the name now holds something else; the temporary was discarded
 };
 
 class OutputDir;
@@ -129,6 +175,25 @@ public:
     /// best-effort fsync of the directory.
     [[nodiscard]] Result<PublishOutcome> publish(TempFile&& temp, std::string_view final_name,
                                                  bool overwrite);
+
+    /// Opens the existing `name` (one path component) for inspection, without following
+    /// symlinks and without blocking on a FIFO: fstatat first (a non-regular name is never
+    /// opened), then openat, then fstat on the descriptor. Errc::failure for any errno other
+    /// than the ones ExistingOpen documents (EMFILE included).
+    [[nodiscard]] Result<ExistingHandle> open_existing(std::string_view name) const;
+
+    /// Publishes `temp` as `final_name`, consuming it (on failure or `changed` it is
+    /// discarded). Replaces the name only while it still has the identity `expected`; publishes
+    /// without clobbering when it vanished; leaves it alone otherwise. Then a best-effort fsync
+    /// of the directory.
+    ///
+    /// `expected` is meaningful only while the ExistingHandle descriptor it came from is still
+    /// open: a filesystem may reuse a freed inode number at once (ext4 does), so the caller keeps
+    /// that descriptor open until this returns. Between the final check and the rename there is
+    /// a short window in which another process could still swap the name (accepted for a
+    /// user-owned directory, cpp-security section 4).
+    [[nodiscard]] Result<ReplaceOutcome>
+    publish_replacing(TempFile&& temp, std::string_view final_name, const FileIdentity& expected);
 
     /// The path as given to open(). Borrows from *this.
     [[nodiscard]] const std::filesystem::path& path() const noexcept MANGADEX_DL_LIFETIMEBOUND {
