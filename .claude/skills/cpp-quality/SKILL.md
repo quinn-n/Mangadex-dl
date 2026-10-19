@@ -1,6 +1,6 @@
 ---
 name: cpp-quality
-description: The quality gate and standards for this C++23 project. Covers the pixi task vocabulary, the `check` chain (fmt-check → sanitized dev test → clang-tidy lint → -Werror release build), the clang-format and clang-tidy ownership and config, the per-compiler warnings policy, -Werror scope, the NOLINT policy, the shared build-dir lock, and the definition of done. Use when writing, reviewing, refactoring or testing C++, when running or reasoning about the gate, when editing .clang-format/.clang-tidy/ProjectWarnings.cmake/scripts/format.sh/scripts/lint.sh, or when deciding whether work is done.
+description: The quality gate and standards for this C++23 project. Covers the pixi task vocabulary, the `check` chain (fmt-check → sanitized dev test → clang-tidy lint → -Werror release build → binary-packages list check), the clang-format and clang-tidy ownership and config, the per-compiler warnings policy, -Werror scope, the NOLINT policy, the shared build-dir lock, and the definition of done. Use when writing, reviewing, refactoring or testing C++, when running or reasoning about the gate, when editing .clang-format/.clang-tidy/ProjectWarnings.cmake/scripts/format.sh/scripts/lint.sh, or when deciding whether work is done.
 ---
 
 # C++ quality: the gate and the standards
@@ -37,7 +37,7 @@ There is **no `typecheck` slot**: the compile is the type check.
 ## The gate: `check`
 
 ```
-check = fmt-check → test (dev: configure → build → test, ASan+UBSan, -Werror) → lint → release (configure → build, -Werror)
+check = fmt-check → test (dev: configure → build → test, ASan+UBSan, -Werror) → lint → release (configure → build, -Werror) → binary-packages (audit/binary-packages.txt matches the release build)
 ```
 
 - **Ordered and fail-fast.** pixi `depends-on` runs in list order and stops at the first failure. Whether pixi runs `build` once or twice when both `test` and `lint` depend on it is verified at `/setup`; either way it is correct, because the second build is a no-op.

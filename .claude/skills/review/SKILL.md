@@ -20,7 +20,7 @@ Note two things about the scope:
 ## 2. Run the gate once
 Run `nice pixi run check` **yourself, once**:
 - default env;
-- `fmt-check` → `test` → `lint` → `release`;
+- `fmt-check` → `test` → `lint` → `release` → `binary-packages`;
 - with an explicit long Bash `timeout` (up to 600000 ms), or `run_in_background` and wait.
 
 Capture:

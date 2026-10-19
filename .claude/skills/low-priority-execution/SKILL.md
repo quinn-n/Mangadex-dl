@@ -73,7 +73,7 @@ A cold `nice pixi run check` routinely exceeds the Bash tool's **120 s default**
 Prefix the runner once. In a `/features` worktree, use `cd <worktree> && nice pixi run <task>`.
 
 ```sh
-nice pixi run check                  # the gate: fmt-check → test (dev, ASan+UBSan) → lint → release
+nice pixi run check                  # the gate: fmt-check → test (dev, ASan+UBSan) → lint → release → binary-packages
 nice pixi run -e gcc check           # the same chain with GCC (lint skips by design in this env)
 nice pixi run test                   # dev build + full CTest suite (unit, cli, e2e, sanitizer controls)
 nice pixi run test -R unit           # filtered: -R <regex> / -L <label> / -E <regex>

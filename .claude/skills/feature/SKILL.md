@@ -10,7 +10,7 @@ Build the following CLI feature end to end: **$ARGUMENTS**
 Orchestrate the specialized subagents in order, and pause for my approval at each ⏸ gate. Do not skip gates.
 
 Everything runs through pixi:
-- The quality gate is `nice pixi run check`. It chains `fmt-check` → `test` → `lint` → `release`. `test` covers the sanitized dev build plus unit, in-process CLI, installed-binary E2E, edge-suite and sanitizer-control tests. `release` is optimized, hardened and `-Werror`.
+- The quality gate is `nice pixi run check`. It chains `fmt-check` → `test` → `lint` → `release` → `binary-packages`. `test` covers the sanitized dev build plus unit, in-process CLI, installed-binary E2E, edge-suite and sanitizer-control tests. `release` is optimized, hardened and `-Werror`.
 - The gate also includes `nice pixi run -e gcc check` when the gcc env is installed.
 - The installed binary under test is `build/default/dev/e2e-prefix/bin/<tool>`.
 - `<tool>` and `<proj>` come from `CLAUDE.md` → **Project specifics**. Read them **at use-time**.

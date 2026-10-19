@@ -152,11 +152,18 @@ When it runs:
 syft .pixi/envs/default --select-catalogers=+conda-meta-cataloger --output syft-json=.platform-runs/audit/sbom.json
 grype .platform-runs/audit/sbom.json
 ```
+**This project splits the scan in two disjoint scopes** (`audit.sh --scope binary|dev|all`, default `all`), so one CVE never alerts twice and the CI job name (`dependency audit (binary)` / `(dev)`) says who is exposed:
+- **binary**: the packages listed in `audit/binary-packages.txt`, i.e. whose files are compiled or linked into the shipped binary. `nice pixi run binary-packages` derives that set from the release build (ninja header deps + the linker depfile from `MANGADEX_DL_LINK_DEPFILE`, mapped through `conda-meta/*.json`) and is part of `check`, so the list cannot drift. Config `audit/grype-binary.yaml` (empty ignore list by default); fails on ≥ medium.
+- **dev**: every other package in the env (the build toolchain and its deps, never shipped). Config `audit/grype-dev.yaml`; fails on ≥ high.
+- Both configs are passed with an explicit `grype -c`, which also stops grype from reading `./.grype.yaml` or `~/.grype.yaml`.
+- **Ignore entries** pin `vulnerability` + `package { name, version, type }` and carry a dated `reason` that says why the artifact is not affected, so an upgraded package or a new CVE alerts again. A package-name-only rule would silence every future CVE for that package: never write one.
+- syft runs once; jq splits its SBOM by package name (relationships into the other half are dropped). A listed package missing from the SBOM is an error, never a silent gap.
+
 The contract `audit.sh` must keep:
-1. **Probe first.** If `syft` or `grype` is missing, print what is missing, print the coverage statement saying nothing was scanned, and **exit 0 as a stated no-op**. **Never install anything.**
-2. **Always print a coverage statement**, whatever the result, and quote it in reviews verbatim. It must say:
+1. **Probe first.** If `syft`, `grype` or `jq` is missing, print what is missing, print the coverage statement saying nothing was scanned, and **exit 0 as a stated no-op**. **Never install anything.**
+2. **Always print a coverage statement** per scope, whatever the result, and quote it in reviews verbatim. It must say:
    - the tool names and versions (read at run time);
-   - what was scanned: the conda packages installed in the `default` env, which is the one the release artifact is built from;
+   - what was scanned: the conda packages of that scope in the `default` env, which is the one the release artifact is built from;
    - that matching is **CPE-heuristic**: Syft emits CPEs, not PURLs, for conda packages, so expect false positives and misses;
    - what is **NOT covered**: host/system libraries such as the target machine's glibc, vendored or FetchContent code, and `pixi.lock` itself. **Dependabot doesn't update `pixi.lock`, and GitHub's dependency graph doesn't read it.**
 3. **Exit nonzero on findings** at or above the configured threshold. A tool error is nonzero too.

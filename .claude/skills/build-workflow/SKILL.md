@@ -38,11 +38,12 @@ Supporting files (read by `/setup`, not standalone skills): `scaffold.md` (CMake
 | `configure` → `build` → `test` | sanitized `dev` preset: configure, build, ctest (`scripts/preset.sh`) |
 | `lint` (`lint-fix`, `lint-changed`) | clang-tidy over the Clang compile DB; a stated skip in the gcc env |
 | `_release-configure` → `release` → `release-test` | hardened `release` preset; `release-test` runs unit + E2E + release-check on the release install |
-| `check` | `fmt-check` → `test` → `lint` → `release` (the gate; run in both envs) |
+| `check` | `fmt-check` → `test` → `lint` → `release` → `binary-packages` (the gate; run in both envs) |
 | `cxx-probe <file>` | compile + run a probe with the dev preset's sanitizer flags and options |
 | `bless <regex>` | re-bless E2E goldens (human-approved; `cpp-testing`) |
 | `cov` | report-only clang coverage (`cov` preset) |
-| `audit` | syft + grype over the installed env, with a coverage statement |
+| `binary-packages` (`--update`) | conda packages compiled/linked into the release binary (ninja header deps + the `MANGADEX_DL_LINK_DEPFILE` linker depfile), checked against `audit/binary-packages.txt`; a stated skip in the gcc env |
+| `audit` | syft + grype over the installed env, split by `audit/binary-packages.txt` into a binary and a dev scope, with a coverage statement per scope |
 | `package` | `cpack --preset release` after `release-test` (default env only) |
 | optional `tsan`, `fuzz`, `man` | commented in `pixi.example.toml`; enable when needed |
 
@@ -118,7 +119,7 @@ scripts/*.sh  docs/<tool>.1  completions/{<tool>.bash,_<tool>,<tool>.fish}
 ```
 - **Targets:** `<proj>_core` (STATIC, alias `<proj>::core`, `cxx_std_23` PUBLIC, all logic, no CLI11); `<proj>_app` (`OUTPUT_NAME <tool>`, links core + `CLI11::CLI11` privately); `<proj>_warnings` (INTERFACE, via `<proj>_apply_warnings(tgt)`); `<proj>_unit_tests`, `<proj>_cli_tests` (in `tests/`). `CMakeLists.txt` exports `<proj>_app_sources` (the app sources without `main.cpp`) for the in-process CLI tests.
 - **Order** (fixed): `cmake_minimum_required(VERSION 3.31...4.4)` → `project(<proj> VERSION … LANGUAGES CXX)` → `GNUInstallDirs` + `CTest` → options → `cmake/Sanitizers.cmake` → `cmake/Hardening.cmake` (FATAL if both on) → `find_package(CLI11 …)`, `find_package(nlohmann_json …)` → `cmake/ProjectWarnings.cmake` → configure `version.cpp` → core → app → `<proj>_add_sanitizer_options(<proj>_app)` → `cmake/Install.cmake` → `if(PROJECT_IS_TOP_LEVEL AND BUILD_TESTING)` Catch2 + `tests/` → `if(PROJECT_IS_TOP_LEVEL)` `cmake/Packaging.cmake`.
-- Options: `<PROJ>_SANITIZE` (`""` / `"address;undefined"` / `"thread"`), `<PROJ>_HARDENING`, `<PROJ>_HARDENING_EXTRA`, `<PROJ>_WARNINGS_AS_ERRORS` (default OFF; presets and CI turn it ON; packagers pass `--compile-no-warning-as-error` or leave it OFF), `<PROJ>_GLIBC_FLOOR` (2.28), `<PROJ>_LIFETIME_SAFETY`, `<PROJ>_FUZZ`.
+- Options: `<PROJ>_SANITIZE` (`""` / `"address;undefined"` / `"thread"`), `<PROJ>_HARDENING`, `<PROJ>_HARDENING_EXTRA`, `<PROJ>_WARNINGS_AS_ERRORS` (default OFF; presets and CI turn it ON; packagers pass `--compile-no-warning-as-error` or leave it OFF), `<PROJ>_GLIBC_FLOOR` (2.28), `<PROJ>_LIFETIME_SAFETY`, `<PROJ>_FUZZ`, `<PROJ>_LINK_DEPFILE` (default OFF; the `release` preset turns it ON: the app's link writes `<build>/mangadex-dl.link.d`, which `scripts/binary-packages.sh` reads; fails configure if the linker lacks `--dependency-file`).
 - **Scope:** sanitizer and hardening flags are project-wide by design, so source-built deps get instrumented too. Warnings and `-Werror` are per-target. Never `add_compile_options` for warnings or `include_directories`.
 - **Version single source:** `project(VERSION)` → `configure_file(src/core/version.cpp.in → <binaryDir>/generated/version.cpp @ONLY)`, so a bump recompiles one TU. `--version`'s first line is `<tool> X.Y.Z`.
 - **Globbing:** `src/core/**/*.cpp`, `src/app/cmd_*.cpp` (and the test dirs) use `CONFIGURE_DEPENDS`, so adding a module, subcommand, test or E2E case touches no shared CMake. This is a documented trade-off: the alternative is explicit lists, which turn every addition into a serialization point.

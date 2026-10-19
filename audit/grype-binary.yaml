@@ -1,0 +1,8 @@
+# grype config for the BINARY audit (scripts/audit.sh --scope binary): the conda packages listed
+# in audit/binary-packages.txt, i.e. code compiled or linked into the shipped mangadex-dl.
+# A finding here can reach users, so this list stays empty by default. Every entry needs:
+#   - vulnerability + package { name, version, type }, so a new version or a new CVE re-alerts;
+#   - a reason saying why the shipped binary is not affected (not merely "low EPSS"),
+#     with the date it was reviewed.
+# Passed with an explicit -c, which also stops grype from picking up ./.grype.yaml or ~/.grype.yaml.
+ignore: []

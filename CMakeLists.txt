@@ -24,6 +24,7 @@ option(MANGADEX_DL_WARNINGS_AS_ERRORS "Per-target COMPILE_WARNING_AS_ERROR (pres
 set(MANGADEX_DL_GLIBC_FLOOR "2.28" CACHE STRING "Highest GLIBC_x.y symbol version the release binary may require")
 option(MANGADEX_DL_LIFETIME_SAFETY "Clang -Wlifetime-safety-permissive (advisory, probed)" OFF)
 option(MANGADEX_DL_FUZZ "Build libFuzzer targets + corpus-replay tests (clang only)" OFF)
+option(MANGADEX_DL_LINK_DEPFILE "Linker-written list of every file linked into the binary (release preset: ON; read by scripts/binary-packages.sh)" OFF)
 
 if(MANGADEX_DL_HARDENING AND NOT "${MANGADEX_DL_SANITIZE}" STREQUAL "")
   message(FATAL_ERROR
@@ -122,6 +123,23 @@ if(MANGADEX_DL_HARDENING)
   target_link_options(mangadex_dl_app PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 mangadex_dl_add_sanitizer_options(mangadex_dl_app) # no-op unless sanitizing
+# Every file the linker pulls into the binary (crt objects, static libstdc++/libgcc, ...), written
+# by the linker itself as a make-style depfile. scripts/binary-packages.sh maps these files (plus
+# the compiler's header deps) to the conda packages that end up in the shipped artifact. CMake's
+# own CMAKE_LINK_DEPENDS_USE_LINKER cannot identify the conda compiler wrapper's linker, so the
+# flag is passed explicitly. It changes no byte of the binary.
+if(MANGADEX_DL_LINK_DEPFILE)
+  include(CheckLinkerFlag)
+  set(CMAKE_REQUIRED_QUIET ON)
+  check_linker_flag(CXX "LINKER:--dependency-file=${CMAKE_CURRENT_BINARY_DIR}/linker-flag-probe.d"
+                    MANGADEX_DL_HAVE_LD_DEPENDENCY_FILE)
+  if(NOT MANGADEX_DL_HAVE_LD_DEPENDENCY_FILE)
+    message(FATAL_ERROR "MANGADEX_DL_LINK_DEPFILE=ON but the linker does not accept --dependency-file "
+                        "(GNU ld >= 2.35, lld or mold do).")
+  endif()
+  target_link_options(mangadex_dl_app PRIVATE
+    "LINKER:--dependency-file=${CMAKE_CURRENT_BINARY_DIR}/mangadex-dl.link.d")
+endif()
 
 # ---- install (components: runtime, docs) ---------------------------------------------
 include("${PROJECT_SOURCE_DIR}/cmake/Install.cmake")

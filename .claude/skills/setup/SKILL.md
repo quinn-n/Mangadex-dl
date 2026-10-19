@@ -113,7 +113,7 @@ It also reports the symbolizer and linkage.
 - **The gcc env not usable:** the same STOP-and-report, because CI's gcc matrix leg would fail. If the gcc env isn't installed, say so (R1) and continue.
 
 ## 6. Green gate
-Run `nice pixi run check` with an explicit long Bash `timeout` (up to 600000 ms), or `run_in_background` and wait. A cold first build is slow. The chain is `fmt-check` → `test` → `lint` → `release`.
+Run `nice pixi run check` with an explicit long Bash `timeout` (up to 600000 ms), or `run_in_background` and wait. A cold first build is slow. The chain is `fmt-check` → `test` → `lint` → `release` → `binary-packages`.
 - **Expected failures before the first bless:** `+golden` E2E cases whose golden file doesn't exist yet. If those are the only failures, go to step 7 and re-run `check` afterwards.
 - **Any other failure:**
   - build/configure/link/lint infrastructure → `build-fixer`;
