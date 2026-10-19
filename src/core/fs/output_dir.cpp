@@ -13,8 +13,15 @@
 //   named,     no-clobber   renameat2(RENAME_NOREPLACE); EINVAL/ENOSYS -> linkat + unlinkat
 //   named,     overwrite    renameat
 // then a best-effort fsync of the directory.
+//
+// Update in place (skip-existing plan T6): open_existing opens DIR/<name> read-only for inspection
+// (fstatat pre-check, openat with O_NOFOLLOW | O_NONBLOCK, fstat re-check) and records its
+// FileIdentity. publish_replacing stages the new file under a `.part-` name (an O_TMPFILE inode is
+// linked to one first), re-checks the name with fstatat and renames over it only while the
+// identity still matches; a vanished name gets a no-clobber publish, anything else is `changed`.
 #include "mangadex_dl/fs/output_dir.hpp"
 
+#include "fs/errno_text.hpp"
 #include "fs/output_dir_testing.hpp"
 #include "mangadex_dl/error.hpp"
 
@@ -37,8 +44,6 @@
 #include <fcntl.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers): renameat2/RENAME_NOREPLACE are in <stdio.h> only
 #include <stdio.h>
-// NOLINTNEXTLINE(modernize-deprecated-headers): strerror_r is POSIX, declared only in <string.h>
-#include <string.h>
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -53,6 +58,7 @@ struct FaultSwitches {
     std::atomic<bool> fallback_tempfiles{false};
     std::atomic<bool> renameat2_unsupported{false};
     std::atomic<bool> proc_unavailable{false};
+    std::atomic<bool> skip_existing_precheck{false};
     std::atomic<int> write_errno{0};
     std::atomic<int> fsync_errno{0};
     std::atomic<int> close_errno{0};
@@ -67,32 +73,6 @@ inline constexpr std::size_t random_suffix_bytes = 6; // 12 hex digits
 inline constexpr int max_name_attempts = 16;
 inline constexpr mode_t file_mode = 0644;
 inline constexpr mode_t dir_mode = 0755;
-
-// strerror_r has two signatures and glibc picks one by feature macros (C++ compilers predefine
-// _GNU_SOURCE, so it is the GNU one here). These overloads normalize the result either way;
-// whichever flavour the headers declare, the other overload is unused, hence [[maybe_unused]].
-
-/// GNU strerror_r: returns the message, which may point into `buffer` or at a static string.
-[[maybe_unused]] [[nodiscard]] const char* strerror_r_text(const char* message,
-                                                           const char* /*buffer*/) noexcept {
-    return message;
-}
-
-/// XSI strerror_r: returns 0 after filling `buffer`, or an error number (nothing usable).
-[[maybe_unused]] [[nodiscard]] const char* strerror_r_text(int status,
-                                                           const char* buffer) noexcept {
-    return status == 0 ? buffer : nullptr;
-}
-
-[[nodiscard]] std::string errno_text(int err) {
-    std::array<char, 256> buffer{};
-    const char* text =
-        strerror_r_text(::strerror_r(err, buffer.data(), buffer.size()), buffer.data());
-    if (text == nullptr) {
-        return std::format("error {}", err);
-    }
-    return std::string{text};
-}
 
 /// "<what> '<name>': <strerror>".
 [[nodiscard]] Error fs_error(std::string_view what, std::string_view name, int err) {
@@ -293,30 +273,21 @@ private:
     bool armed_ = true;
 };
 
-/// Publishes an O_TMPFILE inode (`tmp_fd`, already fsynced) as `final_name` in `dir`.
-[[nodiscard]] Result<PublishOutcome>
-publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwrite) {
-    const std::string proc_path = proc_fd_path(tmp_fd);
-    const auto proc_error = [&final_name](int err) {
-        if (err == ENOENT) {
-            return plain_error(std::format("cannot publish '{}': /proc/self/fd is unavailable ({})",
-                                           final_name, errno_text(err)));
-        }
-        return fs_error("cannot publish", final_name, err);
-    };
-
-    if (!overwrite) {
-        const int err = link_proc(proc_path, dir, final_name);
-        if (err == 0) {
-            return PublishOutcome::written;
-        }
-        if (err == EEXIST) {
-            return PublishOutcome::exists;
-        }
-        return std::unexpected(proc_error(err));
+/// The error for a failed linkat of an O_TMPFILE inode through /proc (ENOENT: /proc is gone).
+[[nodiscard]] Error proc_publish_error(const std::string& final_name, int err) {
+    if (err == ENOENT) {
+        return plain_error(std::format("cannot publish '{}': /proc/self/fd is unavailable ({})",
+                                       final_name, errno_text(err)));
     }
+    return fs_error("cannot publish", final_name, err);
+}
 
-    // Overwrite: give the inode a temporary name, then rename it over the final name atomically.
+/// Links an O_TMPFILE inode (`tmp_fd`, already fsynced) to a fresh `.<final>.part-<hex>` name in
+/// `dir`, so a single renameat can then move it over `final_name`. The new name; the caller
+/// owns it (an UnlinkGuard) from here.
+[[nodiscard]] Result<std::string> link_to_part_name(int tmp_fd, int dir,
+                                                    const std::string& final_name) {
+    const std::string proc_path = proc_fd_path(tmp_fd);
     Result<std::expected<std::string, int>> linked =
         with_unique_name(final_name, [&proc_path, dir](const std::string& name) noexcept {
             return link_proc(proc_path, dir, name);
@@ -325,9 +296,31 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
         return std::unexpected(std::move(linked).error());
     }
     if (!linked->has_value()) {
-        return std::unexpected(proc_error(linked->error()));
+        return std::unexpected(proc_publish_error(final_name, linked->error()));
     }
-    UnlinkGuard temp_name{dir, std::move(**linked)};
+    return std::move(**linked);
+}
+
+/// Publishes an O_TMPFILE inode (`tmp_fd`, already fsynced) as `final_name` in `dir`.
+[[nodiscard]] Result<PublishOutcome>
+publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwrite) {
+    if (!overwrite) {
+        const int err = link_proc(proc_fd_path(tmp_fd), dir, final_name);
+        if (err == 0) {
+            return PublishOutcome::written;
+        }
+        if (err == EEXIST) {
+            return PublishOutcome::exists;
+        }
+        return std::unexpected(proc_publish_error(final_name, err));
+    }
+
+    // Overwrite: give the inode a temporary name, then rename it over the final name atomically.
+    Result<std::string> linked = link_to_part_name(tmp_fd, dir, final_name);
+    if (!linked) {
+        return std::unexpected(std::move(linked).error());
+    }
+    UnlinkGuard temp_name{dir, std::move(*linked)};
     const bool existed = name_exists(dir, final_name);
     if (::renameat(dir, temp_name.name().c_str(), dir, final_name.c_str()) != 0) {
         return std::unexpected(fs_error("cannot publish", final_name, errno));
@@ -441,6 +434,30 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
     return {};
 }
 
+/// The errnos that make an existing name `unreadable` (shown to the user as "cannot be read").
+[[nodiscard]] bool is_unreadable_errno(int err) noexcept {
+    return err == EACCES || err == EPERM || err == EIO;
+}
+
+/// The openat errnos that mean "not a regular file": ELOOP for any symlink under O_NOFOLLOW
+/// (dangling and looping ones too), ENXIO for a UNIX socket or a char device without a driver,
+/// ENODEV for a device without one.
+[[nodiscard]] bool is_not_regular_open_errno(int err) noexcept {
+    return err == ELOOP || err == ENXIO || err == ENODEV;
+}
+
+/// The identity of the file `st` describes; every field assigned from a `struct stat` lvalue of
+/// the same type.
+[[nodiscard]] FileIdentity identity_of(const struct stat& st) noexcept {
+    return FileIdentity{.device = st.st_dev,
+                        .inode = st.st_ino,
+                        .size = st.st_size,
+                        .mtime_sec = st.st_mtim.tv_sec,
+                        .mtime_nsec = st.st_mtim.tv_nsec,
+                        .ctime_sec = st.st_ctim.tv_sec,
+                        .ctime_nsec = st.st_ctim.tv_nsec};
+}
+
 } // namespace
 
 namespace testing {
@@ -455,6 +472,10 @@ void force_renameat2_unsupported(bool on) noexcept {
 
 void force_proc_unavailable(bool on) noexcept {
     g_faults.proc_unavailable.store(on, std::memory_order_relaxed);
+}
+
+void force_skip_existing_precheck(bool on) noexcept {
+    g_faults.skip_existing_precheck.store(on, std::memory_order_relaxed);
 }
 
 void force_io_error(IoStage stage, int err) noexcept {
@@ -717,6 +738,137 @@ Result<PublishOutcome> OutputDir::publish(TempFile&& temp, std::string_view fina
         static_cast<void>(fsync_retry(fd_.get()));
     }
     return outcome;
+}
+
+Result<ExistingHandle> OutputDir::open_existing(std::string_view name) const {
+    if (!is_component(name)) {
+        return std::unexpected(invalid_name(name));
+    }
+    const std::string component{name};
+
+    // 1. Classify without opening: a FIFO, socket, device, directory or symlink is never opened.
+    if (!g_faults.skip_existing_precheck.load(std::memory_order_relaxed)) {
+        struct stat st{};
+        if (::fstatat(fd_.get(), component.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            const int err = errno;
+            if (err == ENOENT) {
+                return ExistingHandle{.status = ExistingOpen::absent};
+            }
+            if (is_unreadable_errno(err)) {
+                return ExistingHandle{.status = ExistingOpen::unreadable, .error = err};
+            }
+            return std::unexpected(fs_error("cannot check", component, err));
+        }
+        if (!S_ISREG(st.st_mode)) {
+            return ExistingHandle{.status = ExistingOpen::not_regular};
+        }
+    }
+
+    // 2. Open. The name may have changed since the pre-check: O_NOFOLLOW refuses a symlink and
+    // O_NONBLOCK keeps a FIFO from blocking (it has no effect on a regular file).
+    UniqueFd fd{
+        open_at(fd_.get(), component.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)};
+    if (!fd.valid()) {
+        const int err = errno;
+        if (err == ENOENT) {
+            return ExistingHandle{.status = ExistingOpen::absent};
+        }
+        if (is_not_regular_open_errno(err)) {
+            return ExistingHandle{.status = ExistingOpen::not_regular, .error = err};
+        }
+        if (is_unreadable_errno(err)) {
+            return ExistingHandle{.status = ExistingOpen::unreadable, .error = err};
+        }
+        return std::unexpected(fs_error("cannot open", component, err));
+    }
+
+    // 3. Re-check what was opened (a directory, FIFO or char device opens successfully) and
+    // record its identity. A non-regular file is closed again when `fd` goes out of scope.
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0) {
+        const int err = errno;
+        if (is_unreadable_errno(err)) {
+            return ExistingHandle{.status = ExistingOpen::unreadable, .error = err};
+        }
+        return std::unexpected(fs_error("cannot check", component, err));
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return ExistingHandle{.status = ExistingOpen::not_regular};
+    }
+    return ExistingHandle{
+        .status = ExistingOpen::opened, .fd = std::move(fd), .identity = identity_of(st)};
+}
+
+Result<ReplaceOutcome> OutputDir::publish_replacing(TempFile&& temp, std::string_view final_name,
+                                                    const FileIdentity& expected) {
+    // Consume `temp` on every path: `local` discards it unless it was published.
+    TempFile local{std::move(temp)};
+    if (!local.state_) {
+        return std::unexpected(plain_error("publish of a discarded temporary file"));
+    }
+    if (!is_component(final_name)) {
+        return std::unexpected(invalid_name(final_name));
+    }
+    if (Result<void> synced = local.sync_and_close(); !synced) {
+        return std::unexpected(std::move(synced).error());
+    }
+    TempFile::State& s = *local.state_;
+    const std::string name{final_name};
+
+    // Stage the new content under a name of its own before the check, so that the replacement
+    // after it is a single renameat. A named temporary already has one (the State unlinks it on
+    // discard); an O_TMPFILE inode is linked to a fresh `.part-` name, which `staged` unlinks
+    // unless the rename consumes it.
+    std::optional<UnlinkGuard> staged{};
+    if (!s.named) {
+        Result<std::string> linked = link_to_part_name(s.fd.get(), fd_.get(), name);
+        if (!linked) {
+            return std::unexpected(std::move(linked).error());
+        }
+        staged.emplace(fd_.get(), std::move(*linked));
+    }
+
+    // The final check. `expected` came from an fstat on a descriptor the caller still holds, so
+    // its inode number cannot have been reused (V5). From here to the renameat below another
+    // process could still swap the name: a window of microseconds, accepted for a user-owned
+    // directory (cpp-security section 4). Not tested on overlayfs (V6).
+    struct stat st{};
+    if (::fstatat(fd_.get(), name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        const int err = errno;
+        if (err != ENOENT) {
+            return std::unexpected(fs_error("cannot check", name, err));
+        }
+        // The name vanished: publish without clobbering whatever may appear meanwhile.
+        Result<PublishOutcome> published =
+            s.named ? publish_named(s.dir.get(), s.temp_name, fd_.get(), name, false)
+                    : publish_tmpfile(s.fd.get(), fd_.get(), name, false);
+        if (!published) {
+            return std::unexpected(std::move(published).error());
+        }
+        if (*published == PublishOutcome::exists) {
+            return ReplaceOutcome::changed;
+        }
+        static_cast<void>(fsync_retry(fd_.get())); // best effort, as in publish()
+        return ReplaceOutcome::written;
+    }
+    if (!S_ISREG(st.st_mode) || identity_of(st) != expected) {
+        return ReplaceOutcome::changed; // `staged` and `local` discard the new content
+    }
+
+    if (staged.has_value()) {
+        if (::renameat(fd_.get(), staged->name().c_str(), fd_.get(), name.c_str()) != 0) {
+            return std::unexpected(fs_error("cannot publish", name, errno));
+        }
+        staged->dismiss();
+    } else {
+        if (::renameat(s.dir.get(), s.temp_name.c_str(), fd_.get(), name.c_str()) != 0) {
+            return std::unexpected(fs_error("cannot publish", name, errno));
+        }
+        s.temp_name.clear();
+    }
+    // Best effort: make the new directory entry durable (see publish()).
+    static_cast<void>(fsync_retry(fd_.get()));
+    return ReplaceOutcome::replaced;
 }
 
 } // namespace mangadex_dl

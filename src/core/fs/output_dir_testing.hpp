@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Private testing seam for src/core/fs/output_dir.cpp (download plan T8). Not part of the public
-// interface: only output_dir.cpp and the unit tests include it. Each switch is a process-wide
-// fault injection that forces one of the fallback paths a normal Linux test machine never takes
-// (a filesystem without O_TMPFILE or RENAME_NOREPLACE, a system without /proc).
+// Private testing seam for src/core/fs/output_dir.cpp (download plan T8, skip-existing plan T6).
+// Not part of the public interface: only output_dir.cpp and the unit tests include it. Each switch
+// is a process-wide fault injection that forces one of the paths a normal Linux test machine never
+// takes (a filesystem without O_TMPFILE or RENAME_NOREPLACE, a system without /proc, a name that
+// changes type between two system calls).
 //
 // The switches are atomics, so flipping one is never a data race, but they are global: set them
 // only from single-threaded test code, and restore them (ScopedOutputDirFault) before the test
@@ -25,6 +26,11 @@ void force_renameat2_unsupported(bool on) noexcept;
 /// O_TMPFILE probe in create_temp falls back to a named temporary, and publishing an O_TMPFILE
 /// temporary fails with Errc::failure.
 void force_proc_unavailable(bool on) noexcept;
+
+/// While on, OutputDir::open_existing skips its fstatat pre-check and goes straight to openat
+/// (skip-existing plan T6), so tests reach the openat errno mapping (ELOOP for a symlink, ENXIO for
+/// a socket) and the post-open fstat re-check (a directory or FIFO opens, then is closed again).
+void force_skip_existing_precheck(bool on) noexcept;
 
 /// The TempFile system calls force_io_error can fail.
 enum class IoStage {
