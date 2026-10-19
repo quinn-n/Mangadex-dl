@@ -106,3 +106,57 @@ if(EDGE_ECHO_ARGS)
                  EXPECT_EXIT 0 EXPECT_JSON)
   endif()
 endif()
+
+# ---- re-runs that UPDATE an existing DIR (docs/design/skip-existing-spec.md, criterion 19) ----------
+# Each case first downloads the clean fixture into `out` (PRE_RUN), then runs against a variant that
+# makes the main run rebuild files that already exist. clean-grown-reuse-only adds ch 4 to Vol. 2 and
+# serves only ch 4, so Vol. 2 is updated (held ch 3 copied, ch 4 downloaded) and Vol. 1 is up to date.
+set(_edge_clean_id 11111111-1111-4111-8111-111111111111)
+set(_edge_update_pre_args download --api-base file://{{FIXTURES}}/clean ${_edge_clean_id} out)
+set(_edge_update_args download --api-base file://{{FIXTURES}}/clean-grown-reuse-only ${_edge_clean_id} out)
+set(_edge_vol1 "out/Clean Title - Vol. 01.epub")
+set(_edge_vol2 "out/Clean Title - Vol. 02.epub")
+set(_edge_note_one_re
+    "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n")
+
+# stdout on a full device during an update: exit 1 with the `write error` diagnostic (never a silent 0),
+# and the update itself still lands: Vol. 2 is a sound EPUB, Vol. 1 is untouched, no temp file is left.
+# The reason after "write error: " is not pinned: the note on stderr is written first, and std::cerr is
+# tied to std::cout, so that write already flushes stdout, fails, and consumes the errno.
+cli_e2e_case(NAME dev-full-update
+             PRE_RUN ${_edge_update_pre_args}
+             ARGS ${_edge_update_args}
+             STDOUT_FILE /dev/full
+             EXPECT_EXIT 1
+             EXPECT_STDERR_REGEX "^${_edge_note_one_re}mangadex-dl: write error: [^\n]+\n$"
+             EXPECT_EPUB "${_edge_vol2}"
+             EXPECT_UNCHANGED "${_edge_vol1}"
+             EXPECT_NO_GLOB "out/.*.part-*")
+
+# `| head -n 1` across two updates: --group "Bravo Scans" re-picks group B's releases, so BOTH volumes
+# are rebuilt and listed. Plan decision D7: the writer exits 0 here, not 141.
+# CONSTRAINT (fact-check V18): this is deterministic ONLY because stdout stays fully buffered (nothing
+# flushes it per path) and this run prints well under 4 KiB, so both lines reach the pipe in one write
+# at exit, before `head` can close it. If stdout is ever flushed per path (or this output grows past a
+# pipe buffer), the writer may die by SIGPIPE instead: revisit this case then. SIGPIPE policy A itself
+# is proven by the bulk `sigpipe` cases above.
+cli_e2e_case(NAME pipe-head-update
+             PRE_RUN ${_edge_update_pre_args}
+             ARGS download --group "Bravo Scans" --api-base file://{{FIXTURES}}/clean-regrouped-served
+                  ${_edge_clean_id} out
+             PIPE_HEAD 1 EXPECT_PIPE_RESULT 0
+             EXPECT_STDOUT_REGEX "^out/Clean Title - Vol\\. 01\\.epub\n$" EXPECT_STDERR_EMPTY
+             EXPECT_EPUB "${_edge_vol1}" "${_edge_vol2}"
+             EXPECT_NO_GLOB "out/.*.part-*")
+
+# An update with fd 0 closed: stdin is never read, and a closed fd 0 must not be reused by mistake.
+cli_e2e_case(NAME stdin-closed-update
+             PRE_RUN ${_edge_update_pre_args}
+             ARGS ${_edge_update_args}
+             STDIN CLOSED
+             EXPECT_EXIT 0
+             EXPECT_STDOUT_REGEX "^out/Clean Title - Vol\\. 02\\.epub\n$"
+             EXPECT_STDERR_REGEX "^${_edge_note_one_re}$"
+             EXPECT_EPUB "${_edge_vol2}"
+             EXPECT_UNCHANGED "${_edge_vol1}"
+             EXPECT_NO_GLOB "out/.*.part-*")

@@ -648,7 +648,7 @@ Open item: only V1 (human).
 - **Owns:** `tests/cli/download_update_cli_test.cpp` (new).
 - **Tests:**
   - **Criterion 7:** clean twice gives exit 0, empty stdout, stderr exactly the note, and JSON `complete` with `pages` = the held count.
-  - **Criterion 8:** reuse proof against `clean-grown-reuse-only`: JSON `incomplete` / `replaced: true` / `new_chapters: [ch4]` / `reused_chapters: [ch3]`, Vol 01 byte-unchanged, stderr empty.
+  - **Criterion 8:** reuse proof against `clean-grown-reuse-only`: JSON `incomplete` / `replaced: true` / `new_chapters: [ch4]` / `reused_chapters: [ch3]`, Vol 01 byte-unchanged, stderr exactly the singular up-to-date note (Vol 01 is complete).
   - **Criterion 9:** byte identity at `-j1` and `-j8`.
   - **Criterion 10:** `clean-regrouped` rebuilds nothing.
   - **Criterion 11:** regrouped-grown gives Vol 01 identical to `clean-mixed-reference`, contributors A then B, `skipped_chapters` reconciled, the `-v` kept lines, Vol 02 complete.
@@ -681,7 +681,7 @@ Open item: only V1 (human).
 - **Owns:** `tests/e2e/cases/download.cmake`, `tests/e2e/cases/_edge.cmake`.
 - **Cases:** none are GOLDEN; exact exit codes; streams asserted separately.
   - `download.cmake`:
-    - `update-reuse`: PRE_RUN clean; main `clean-grown-reuse-only`. stdout exactly `^out/Clean Title - Vol\. 02\.epub\n$`, stderr empty, EXPECT_EPUB Vol 02, EXPECT_UNCHANGED Vol 01, EXPECT_NO_GLOB `out/.*.part-*`.
+    - `update-reuse`: PRE_RUN clean; main `clean-grown-reuse-only`. stdout exactly `^out/Clean Title - Vol\. 02\.epub\n$`, stderr exactly the singular up-to-date note, EXPECT_EPUB Vol 02, EXPECT_UNCHANGED Vol 01, EXPECT_NO_GLOB `out/.*.part-*`.
     - `update-json`.
     - `rerun-unchanged`, tightened: stderr exactly the note.
     - `up-to-date-json`.
@@ -690,7 +690,7 @@ Open item: only V1 (human).
     - `regroup-kept`.
     - `regroup-group-b`.
     - `regroup-group-c`.
-    - `update-failed`: exit 6, stdout empty, stderr regex `\(the existing file was kept\)\n`, EXPECT_UNCHANGED both.
+    - `update-failed` (PRE_RUN `clean-diverged`, main `clean-grown-reuse-only`, so the needed ch 3 is not served): exit 6, stdout empty, stderr regex `\(the existing file was kept\)\n`, EXPECT_UNCHANGED both.
     - `diverged-warning`: EXPECT_NO_ANSI.
     - `tty-update-progress`.
     - `tty-up-to-date`: EXPECT_NO_ANSI.

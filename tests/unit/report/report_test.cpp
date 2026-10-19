@@ -3,12 +3,14 @@
 // tests/unit/report/report_test.cpp: the run report (download plan T13): status counts, the
 // exit-code priority and the --json document. The document is asserted key by key after parsing
 // ("golden by assertion") for the success, dry-run, exit-5 and exit-6 shapes, plus the hostile
-// cases: invalid UTF-8 and terminal escapes in titles.
+// cases: invalid UTF-8 and terminal escapes in titles. Skip-existing plan T11 adds `existing`,
+// `new_chapters` and `reused_chapters` after `replaced`.
 
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
@@ -19,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -173,13 +176,16 @@ TEST_CASE("report_to_json: success shape", "[report][json]") {
     REQUIRE(epubs.is_array());
     REQUIRE(epubs.size() == 2);
     const json& first = epubs.at(0);
-    CHECK(first.size() == 10);
+    CHECK(first.size() == 13);
     CHECK(first.at("path") == "out/Test Manga - Vol. 01.epub");
     CHECK(first.at("kind") == "volume");
     CHECK(first.at("volume") == "1");
     CHECK(first.at("chapter").is_null());
     CHECK(first.at("status") == "written");
     CHECK(first.at("replaced") == true);
+    CHECK(first.at("existing").is_null());
+    CHECK(first.at("new_chapters") == json::array());
+    CHECK(first.at("reused_chapters") == json::array());
     CHECK(first.at("pages") == 5);
     CHECK(first.at("bytes") == 12345);
     CHECK(first.at("error").is_null());
@@ -340,4 +346,72 @@ TEST_CASE("report_to_json: valid UTF-8 is kept verbatim (not \\u-escaped)", "[re
     report.manga.title = "進撃の巨人";
     const std::string text = md::report_to_json(report);
     CHECK(text.contains("\"title\": \"進撃の巨人\""));
+}
+
+TEST_CASE("report_to_json: existing has a spelling for every kind and null for none",
+          "[report][json][existing]") {
+    struct Case {
+        md::ExistingKind kind = md::ExistingKind::none;
+        json spelling{};
+    };
+    const std::vector<Case> cases = {
+        {.kind = md::ExistingKind::none, .spelling = nullptr},
+        {.kind = md::ExistingKind::complete, .spelling = "complete"},
+        {.kind = md::ExistingKind::incomplete, .spelling = "incomplete"},
+        {.kind = md::ExistingKind::diverged, .spelling = "diverged"},
+        {.kind = md::ExistingKind::foreign, .spelling = "foreign"},
+        {.kind = md::ExistingKind::unchecked, .spelling = "unchecked"},
+    };
+    for (const Case& c : cases) {
+        INFO("existing = " << c.spelling.dump());
+        md::RunReport report = base_report();
+        md::EpubOutcome entry = outcome(md::EpubStatus::exists, "x.epub");
+        entry.existing = c.kind;
+        report.epubs = {entry};
+        const json doc = parse(md::report_to_json(report));
+        CHECK(doc.at("epubs").at(0).at("existing") == c.spelling);
+    }
+}
+
+TEST_CASE("report_to_json: the update keys follow replaced, in order, and keep the format version",
+          "[report][json][existing]") {
+    md::RunReport report = base_report();
+    md::EpubOutcome updated = outcome(md::EpubStatus::written, "out/Test Manga - Vol. 01.epub");
+    updated.replaced = true;
+    updated.existing = md::ExistingKind::incomplete;
+    updated.new_chapters = {std::string{chapter_two}};
+    updated.reused_chapters = {std::string{chapter_one}};
+    report.epubs = {updated};
+
+    const std::string text = md::report_to_json(report);
+    // The documented key order inside an epubs[] entry, checked on the text itself.
+    const std::vector<std::string_view> keys = {
+        "\"path\"",     "\"kind\"",     "\"volume\"",       "\"chapter\"",         "\"status\"",
+        "\"replaced\"", "\"existing\"", "\"new_chapters\"", "\"reused_chapters\"", "\"pages\"",
+        "\"bytes\"",    "\"error\"",    "\"chapters\""};
+    const std::size_t epubs_at = text.find("\"epubs\"");
+    REQUIRE(epubs_at != std::string::npos);
+    std::size_t at = epubs_at;
+    for (const std::string_view key : keys) {
+        INFO("key " << key);
+        const std::size_t found = text.find(key, at);
+        REQUIRE(found != std::string::npos);
+        at = found;
+    }
+
+    const json doc = parse(text);
+    CHECK(doc.at("format_version") == 1);
+    const json& epub = doc.at("epubs").at(0);
+    CHECK(epub.size() == 13);
+    CHECK(epub.at("existing") == "incomplete");
+    CHECK(epub.at("new_chapters") == json::array({chapter_two}));
+    CHECK(epub.at("reused_chapters") == json::array({chapter_one}));
+
+    // Several ids keep their order; empty lists are arrays, never null.
+    updated.new_chapters = {"b", "a", "c"};
+    updated.reused_chapters.clear();
+    report.epubs = {updated};
+    const json again = parse(md::report_to_json(report));
+    CHECK(again.at("epubs").at(0).at("new_chapters") == json::array({"b", "a", "c"}));
+    CHECK(again.at("epubs").at(0).at("reused_chapters") == json::array());
 }

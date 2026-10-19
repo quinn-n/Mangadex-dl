@@ -496,7 +496,11 @@ TEST_CASE("download re-run finds every file and --overwrite replaces it identica
     REQUIRE(again.has_value());
     CHECK(statuses(*again) == std::vector{md::EpubStatus::exists, md::EpubStatus::exists});
     CHECK(md::exit_code_for(*again) == 0);
-    CHECK(again->epubs[0].pages == 0);
+    // An up-to-date file reports the pages it holds (skip-existing: `pages` for exists is the
+    // held count, no longer 0).
+    CHECK(again->epubs[0].pages == 5);
+    CHECK(again->epubs[1].pages == 2);
+    CHECK(again->epubs[0].existing == md::ExistingKind::complete);
     CHECK(second.begins().empty());
     CHECK(h.transport().count_containing("/api/at-home/") == at_home_before);
     CHECK(read_file(h.out("out") / clean_vol1) == original);

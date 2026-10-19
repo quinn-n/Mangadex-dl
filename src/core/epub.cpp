@@ -12,6 +12,8 @@
 //   OEBPS/content.opf                package 3.0, written by finish()
 //   OEBPS/nav.xhtml                  EPUB 3 navigation document
 //   OEBPS/toc.ncx                    EPUB 2 compatibility table of contents
+//   META-INF/mangadex-dl.json        the book manifest; only finish(cover, chapters) writes it,
+//                                    always last (skip-existing plan T8)
 //
 // Package rules (fact-checked): `mimetype` is never listed in the manifest; `dcterms:modified` is
 // a <meta property> in CCYY-MM-DDThh:mm:ssZ form; `rendition:layout` pre-paginated,
@@ -26,6 +28,7 @@
 // nothing handed to ZipWriter::add_stored borrows from the sink (its precondition).
 #include "mangadex_dl/epub.hpp"
 
+#include "mangadex_dl/book_manifest.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/image.hpp"
 #include "mangadex_dl/model.hpp"
@@ -196,9 +199,20 @@ struct CodePoint {
     return std::format("pages/{}.xhtml", page_stem(index));
 }
 
-/// The page image's href relative to OEBPS/.
+/// The directory every package file lives in; hrefs inside the package are relative to it.
+constexpr std::string_view package_dir = "OEBPS/";
+
+/// `entry` (a zip entry name inside package_dir) as an href relative to package_dir.
+[[nodiscard]] std::string package_href(std::string_view entry) {
+    if (entry.starts_with(package_dir)) {
+        entry.remove_prefix(package_dir.size());
+    }
+    return std::string{entry};
+}
+
+/// The page image's href relative to OEBPS/ (derived from page_image_entry, the naming source).
 [[nodiscard]] std::string page_image_href(std::size_t index, MediaType type) {
-    return std::format("images/{}.{}", page_stem(index), file_extension(type));
+    return package_href(page_image_entry(index, type));
 }
 
 /// Width and height within [1, max_image_side] and a known media type.
@@ -317,9 +331,48 @@ struct NcxRenderer {
     return depth;
 }
 
+// ---- manifest ----------------------------------------------------------------------------------
+
+/// Ok when `chapters` tile the pages [0, total) exactly, in order: each starts where the previous
+/// one ended, covers at least one page (a manifest chapter always has an image), and the last
+/// ends at `total`. The bounds are checked before any sum, so no addition can wrap.
+[[nodiscard]] Result<void> check_tiling(std::span<const EpubBookChapter> chapters,
+                                        std::size_t total) {
+    std::size_t next = 0; // the first page not yet covered; never above total
+    for (std::size_t i = 0; i < chapters.size(); ++i) {
+        const EpubBookChapter& chapter = chapters[i];
+        if (chapter.first_page > total || chapter.page_count > total - chapter.first_page) {
+            return epub_error(std::format("EPUB manifest chapter {} covers pages past the {} added",
+                                          i + 1, total));
+        }
+        if (chapter.first_page != next) {
+            return epub_error(std::format("EPUB manifest chapter {} starts at page {}, not {}",
+                                          i + 1, chapter.first_page + 1, next + 1));
+        }
+        if (chapter.page_count == 0) {
+            return epub_error(std::format("EPUB manifest chapter {} covers no pages", i + 1));
+        }
+        // first_page == next and page_count <= total - first_page, so this stays <= total.
+        next += chapter.page_count;
+    }
+    if (next != total) {
+        return epub_error(
+            std::format("EPUB manifest chapters cover {} of the {} pages added", next, total));
+    }
+    return {};
+}
+
 } // namespace
 
 // ---- free functions ----------------------------------------------------------------------------
+
+std::string page_image_entry(std::size_t index, MediaType type) {
+    return std::format("{}images/{}.{}", package_dir, page_stem(index), file_extension(type));
+}
+
+std::string cover_image_entry(MediaType type) {
+    return std::format("{}images/cover.{}", package_dir, file_extension(type));
+}
 
 std::string xml_escape(std::string_view text) {
     std::string out;
@@ -574,11 +627,11 @@ struct EpubWriter::State {
             cover_image_id());
         if (cover) {
             std::format_to(std::back_inserter(out),
-                           "    <item id=\"cover-image\" href=\"images/cover.{}\" "
+                           "    <item id=\"cover-image\" href=\"{}\" "
                            "media-type=\"{}\" properties=\"cover-image\"/>\n"
                            "    <item id=\"cover\" href=\"cover.xhtml\" "
                            "media-type=\"application/xhtml+xml\"/>\n",
-                           file_extension(*cover), media_type_name(*cover));
+                           package_href(cover_image_entry(*cover)), media_type_name(*cover));
         }
         for (std::size_t i = 0; i < pages.size(); ++i) {
             const std::string_view properties =
@@ -652,6 +705,39 @@ struct EpubWriter::State {
                        xml_escape(meta.title), navmap.out);
         return out;
     }
+
+    /// Validates the pages and nav entries, then writes content.opf, nav.xhtml and toc.ncx.
+    /// Returns the CRC-32 of the exact content.opf bytes written. Leaves `phase` to the caller.
+    [[nodiscard]] Result<std::uint32_t> write_package() {
+        if (pages.empty()) {
+            return epub_error("EPUB has no pages");
+        }
+        for (const EpubNavEntry& entry : nav) {
+            if (entry.first_page >= pages.size()) {
+                return epub_error(std::format("EPUB navigation entry points at page {} of {}",
+                                              entry.first_page + 1, pages.size()));
+            }
+        }
+        // The toc <ol> must not be empty: without entries, one points at the first page. Built by
+        // push_back into a named vector (no initializer_list of a temporary node).
+        std::vector<NavNode> tree = build_nav_tree(nav);
+        if (tree.empty()) {
+            tree.push_back(
+                NavNode{.label = escaped_or(meta.title, "Page 1"), .page = 0, .children = {}});
+        }
+
+        const std::string opf = content_opf();
+        if (Result<void> ok = add_text(opf_entry_name, opf); !ok) {
+            return std::unexpected(std::move(ok.error()));
+        }
+        if (Result<void> ok = add_text("OEBPS/nav.xhtml", nav_xhtml(tree)); !ok) {
+            return std::unexpected(std::move(ok.error()));
+        }
+        if (Result<void> ok = add_text("OEBPS/toc.ncx", toc_ncx(tree)); !ok) {
+            return std::unexpected(std::move(ok.error()));
+        }
+        return crc32(bytes_of(opf));
+    }
 };
 
 EpubWriter::EpubWriter(ZipWriter& zip, EpubMetadata meta) : state_(std::make_unique<State>()) {
@@ -698,11 +784,12 @@ Result<void> EpubWriter::add_cover(std::span<const std::byte> image, ImageInfo i
     if (Result<void> ok = check_image(image, info); !ok) {
         return ok;
     }
-    const std::string href = std::format("images/cover.{}", file_extension(info.type));
+    const std::string entry = cover_image_entry(info.type);
     s.cover = info.type;
-    if (Result<void> ok = s.add(std::format("OEBPS/{}", href), image); !ok) {
+    if (Result<void> ok = s.add(entry, image); !ok) {
         return ok;
     }
+    const std::string href = package_href(entry);
     return s.add_text("OEBPS/cover.xhtml", page_xhtml(href, info, "Cover"));
 }
 
@@ -716,8 +803,7 @@ Result<void> EpubWriter::add_page(std::span<const std::byte> image, ImageInfo in
     }
     const std::size_t index = s.pages.size();
     s.pages.push_back(info.type);
-    if (Result<void> ok = s.add(std::format("OEBPS/{}", page_image_href(index, info.type)), image);
-        !ok) {
+    if (Result<void> ok = s.add(page_image_entry(index, info.type), image); !ok) {
         return ok;
     }
     // The page document lives in OEBPS/pages/, its image in OEBPS/images/.
@@ -733,30 +819,55 @@ Result<void> EpubWriter::finish() {
     if (Result<void> ok = s.require_open("finish()"); !ok) {
         return ok;
     }
-    if (s.pages.empty()) {
-        return epub_error("EPUB has no pages");
+    if (Result<std::uint32_t> opf_crc = s.write_package(); !opf_crc) {
+        return std::unexpected(std::move(opf_crc.error()));
     }
-    for (const EpubNavEntry& entry : s.nav) {
-        if (entry.first_page >= s.pages.size()) {
-            return epub_error(std::format("EPUB navigation entry points at page {} of {}",
-                                          entry.first_page + 1, s.pages.size()));
+    s.phase = State::Phase::finished;
+    return {};
+}
+
+Result<void> EpubWriter::finish(std::optional<std::string> cover_file_name,
+                                std::vector<EpubBookChapter> chapters) {
+    State& s = *state_;
+    if (Result<void> ok = s.require_open("finish()"); !ok) {
+        return ok;
+    }
+    if (Result<void> ok = check_tiling(chapters, s.pages.size()); !ok) {
+        return ok;
+    }
+    // Everything but the OPF CRC is known before the package is written.
+    BookManifest manifest{
+        .identifier = s.meta.identifier,
+        .opf_crc32 = 0,
+        .cover = std::nullopt,
+        .chapters = {},
+    };
+    if (s.cover && cover_file_name) {
+        manifest.cover = ManifestCover{
+            .file_name = std::move(*cover_file_name),
+            .entry = cover_image_entry(*s.cover),
+        };
+    }
+    manifest.chapters.reserve(chapters.size());
+    for (EpubBookChapter& chapter : chapters) {
+        ManifestChapter& record = chapter.record;
+        record.images.clear();
+        record.images.reserve(chapter.page_count);
+        // check_tiling: [first_page, first_page + page_count) lies within s.pages.
+        for (std::size_t i = 0; i < chapter.page_count; ++i) {
+            const std::size_t page = chapter.first_page + i;
+            record.images.push_back(page_image_entry(page, s.pages[page]));
         }
-    }
-    // The toc <ol> must not be empty: without entries, one points at the first page. Built by
-    // push_back into a named vector (no initializer_list of a temporary node).
-    std::vector<NavNode> tree = build_nav_tree(s.nav);
-    if (tree.empty()) {
-        tree.push_back(
-            NavNode{.label = escaped_or(s.meta.title, "Page 1"), .page = 0, .children = {}});
+        manifest.chapters.push_back(std::move(record));
     }
 
-    if (Result<void> ok = s.add_text("OEBPS/content.opf", s.content_opf()); !ok) {
-        return ok;
+    Result<std::uint32_t> opf_crc = s.write_package();
+    if (!opf_crc) {
+        return std::unexpected(std::move(opf_crc.error()));
     }
-    if (Result<void> ok = s.add_text("OEBPS/nav.xhtml", s.nav_xhtml(tree)); !ok) {
-        return ok;
-    }
-    if (Result<void> ok = s.add_text("OEBPS/toc.ncx", s.toc_ncx(tree)); !ok) {
+    manifest.opf_crc32 = *opf_crc;
+    // The last entry, after toc.ncx (a re-run finds it at the end of the central directory).
+    if (Result<void> ok = s.add_text(manifest_entry_name, manifest_to_json(manifest)); !ok) {
         return ok;
     }
     s.phase = State::Phase::finished;

@@ -92,7 +92,7 @@ There are no new flags and no new exit codes.
    - `ENOENT` → absent.
    - `EACCES`/`EPERM`/`EIO` → **foreign** ("cannot be read").
    - Any other errno → `Errc::failure`, exit 1.
-   - Record the identity `(st_dev, st_ino, st_size, st_mtim)`.
+   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
    - In a real run, **keep the fd open until publish**. Every later read goes through it.
 2. **Zip structure.**
    - `pread` loops retry `EINTR`; a short read means foreign.
@@ -202,7 +202,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - `summary` is unchanged.
 - **stdout:** one path per written file, now including updates.
 - **stderr** (all hidden by `-q`; passed through `terminal_safe`):
-  - Closing note, with no prefix and no color: `mangadex-dl: N files are already up to date; pass --overwrite to download them again` (`1 file is …`).
+  - Closing note, with no prefix and no color: `mangadex-dl: N files are already up to date; pass --overwrite to download them again` (singular: `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`). The prefix is the tool name, never `warning:`.
   - Foreign: `warning: <path>: left alone: <fixed reason>; <remedy>`.
     - Reasons: not a regular file · cannot be read (`<strerror>`) · not an EPUB made by mangadex-dl · holds a different book · changed by another program · made by a newer mangadex-dl · changed while it was being updated.
     - Remedies: "rename or remove it, or use another DIR" / "use another DIR or --title" / "pass --overwrite to replace it".
@@ -210,8 +210,9 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - Diverged: `warning: <path>: MangaDex lists N chapters this file lacks, but the file holds M chapters MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)`.
   - Damaged held chapter: `warning: <path>: Ch. 3 in the existing file is damaged; downloading it again`.
   - Failed update: `error: <path>: <error> (the existing file was kept)`.
+  - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`. Added in T11 after review.
 - **`-v`:**
-  - `<path>: up to date (N chapters)`
+  - `<path>: up to date (N chapters)` (singular: `(1 chapter)`, as the README states)
   - `updating <path>: 1 new chapter, 2 reused (Ch. 4)` (≤ 5 labels, then `and K more`)
   - in a dry run: `would update <path> (1 new chapter, 2 reused: Ch. 4)`
   - `<path>: Vol. 1 Ch. 1: kept the release already in the file (<held id>) instead of <plan id>`
@@ -238,7 +239,7 @@ Unchanged; there are no new codes.
 - **`plan_error`:** a complete file → `exists`; an incomplete one → `failed`, the old file kept.
 - **Edge suite:**
   - `> /dev/full` during an update → exit 1 + `write error`, and the file is complete.
-  - `| head -1` across two updates → 141, and every `.epub` is a valid zip.
+  - `| head -1` across two updates → exit 0 (plan D7, fact-check V18: two short buffered lines reach the pipe in one write at exit), one line, and every `.epub` a valid zip; SIGPIPE → 141 stays proven by the bulk edge cases.
   - stdin is never read, and there is no ANSI when output is not a TTY.
 - **Hostile archives**, each of which must classify as foreign or fall back, never crash, and stay sanitizer-clean:
   - truncation;
@@ -357,7 +358,7 @@ Unchanged; there are no new codes.
     - An up-to-date re-run case.
     - This needs a new driver keyword (`PRE_RUN`).
 18. `[e2e]` Bless requests: `e2e.download.help` and `e2e.download.json-dry-run`.
-19. `[edge]` After an update: `> /dev/full` → exit 1 + `write error`, and the file is complete. `| head -1` across two updates → 141, and every `.epub` is a valid zip.
+19. `[edge]` After an update: `> /dev/full` → exit 1 + `write error`, and the file is complete. `| head -1` across two updates → exit 0 (plan D7, fact-check V18: two short buffered lines reach the pipe in one write at exit), one line, and every `.epub` a valid zip; SIGPIPE → 141 stays proven by the bulk edge cases.
 20. `[tty-pty]` Progress appears while updating. The note isn't coloured. `warning:` is yellow, and plain under `NO_COLOR`.
 21. `[human]` Rebuilt and fresh EPUBs open in ≥ 2 readers, and epubcheck accepts `META-INF/mangadex-dl.json` (V1).
 22. `[human]` Live: on an ongoing series with a new chapter, only that chapter is fetched (`-vv`), with no 429 storm.
