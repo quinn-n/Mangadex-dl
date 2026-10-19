@@ -1,16 +1,31 @@
 # Feature spec (rev 2): `download` skips files that already hold every chapter, and rebuilds by reusing pages
 
-Status: rev 2, awaiting the design gate (2026-10-19). Produced by `cli-designer`.
+Status: APPROVED at the design gate (2026-10-19), with amendment 5. Produced by `cli-designer`.
 
 **Gate decisions (user, 2026-10-19):**
 1. No `--redownload-existing`. `--overwrite` is the only force flag, with reworded help.
-2. Page reuse now. Held chapters are copied from the old EPUB and only new ones are downloaded.
+2. Page reuse now. Held chapters are copied from the old EPUB, and only new ones are downloaded.
 3. No legacy class. The user has no prior files, so a file without a manifest is `foreign`.
 4. Diverged and foreign files give exit 0 plus a warning. The OPF-CRC "changed by another program" guard stays.
+5. **Re-pick on `--group` (this amends "keep the held release" below).**
+   - **When it applies:** only when `--group` was passed, and only to a held release H matched by **number** (not by id) to a planned release P.
+   - **The rule:** P replaces H only when P ranks **strictly better** than H under the `--group` priority list.
+     - A release's rank is the index of the first `--group` entry that matches any of its groups.
+     - A release matching no entry ranks worst.
+   - **Replacing:** H's pages are dropped and P is downloaded.
+   - **Keeping:** without `--group`, or when the ranks are equal (including both unmatched), H is kept, as described below. This means a file never flaps between two releases that `--group` ranks equally.
+   - **Effect on classification:** a re-picked chapter counts as "missing". So a file whose chapter numbers are all held, but where some release ranks worse under `--group`, is `incomplete` and is rebuilt. The other chapters are reused and the re-picked ones downloaded. Diverged rules are unchanged.
+   - **Report:**
+     - Re-picked ids go in `new_chapters`.
+     - `skipped_chapters` reconciliation follows the normal plan choice: H is not held after the rebuild, so no "kept" substitution is needed for it.
+     - `-v` line: `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with <group>'s (--group)`.
+   - **Acceptance:**
+     - `[unit]` rank comparison: better replaces; equal or worse keeps; no `--group` keeps.
+     - `[cli]` `clean`, then `clean-regrouped` **with `--group <B>`** → both volumes are rebuilt with B's releases (B's images must be served by that fixture variant), and the files are byte-identical to a fresh B download.
+     - `[cli]` the same run **without** `--group` → nothing is rebuilt (criterion 10).
+     - `[cli]` `--group <C>`, where C matches neither release → nothing is rebuilt.
 
-Designer decisions to confirm at plan approval:
-- A rebuild may mix `data` and `data-saver` chapters.
-- A held release wins over `--group` for chapters already on disk.
+Designer decision to confirm at plan approval: a rebuild may mix `data` and `data-saver` chapters, because quality is not compared.
 
 ---
 
