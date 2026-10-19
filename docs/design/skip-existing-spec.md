@@ -212,7 +212,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - Failed update: `error: <path>: <error> (the existing file was kept)`.
   - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`. Added in T11 after review.
 - **`-v`:**
-  - `<path>: up to date (N chapters)`
+  - `<path>: up to date (N chapters)` (singular: `(1 chapter)`, as the README states)
   - `updating <path>: 1 new chapter, 2 reused (Ch. 4)` (≤ 5 labels, then `and K more`)
   - in a dry run: `would update <path> (1 new chapter, 2 reused: Ch. 4)`
   - `<path>: Vol. 1 Ch. 1: kept the release already in the file (<held id>) instead of <plan id>`
