@@ -202,7 +202,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - `summary` is unchanged.
 - **stdout:** one path per written file, now including updates.
 - **stderr** (all hidden by `-q`; passed through `terminal_safe`):
-  - Closing note, with no prefix and no color: `mangadex-dl: N files are already up to date; pass --overwrite to download them again` (`1 file is …`).
+  - Closing note, with no prefix and no color: `mangadex-dl: N files are already up to date; pass --overwrite to download them again` (singular: `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`). The prefix is the tool name, never `warning:`.
   - Foreign: `warning: <path>: left alone: <fixed reason>; <remedy>`.
     - Reasons: not a regular file · cannot be read (`<strerror>`) · not an EPUB made by mangadex-dl · holds a different book · changed by another program · made by a newer mangadex-dl · changed while it was being updated.
     - Remedies: "rename or remove it, or use another DIR" / "use another DIR or --title" / "pass --overwrite to replace it".
