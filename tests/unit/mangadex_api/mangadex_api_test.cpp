@@ -3,7 +3,8 @@
 // tests/unit/mangadex_api/mangadex_api_test.cpp: MangaDex API parsing, validation, URL building and
 // MD@H report bodies (download plan T6, acceptance 9). Parsers are fed the canned fixture JSON
 // (tests/support/mdx_fixture.hpp) and hand-written hostile variants: wrong types, missing fields,
-// invalid UTF-8, oversized and over-deep documents, trailing garbage.
+// invalid UTF-8, oversized and over-deep documents, trailing garbage, a leading BOM and raw NUL
+// bytes.
 
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/manga_id.hpp"
@@ -527,6 +528,139 @@ TEST_CASE("an unterminated string after depth 64 is malformed, not a crash",
     const auto result = md::parse_feed_page(text);
     CHECK(error_code(result) == md::Errc::network);
     CHECK(error_message(result).find("nested deeper") == std::string::npos);
+}
+
+TEST_CASE("every parser rejects a leading UTF-8 byte order mark", "[mangadex_api][hostile]") {
+    // nlohmann would skip it silently; a MangaDex response never starts with one.
+    constexpr std::string_view bom = "\xEF\xBB\xBF";
+    const mdx::FixtureManga manga = mdx::clean_fixture();
+    const std::string manga_text = mdx::manga_json(manga).dump();
+    const std::string feed_text = mdx::feed_pages_json(manga).front().dump();
+    const std::string cover_text = mdx::covers_json(manga).front().dump();
+    const std::string at_home_text = mdx::at_home_json(manga.chapters.front()).dump();
+    REQUIRE(md::parse_manga(manga_text).has_value());
+    REQUIRE(md::parse_feed_page(feed_text).has_value());
+    REQUIRE(md::parse_cover_page(cover_text).has_value());
+    REQUIRE(md::parse_at_home(at_home_text).has_value());
+
+    const auto with_bom = [bom](const std::string& text) { return std::string{bom} + text; };
+    const auto bom_message = [](std::string_view what) {
+        return std::format(
+            "malformed MangaDex API response ({}): starts with a UTF-8 byte order mark", what);
+    };
+    const auto bad_manga = md::parse_manga(with_bom(manga_text));
+    CHECK(error_code(bad_manga) == md::Errc::network);
+    CHECK(error_message(bad_manga) == bom_message("manga"));
+    const auto bad_feed = md::parse_feed_page(with_bom(feed_text));
+    CHECK(error_code(bad_feed) == md::Errc::network);
+    CHECK(error_message(bad_feed) == bom_message("feed page"));
+    const auto bad_cover = md::parse_cover_page(with_bom(cover_text));
+    CHECK(error_code(bad_cover) == md::Errc::network);
+    CHECK(error_message(bad_cover) == bom_message("cover page"));
+    const auto bad_at_home = md::parse_at_home(with_bom(at_home_text));
+    CHECK(error_code(bad_at_home) == md::Errc::network);
+    CHECK(error_message(bad_at_home) == bom_message("at-home server"));
+}
+
+TEST_CASE("a raw NUL byte anywhere is malformed, not an early end of input",
+          "[mangadex_api][hostile]") {
+    // nlohmann's lexer takes a raw NUL as the end of input, so `doc\0junk` would parse as `doc`.
+    constexpr std::string_view nul_message =
+        "malformed MangaDex API response (at-home server): contains a raw NUL byte";
+    const std::string text = mdx::at_home_json(mdx::clean_fixture().chapters.front()).dump();
+    REQUIRE(md::parse_at_home(text).has_value());
+
+    SECTION("before trailing junk") {
+        std::string bad = text;
+        bad.push_back('\0');
+        bad += "junk";
+        const auto result = md::parse_at_home(bad);
+        CHECK(error_code(result) == md::Errc::network);
+        CHECK(error_message(result) == nul_message);
+    }
+    SECTION("alone at the end") {
+        std::string bad = text;
+        bad.push_back('\0');
+        const auto result = md::parse_at_home(bad);
+        CHECK(error_code(result) == md::Errc::network);
+        CHECK(error_message(result) == nul_message);
+    }
+    SECTION("in leading whitespace") {
+        std::string bad = " ";
+        bad.push_back('\0');
+        bad += ' ';
+        bad += text;
+        const auto result = md::parse_at_home(bad);
+        CHECK(error_code(result) == md::Errc::network);
+        CHECK(error_message(result) == nul_message);
+    }
+    SECTION("inside a string value") {
+        std::string bad = mdx::manga_json(mdx::clean_fixture()).dump();
+        const std::size_t at = bad.find("Clean Title");
+        REQUIRE(at != std::string::npos);
+        bad[at + 5] = '\0'; // the space: "Clean\0Title"
+        const auto result = md::parse_manga(bad);
+        CHECK(error_code(result) == md::Errc::network);
+        CHECK(error_message(result) ==
+              "malformed MangaDex API response (manga): contains a raw NUL byte");
+    }
+    SECTION("each parser rejects one") {
+        const mdx::FixtureManga manga = mdx::clean_fixture();
+        const auto with_nul = [](std::string doc) {
+            doc.push_back('\0');
+            doc += "junk";
+            return doc;
+        };
+        CHECK(error_code(md::parse_manga(with_nul(mdx::manga_json(manga).dump()))) ==
+              md::Errc::network);
+        CHECK(error_code(md::parse_feed_page(
+                  with_nul(mdx::feed_pages_json(manga).front().dump()))) == md::Errc::network);
+        CHECK(error_code(md::parse_cover_page(with_nul(mdx::covers_json(manga).front().dump()))) ==
+              md::Errc::network);
+        CHECK(error_code(md::parse_at_home(with_nul(text))) == md::Errc::network);
+    }
+}
+
+TEST_CASE("an escaped NUL and the BOM character inside strings still parse",
+          "[mangadex_api][hostile]") {
+    const std::string clean = mdx::manga_json(mdx::clean_fixture()).dump();
+    const std::size_t at = clean.find("Clean Title");
+    REQUIRE(at != std::string::npos);
+
+    SECTION("an escaped \\u0000") {
+        std::string text = clean;
+        text.replace(at + 5, 1, "\\u0000");
+        const auto info = md::parse_manga(text);
+        REQUIRE(info.has_value());
+        CHECK(info->titles ==
+              std::vector<md::LocalizedText>{{"en", std::string{"Clean\0Title", 11}}});
+    }
+    SECTION("raw U+FEFF bytes mid-document") {
+        std::string text = clean;
+        text.replace(at, 0, "\xEF\xBB\xBF");
+        const auto info = md::parse_manga(text);
+        REQUIRE(info.has_value());
+        CHECK(info->titles == std::vector<md::LocalizedText>{{"en", "\xEF\xBB\xBF"
+                                                                    "Clean Title"}});
+    }
+    SECTION("an escaped \\ufeff") {
+        std::string text = clean;
+        text.replace(at, 0, "\\ufeff");
+        const auto info = md::parse_manga(text);
+        REQUIRE(info.has_value());
+        CHECK(info->titles == std::vector<md::LocalizedText>{{"en", "\xEF\xBB\xBF"
+                                                                    "Clean Title"}});
+    }
+}
+
+TEST_CASE("the byte cap is checked before the NUL scan", "[mangadex_api][hostile]") {
+    std::string text = mdx::at_home_json(mdx::clean_fixture().chapters.front()).dump();
+    REQUIRE(text.size() < md::max_api_json_bytes);
+    text.push_back('\0');
+    text.resize(md::max_api_json_bytes + 1, ' ');
+    const auto too_big = md::parse_at_home(text);
+    CHECK(error_code(too_big) == md::Errc::network);
+    CHECK(error_message(too_big) == "MangaDex API response (at-home server) is larger than 16 MiB");
 }
 
 // ---- parse_cover_page ---------------------------------------------------------------------------
