@@ -499,7 +499,7 @@ TEST_CASE("parse_manifest rejects invalid UTF-8, trailing data, a BOM and empty 
     CHECK(fault_of(text + text) == malformed);
     CHECK(fault_of(text + ",") == malformed);
     CHECK(fault_of(text + "/* c */") == malformed);
-    // A raw NUL: nlohmann's lexer stops there, so parse_manifest rejects it explicitly.
+    // A raw NUL: nlohmann's lexer stops there, so parse_untrusted rejects it explicitly.
     CHECK(fault_of(text + std::string(1, '\0')) == malformed);
     CHECK(fault_of(text + std::string(1, '\0') + "junk") == malformed);
     std::string nul_in_string = text;
