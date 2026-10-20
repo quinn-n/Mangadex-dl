@@ -385,18 +385,19 @@ TEST_CASE("download update cli: --group naming the other group re-picks and rebu
     const std::vector<std::string> expected_err{
         "mangadex-dl: planned 2 files; 0 chapters skipped",
         std::format("mangadex-dl: {}: Vol. 1 Ch. 1: replacing the release in the file (Clean "
-                    "Scans) with Bravo Scans's (--group)",
+                    "Scans) with the release by Bravo Scans (--group)",
                     p1),
         std::format("mangadex-dl: {}: Vol. 1 Ch. 2: replacing the release in the file (Clean "
-                    "Scans) with Bravo Scans's (--group)",
+                    "Scans) with the release by Bravo Scans (--group)",
                     p1),
-        std::format("mangadex-dl: updating {}: 2 new chapters, 0 reused (Ch. 1, Ch. 2)", p1),
+        std::format("mangadex-dl: updating {}: downloading 2 chapters (Ch. 1, Ch. 2), reusing 0",
+                    p1),
         std::format("mangadex-dl: wrote {} (5 pages, {} bytes, replaced the existing file)", p1,
                     std::filesystem::file_size(out / vol1)),
         std::format("mangadex-dl: {}: Vol. 2 Ch. 3: replacing the release in the file (Clean "
-                    "Scans) with Bravo Scans's (--group)",
+                    "Scans) with the release by Bravo Scans (--group)",
                     p2),
-        std::format("mangadex-dl: updating {}: 1 new chapter, 0 reused (Ch. 3)", p2),
+        std::format("mangadex-dl: updating {}: downloading 1 chapter (Ch. 3), reusing 0", p2),
         std::format("mangadex-dl: wrote {} (2 pages, {} bytes, replaced the existing file)", p2,
                     std::filesystem::file_size(out / vol2)),
     };
@@ -528,7 +529,7 @@ TEST_CASE("download update cli: a regrouped, grown volume keeps the held release
         std::format("mangadex-dl: {}: Vol. 1 Ch. 2: kept the release already in the file ({}) "
                     "instead of {}",
                     p1, mdx::clean_chapter_id(2), mdx::clean_chapter_id(mdx::bravo_ch2_n)),
-        std::format("mangadex-dl: updating {}: 1 new chapter, 2 reused (Ch. 2.5)", p1),
+        std::format("mangadex-dl: updating {}: downloading 1 chapter (Ch. 2.5), reusing 2", p1),
         std::format("mangadex-dl: wrote {} (7 pages, {} bytes, replaced the existing file)", p1,
                     std::filesystem::file_size(out / vol1)),
         std::format("mangadex-dl: {}: Vol. 2 Ch. 3: kept the release already in the file ({}) "
@@ -622,7 +623,7 @@ TEST_CASE("download update cli: a dry run names the file it would update and mod
     const std::vector<std::string> expected_err{
         "mangadex-dl: planned 2 files; 0 chapters skipped",
         std::format("mangadex-dl: {}: up to date (2 chapters)", (out / vol1).string()),
-        std::format("mangadex-dl: would update {} (1 new chapter, 1 reused: Ch. 4)",
+        std::format("mangadex-dl: would update {} (download 1 chapter: Ch. 4; reuse 1)",
                     (out / vol2).string()),
         "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again",
     };
@@ -817,9 +818,9 @@ TEST_CASE("download update cli: warning: is yellow on a TTY and plain under NO_C
         CHECK(r.out.empty());
         INFO("stderr: " << r.err);
         CHECK(r.err.contains(std::format(
-            "{}{}: MangaDex lists 1 chapter this file lacks, but the file holds 1 chapter "
-            "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without "
-            "them)\n",
+            "{}{}: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 chapter "
+            "MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it "
+            "without it)\n",
             v.prefix, (out / vol2).string())));
         CHECK(r.err.contains('\x1b') == !v.env.no_color); // the warning is the only colored text
         CHECK(ends_with_clean_note(r.err, note_one));

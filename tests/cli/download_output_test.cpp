@@ -346,7 +346,8 @@ TEST_CASE("Verbose dry run: 'would update' for an incomplete file, 'would replac
         observer.on_epub_end(planned);
         CHECK(cap.out.str() == "out/T - Vol. 02.epub\n");
         CHECK(cap.err.str() ==
-              "mangadex-dl: would update out/T - Vol. 02.epub (1 new chapter, 2 reused: Ch. 4)\n");
+              "mangadex-dl: would update out/T - Vol. 02.epub (download 1 chapter: Ch. 4; reuse "
+              "2)\n");
     }
     SECTION("at most five labels, then 'and K more', in the file's order") {
         Capture cap;
@@ -362,8 +363,8 @@ TEST_CASE("Verbose dry run: 'would update' for an incomplete file, 'would replac
         planned.new_chapters = {"n8", "n7", "n6", "n5", "n4", "n3", "n2"};
         planned.reused_chapters = {"r"};
         observer.on_epub_end(planned);
-        CHECK(cap.err.str() == "mangadex-dl: would update v.epub (7 new chapters, 1 reused: Ch. 2, "
-                               "Ch. 3, Ch. 4, Ch. 5, Ch. 6 and 2 more)\n");
+        CHECK(cap.err.str() == "mangadex-dl: would update v.epub (download 7 chapters: Ch. 2, "
+                               "Ch. 3, Ch. 4, Ch. 5, Ch. 6 and 2 more; reuse 1)\n");
     }
     SECTION("no labels when the new ids are not in the file's list") {
         Capture cap;
@@ -374,7 +375,7 @@ TEST_CASE("Verbose dry run: 'would update' for an incomplete file, 'would replac
         planned.new_chapters = {"elsewhere"};
         planned.reused_chapters = {"r"};
         observer.on_epub_end(planned);
-        CHECK(cap.err.str() == "mangadex-dl: would update v.epub (1 new chapter, 1 reused)\n");
+        CHECK(cap.err.str() == "mangadex-dl: would update v.epub (download 1 chapter; reuse 1)\n");
     }
     SECTION("--overwrite and new files keep their lines") {
         Capture cap;
@@ -435,8 +436,9 @@ TEST_CASE("A file that appeared while ours was being written gets its own warnin
         observer.on_epub_end(appeared);
         observer.finish();
         CHECK(cap.err.str() ==
-              "mangadex-dl: warning: out/?[2JT - Vol. 01.epub: appeared while it was being "
-              "written; left alone (pass --overwrite to replace it)\n");
+              "mangadex-dl: warning: out/?[2JT - Vol. 01.epub: left alone: another file took "
+              "this name while ours was being written, so ours was discarded; run the same "
+              "command again to check it\n");
         CHECK(cap.out.str().empty()); // not data, and not counted as up to date
     }
     {
@@ -462,13 +464,13 @@ TEST_CASE("Hostile text from an existing file's manifest is neutralized in warni
     Capture cap;
     app::ConsoleObserver observer(cap.io, app::OutputPolicy{.verbose = 1, .color_stderr = true});
     observer.on_verbose(1, std::format("a.epub: Vol. 1 Ch. 1: replacing the release in the file "
-                                       "({}) with Bravo Scans's (--group)",
+                                       "({}) with the release by Bravo Scans (--group)",
                                        group));
     observer.on_warning("a.epub: Ch. 3\x1b[2J in the existing file is damaged; downloading it "
                         "again");
     const std::string err = cap.err.str();
     CHECK(err == "mangadex-dl: a.epub: Vol. 1 Ch. 1: replacing the release in the file "
-                 "(Evil?]0;pwned??Scans?) with Bravo Scans's (--group)\n"
+                 "(Evil?]0;pwned??Scans?) with the release by Bravo Scans (--group)\n"
                  "mangadex-dl: " +
                      std::string{yellow_warning} +
                      " a.epub: Ch. 3?[2J in the existing file is damaged; downloading it again\n");
@@ -517,7 +519,7 @@ TEST_CASE("A group name read from an existing EPUB reaches the terminal neutrali
     INFO(r.err);
     CHECK(r.exit_code == 0);
     CHECK(r.err.contains("Vol. 1 Ch. 1: replacing the release in the file "
-                         "(Clean?]0;pwned??Scans) with Bravo Scans's (--group)\n"));
+                         "(Clean?]0;pwned??Scans) with the release by Bravo Scans (--group)\n"));
     CHECK(!r.err.contains('\x07'));
     CHECK(!r.err.contains("\x1b]"));
     for (const std::string& line : cli::lines_of(r.err)) {

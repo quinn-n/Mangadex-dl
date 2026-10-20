@@ -133,9 +133,9 @@ struct Decoded {
     return std::format("{} {}", count, count == 1 ? singular : plural);
 }
 
-/// What a dry-run update would do, for the -v line: "1 new chapter, 2 reused: Ch. 4". The labels
-/// name the new chapters (at most five, then "and K more"), in the file's reading order; the
-/// counts come from the outcome's id lists.
+/// What a dry-run update would do, for the -v line: "download 1 chapter: Ch. 4; reuse 2". The
+/// labels name the chapters to download (at most five, then "and K more"), in the file's reading
+/// order; the counts come from the outcome's id lists.
 [[nodiscard]] std::string update_counts(const EpubOutcome& outcome) {
     std::vector<Chapter> fresh{};
     for (const Chapter& chapter : outcome.epub.chapters) {
@@ -143,14 +143,14 @@ struct Decoded {
             fresh.push_back(chapter);
         }
     }
-    std::string counts = std::format(
-        "{}, {} reused", count_of(outcome.new_chapters.size(), "new chapter", "new chapters"),
-        outcome.reused_chapters.size());
+    const std::string download =
+        std::format("download {}", count_of(outcome.new_chapters.size(), "chapter", "chapters"));
+    const std::string reuse = std::format("reuse {}", outcome.reused_chapters.size());
     const std::string labels = chapter_labels(fresh);
     if (labels.empty()) {
-        return counts;
+        return std::format("{}; {}", download, reuse);
     }
-    return std::format("{}: {}", counts, labels);
+    return std::format("{}: {}; {}", download, labels, reuse);
 }
 
 /// The -v line for a dry run's planned file: "would update <path> (...)" for an incomplete file,
@@ -299,8 +299,9 @@ void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
     case ExistingKind::none:
         // Nothing was there when the file was assessed, but a file of that name was published
         // by someone else before ours: the new file was discarded and theirs left alone.
-        warning(std::format("{}: appeared while it was being written; left alone (pass "
-                            "--overwrite to replace it)",
+        warning(std::format("{}: left alone: another file took this name while ours was being "
+                            "written, so ours was discarded; run the same command again to "
+                            "check it",
                             outcome.path));
         return;
     case ExistingKind::incomplete:

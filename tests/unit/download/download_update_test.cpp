@@ -575,7 +575,7 @@ TEST_CASE("download update: a grown volume reuses its held chapter and equals a 
     CHECK(observer.begins() == std::vector{std::string{clean_vol2}});
     CHECK(observer.warnings().empty());
     CHECK(observer.verbose1() ==
-          std::vector{std::format("updating {}: 1 new chapter, 1 reused (Ch. 4)",
+          std::vector{std::format("updating {}: downloading 1 chapter (Ch. 4), reusing 1",
                                   (t.out() / clean_vol2).string())});
 
     const md::BookManifest manifest = manifest_of(t.out() / clean_vol2);
@@ -692,7 +692,7 @@ TEST_CASE("download update: --group re-picks a better-ranked group's releases (d
     const std::vector<std::string> lines = observer.verbose1();
     CHECK(std::ranges::count(
               lines, std::format("{}: Vol. 1 Ch. 1: replacing the release in the file (Clean "
-                                 "Scans) with Bravo Scans's (--group)",
+                                 "Scans) with the release by Bravo Scans (--group)",
                                  (t.out() / clean_vol1).string())) == 1);
     CHECK(std::ranges::count_if(lines, [](const std::string& line) {
               return line.contains("replacing the release");
@@ -995,9 +995,9 @@ TEST_CASE("download update: a diverged file is left alone and lists what it hold
     CHECK(outcome.reused_chapters.empty());
     CHECK_FALSE(outcome.replaced);
     CHECK(observer.warnings() ==
-          std::vector{std::format("{}: MangaDex lists 1 chapter this file lacks, but the file "
-                                  "holds 1 chapter MangaDex no longer lists; left it alone (pass "
-                                  "--overwrite to rebuild it without them)",
+          std::vector{std::format("{}: MangaDex lists 1 chapter this file lacks (Ch. 4), but the "
+                                  "file holds 1 chapter MangaDex no longer lists (Ch. 3); left it "
+                                  "alone (pass --overwrite to rebuild it without it)",
                                   (t.out() / clean_vol2).string())});
     CHECK(observer.begins().empty());
     CHECK(t.transport("diverged").count_containing("/at-home/") == 0);

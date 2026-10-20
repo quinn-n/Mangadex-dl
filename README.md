@@ -193,7 +193,7 @@ Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
   release in the file, so a file never flips between two equally ranked releases. A re-picked
   chapter counts as missing: the file is rebuilt, the other chapters are reused and the new
   release is downloaded. `-v` prints
-  `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with <group>'s (--group)`.
+  `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with the release by <group> (--group)`.
 - **Image quality is not compared.** A rebuilt file can mix original (`data`) and `--data-saver`
   chapters; each chapter's quality is recorded in the file. Switching `--data-saver` on or off
   does not rebuild anything by itself; use `--overwrite` for that.
@@ -219,12 +219,12 @@ Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
   `mangadex-dl: error: <path>: the existing file changed or could not be read during the update (the existing file was kept)`.
   Ctrl-C and `SIGTERM` during an update also leave the old file unchanged.
 - With `-v`, each file gets one line: `<path>: up to date (N chapters)` (`(1 chapter)` for one), or
-  `updating <path>: 1 new chapter, 2 reused (Ch. 4)`. The labels name the new chapters: at most
-  five, then `and K more`.
+  `updating <path>: downloading 1 chapter (Ch. 4), reusing 2`. The labels name the chapters to
+  download: at most five, then `and K more`.
 - With `--dry-run`, existing files are looked at the same way, but only the zip directory and
   the manifest are read, never the pages, so the real run may still find a damaged chapter. A file
   that would be updated is listed on stdout, with `-v` as
-  `would update <path> (1 new chapter, 2 reused: Ch. 4)`, and in `--json` as `planned` with
+  `would update <path> (download 1 chapter: Ch. 4; reuse 2)`, and in `--json` as `planned` with
   `replaced: true`, where `reused_chapters` lists the chapters that matched.
 
 ### Files left alone
@@ -250,8 +250,11 @@ lists, while also lacking some, is left alone too, because merging would keep th
 twice when MangaDex re-uploads or renumbers a chapter:
 
 ```
-mangadex-dl: warning: <path>: MangaDex lists N chapters this file lacks, but the file holds M chapters MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)
+mangadex-dl: warning: <path>: MangaDex lists N chapters this file lacks (Ch. 4, …), but the file holds M chapters MangaDex no longer lists (Ch. 3, …); left it alone (pass --overwrite to rebuild it without them)
 ```
+
+Each list names at most five chapters, then `and K more`. With one chapter on a side the warning
+says `1 chapter`, and with one chapter MangaDex no longer lists it ends `without it)`.
 
 ### The manifest
 
@@ -465,7 +468,7 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   `mangadex-dl` that only lacks chapters (see [Running again](#running-again)). Any other
   existing file is left alone, including a file that appears while the download is running,
   which gets its own warning:
-  `mangadex-dl: warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`.
+  `mangadex-dl: warning: <path>: left alone: another file took this name while ours was being written, so ours was discarded; run the same command again to check it`.
 - An update replaces the old file only if it is still the file that was inspected (the same
   inode, size, modification time and change time). If it changed in the meantime, the new
   version is discarded and the file is left alone with `changed while it was being updated`.

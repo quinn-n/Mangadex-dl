@@ -126,7 +126,7 @@ set(_download_note_two_re
     "mangadex-dl: 2 files are already up to date; pass --overwrite to download them again\n")
 # The diverged warning for clean-diverged over clean: Vol. 2 lost ch 3 and gained ch 4 on MangaDex.
 set(_download_diverged_tail_re
-    " ${_download_vol2_re}: MangaDex lists 1 chapter this file lacks, but the file holds 1 chapter MangaDex no longer lists; left it alone \\(pass --overwrite to rebuild it without them\\)\n")
+    " ${_download_vol2_re}: MangaDex lists 1 chapter this file lacks \\(Ch\\. 4\\), but the file holds 1 chapter MangaDex no longer lists \\(Ch\\. 3\\); left it alone \\(pass --overwrite to rebuild it without it\\)\n")
 
 # Up to date (criterion 7): the same command twice. The second run leaves both volumes byte-unchanged,
 # lists nothing on stdout, leaves no temp file, and says exactly the plural note.
@@ -182,7 +182,7 @@ cli_e2e_case(NAME update-dry-run
              PRE_RUN download ${_download_clean_api} ${_download_clean_id} out
              ARGS download --dry-run -v --api-base file://{{FIXTURES}}/clean-grown ${_download_clean_id} out
              EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "^${_download_vol2_re}\n$" EXPECT_NO_ANSI
-             EXPECT_STDERR_REGEX "^mangadex-dl: planned 2 files; 0 chapters skipped\nmangadex-dl: ${_download_vol1_re}: up to date \\(2 chapters\\)\nmangadex-dl: would update ${_download_vol2_re} \\(1 new chapter, 1 reused: Ch\\. 4\\)\n${_download_note_one_re}$"
+             EXPECT_STDERR_REGEX "^mangadex-dl: planned 2 files; 0 chapters skipped\nmangadex-dl: ${_download_vol1_re}: up to date \\(2 chapters\\)\nmangadex-dl: would update ${_download_vol2_re} \\(download 1 chapter: Ch\\. 4; reuse 1\\)\n${_download_note_one_re}$"
              EXPECT_UNCHANGED "${_download_vol1}" "${_download_vol2}"
              EXPECT_NO_GLOB "out/.*.part-*")
 # ...--json: `planned` + `replaced: true` + `incomplete` with the same lists.
