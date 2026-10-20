@@ -202,6 +202,8 @@ TEST_CASE("ConsoleObserver exists_notice=false leaves the up-to-date note to the
     observer.finish();
     CHECK(cap.err.str().empty());
     CHECK(cap.out.str().empty());
+    // The caller (batch) prints the note itself from this count.
+    CHECK(observer.up_to_date() == 2);
 }
 
 TEST_CASE("Io::stdin_fd: -1 (closed) by default, 0 for the real process", "[download-row-output]") {
