@@ -10,6 +10,7 @@
 #include "fs/output_dir_testing.hpp" // core-private seam (src/core is on the test include path)
 #include "mangadex_dl/download.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/mangadex_api.hpp"
@@ -514,6 +515,46 @@ TEST_CASE("download re-run finds every file and --overwrite replaces it identica
     CHECK(replaced->epubs[0].replaced);
     CHECK(replaced->epubs[1].replaced);
     CHECK(read_file(h.out("out") / clean_vol1) == original);
+    CHECK(list_dir(h.out("out")) ==
+          std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
+}
+
+TEST_CASE("download --overwrite: a directory that takes the name mid-build fails only that file",
+          "[download]") {
+    const bool fallback = GENERATE(false, true);
+    INFO("fallback temporaries: " << fallback);
+    std::optional<md::testing::ScopedOutputDirFault> fault{};
+    if (fallback) {
+        fault.emplace(&md::testing::force_fallback_tempfiles);
+    }
+    Harness h{mdx::clean_fixture()};
+    md::DownloadOptions options = h.options();
+    options.overwrite = true;
+    options.jobs = GENERATE(1U, 4U);
+    // The check before the build finds nothing; then, while Vol. 01's pages are fetched (on a
+    // pool worker), a directory takes its name. The publish meets it (EISDIR): that file fails,
+    // the run goes on. `vol1` outlives the run (nothing calls the hook after it returns).
+    const std::filesystem::path vol1 = h.out("out") / clean_vol1;
+    std::atomic<bool> fired{false};
+    h.transport().set_on_fetch(
+        [page = h.page_url(0, 0), dir = &vol1, flag = &fired](const auto& request) {
+            if (request.url == page && !flag->exchange(true)) {
+                std::filesystem::create_directory(*dir);
+            }
+        });
+    RecordingObserver observer;
+    const auto result = h.run(options, observer);
+    REQUIRE(result.has_value());
+    CHECK(fired.load());
+    CHECK(statuses(*result) == std::vector{md::EpubStatus::failed, md::EpubStatus::written});
+    CHECK(result->epubs[0].existing == md::ExistingKind::foreign);
+    CHECK_FALSE(result->epubs[0].replaced);
+    CHECK(result->epubs[0].error ==
+          "cannot replace a directory; rename or remove it, or use another DIR");
+    CHECK(md::exit_code_for(*result) == md::exit_code::incomplete);
+    CHECK(std::filesystem::is_directory(std::filesystem::symlink_status(vol1)));
+    CHECK(std::filesystem::is_empty(vol1));
+    // No temporary is left behind.
     CHECK(list_dir(h.out("out")) ==
           std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
 }

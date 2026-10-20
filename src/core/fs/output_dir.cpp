@@ -719,19 +719,7 @@ Result<std::optional<OutputDir>> OutputDir::open_if_exists(const std::filesystem
 }
 
 Result<bool> OutputDir::exists(std::string_view name) const {
-    if (!is_component(name)) {
-        return std::unexpected(invalid_name(name));
-    }
-    const std::string component{name};
-    struct stat st{};
-    if (::fstatat(fd_.get(), component.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) {
-        return true;
-    }
-    const int err = errno;
-    if (err == ENOENT) {
-        return false;
-    }
-    return std::unexpected(fs_error("cannot check", component, err));
+    return entry_kind(name).transform([](EntryKind kind) { return kind != EntryKind::absent; });
 }
 
 Result<EntryKind> OutputDir::entry_kind(std::string_view name) const {
