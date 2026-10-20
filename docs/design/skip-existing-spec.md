@@ -92,7 +92,7 @@ There are no new flags and no new exit codes.
    - `ENOENT` → absent.
    - `EACCES`/`EPERM`/`EIO` → **foreign** ("cannot be read").
    - Any other errno → `Errc::failure`, exit 1.
-   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
+   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim, st_mode & 07777)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
    - In a real run, **keep the fd open until publish**. Every later read goes through it.
 2. **Zip structure.**
    - `pread` loops retry `EINTR`; a short read means foreign.
@@ -257,10 +257,10 @@ Unchanged; there are no new codes.
 
 ## Data & state
 - **Reads:** `DIR/<name>.epub` read-only, through the inspection fd during a rebuild.
-- **Writes:** the `.epub` (0644) and its temp only, plus the manifest inside new EPUBs.
+- **Writes:** the `.epub` (0644 minus umask for a new file; the old permission bits on an update) and its temp only, plus the manifest inside new EPUBs.
 - **Replacing a file:**
   - It applies only to our own `incomplete` files with an unchanged identity, and is never lossy.
-  - It creates a new inode, so mode, owner and hard links are not kept.
+  - It creates a new inode. The permission bits (`st_mode & 0777`) are re-applied with `fchmod` before the fsync, without the umask; set-ID and sticky bits, owner, group, ACLs, xattrs and hard links are not kept. A failed `fchmod` fails the update: the temp is discarded and the old file is kept. (Polish round, 2026-10-20.)
   - The last rename wins.
 - **Threads:** inspection and copying run on the calling thread. The FetchPool and tsan scope are unchanged.
 - **Docs to update:** README Output and the JSON schema (around lines 145–169), the "never overwritten unless --overwrite" line (308), the `.part-` note (316), and `download-spec.md`.
@@ -372,7 +372,7 @@ Unchanged; there are no new codes.
 - union rebuilds of diverged files;
 - orphan cleanup;
 - rebuilding on a quality change;
-- keeping edits, mode, owner or links on replace;
+- keeping edits, owner, group, ACLs/xattrs, set-ID bits or links on replace (the permission bits are kept);
 - resuming within a file;
 - a read-only DIR where everything is up to date (still exit 1);
 - config/env, completions, man page.

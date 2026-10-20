@@ -460,7 +460,8 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 
 ## Interruption and file safety
 
-- Only `DIR/<name>.epub` files (mode 0644) and their temporary files are ever written. Existing
+- Only `DIR/<name>.epub` files (mode 0644 subject to your umask, or an updated file's previous
+  permissions) and their temporary files are ever written. Existing
   `DIR/<name>.epub` files are read, never modified in place.
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
@@ -476,8 +477,11 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   also counts as a change. A window of microseconds remains between that last check and the
   replacement; a program that replaces the file within it loses its version (the last rename
   wins). This is accepted because `DIR` is yours.
-- A replaced file, whether updated or replaced with `--overwrite`, is a new file: the old file's
-  permissions, owner and hard links are not kept.
+- A replaced file is a new file, so its owner, group, ACLs, extended attributes and hard links are
+  not kept. An updated file keeps the old file's permission bits (read/write/execute for owner,
+  group and others, whatever your umask is; never set-user-ID, set-group-ID or sticky), so a file
+  you `chmod 600`'d stays 600. If they cannot be set, the update fails and the old file is kept.
+  A file replaced with `--overwrite` gets mode 0644 subject to your umask, like a new one.
 - **Ctrl-C / `SIGINT` and `SIGTERM`:** the download stops, the temporary file is removed, files
   already finished are kept, a file that was being updated is left as it was, and no partial
   `.epub` is left behind. Run the same command again to continue; finished files are skipped.
