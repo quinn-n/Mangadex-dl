@@ -127,8 +127,8 @@ TEST_CASE("RecordingStdioBuf passes output through and leaves errno alone on suc
     mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
     std::ostream out{&buffer};
 
-    errno = EINTR; // a caller's errno must survive successful writes and flushes
     const std::string bulk(past_the_buffer, 'x');
+    errno = EINTR; // after the allocation: a caller's errno must survive successful writes/flushes
     out << "line\n" << bulk;
     out.put('x');
     out.flush();
