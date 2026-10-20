@@ -22,6 +22,7 @@
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
+#include "support/fs_test_util.hpp"
 #include "support/mdx_fixture.hpp"
 #include "support/temp_dir.hpp"
 #include "support/zip_forge.hpp"
@@ -41,8 +42,6 @@
 #include <format>
 #include <fstream>
 #include <functional>
-#include <ios>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -58,6 +57,7 @@
 // NOLINTNEXTLINE(modernize-deprecated-headers): SIGINT is POSIX <signal.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 namespace {
 
@@ -65,7 +65,11 @@ namespace md = mangadex_dl;
 namespace mdx = mangadex_dl::test::mdx;
 namespace zip = mangadex_dl::test::zip;
 namespace forge = mangadex_dl::test::forge;
+namespace fs_util = mangadex_dl::test::fs_util;
 using Catch::Matchers::ContainsSubstring;
+using fs_util::list_dir;
+using fs_util::read_file;
+using fs_util::write_file;
 
 // ---- test doubles ------------------------------------------------------------------------------
 
@@ -228,7 +232,7 @@ public:
 /// instant clock. Output directories go next to the trees.
 class Trees {
 public:
-    Trees() : tmp_(make_temp_dir()) {}
+    Trees() : tmp_(fs_util::make_temp_dir("mangadex-dl-update")) {}
 
     /// Writes `manga` as the tree `name`.
     void add(const std::string& name, mdx::FixtureManga manga) {
@@ -332,12 +336,6 @@ private:
         return found->second;
     }
 
-    [[nodiscard]] static md::test::TempDir make_temp_dir() {
-        auto tmp = md::test::TempDir::create("mangadex-dl-update");
-        REQUIRE(tmp.has_value());
-        return std::move(*tmp);
-    }
-
     md::test::TempDir tmp_; ///< no default constructor: initialized by the constructor
     std::map<std::string, Tree, std::less<>> trees_{};
     std::unique_ptr<md::Clock> clock_{md::make_instant_clock()};
@@ -348,31 +346,8 @@ private:
 constexpr std::string_view clean_vol1 = "Clean Title - Vol. 01.epub";
 constexpr std::string_view clean_vol2 = "Clean Title - Vol. 02.epub";
 
-[[nodiscard]] std::vector<std::string> list_dir(const std::filesystem::path& dir) {
-    std::vector<std::string> names{};
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-        names.push_back(entry.path().filename().string());
-    }
-    std::ranges::sort(names);
-    return names;
-}
-
 [[nodiscard]] std::vector<std::string> both_volumes() {
     return {std::string{clean_vol1}, std::string{clean_vol2}};
-}
-
-[[nodiscard]] std::string read_file(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    REQUIRE(in.good());
-    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
-}
-
-void write_file(const std::filesystem::path& path, std::string_view text) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out << text;
-    out.close();
-    REQUIRE_FALSE(out.fail());
 }
 
 [[nodiscard]] std::vector<md::EpubStatus> statuses(const md::RunReport& report) {
@@ -445,13 +420,27 @@ void damage(const std::filesystem::path& path, std::string_view entry_name) {
     REQUIRE(forge::patch_file_byte(path, at.offset, ~at.value));
 }
 
-/// Whether any descriptor of this process refers to the file at `path` (same device and inode),
-/// found by walking /proc/self/fd. False when `path` cannot be stat'ed. Calling thread only.
-[[nodiscard]] bool process_holds_open(const std::filesystem::path& path) {
-    struct stat target{};
-    if (::stat(path.c_str(), &target) != 0) {
-        return false;
+/// A file's identity: its device and inode.
+struct InodeId {
+    dev_t device = 0;
+    ino_t inode = 0;
+
+    friend bool operator==(const InodeId&, const InodeId&) = default;
+};
+
+/// The identity of the file at `path` (stat, so a symlink is followed), or nullopt when it
+/// cannot be stat'ed. Never throws, so an observer hook may call it.
+[[nodiscard]] std::optional<InodeId> inode_of(const std::filesystem::path& path) {
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0) {
+        return std::nullopt;
     }
+    return InodeId{.device = st.st_dev, .inode = st.st_ino};
+}
+
+/// Whether any descriptor of this process refers to the inode `id`, found by walking
+/// /proc/self/fd. Works for an inode that no longer has a name. Calling thread only.
+[[nodiscard]] bool process_holds_identity(InodeId id) {
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
         const std::string name = entry.path().filename().string();
@@ -463,11 +452,18 @@ void damage(const std::filesystem::path& path, std::string_view entry_name) {
             continue;
         }
         struct stat st{};
-        if (::fstat(fd, &st) == 0 && st.st_dev == target.st_dev && st.st_ino == target.st_ino) {
+        if (::fstat(fd, &st) == 0 && st.st_dev == id.device && st.st_ino == id.inode) {
             return true;
         }
     }
     return false;
+}
+
+/// Whether any descriptor of this process refers to the file at `path` (same device and inode).
+/// False when `path` cannot be stat'ed. Calling thread only.
+[[nodiscard]] bool process_holds_open(const std::filesystem::path& path) {
+    const std::optional<InodeId> id = inode_of(path);
+    return id.has_value() && process_holds_identity(*id);
 }
 
 /// The clean title's planned chapter ids.
@@ -954,11 +950,21 @@ TEST_CASE("download update: the inspection descriptor is still open when the upd
     std::atomic<bool> checked{false};
     std::atomic<bool> vol2_held{false};
     std::atomic<bool> vol1_held{true};
+    std::atomic<bool> old_recorded{false};
+    std::atomic<dev_t> old_device{0};
+    std::atomic<ino_t> old_inode{0};
     // Runs on the calling thread; it only looks (stat, /proc/self/fd, fstat), never touches vol2.
-    observer.set_hook([vol1, vol2, done = &checked, held2 = &vol2_held,
-                       held1 = &vol1_held](Event event, std::string_view message) {
+    // At "4/4" nothing is published yet, so vol2 still names the old inode: record it.
+    observer.set_hook([vol1, vol2, done = &checked, held2 = &vol2_held, held1 = &vol1_held,
+                       recorded = &old_recorded, device = &old_device,
+                       inode = &old_inode](Event event, std::string_view message) {
         if (event == Event::pages && message == "4/4" && !done->exchange(true)) {
-            held2->store(process_holds_open(vol2));
+            if (const std::optional<InodeId> old_vol2 = inode_of(vol2); old_vol2.has_value()) {
+                device->store(old_vol2->device);
+                inode->store(old_vol2->inode);
+                recorded->store(true);
+                held2->store(process_holds_identity(*old_vol2));
+            }
             held1->store(process_holds_open(vol1));
         }
     });
@@ -968,7 +974,14 @@ TEST_CASE("download update: the inspection descriptor is still open when the upd
     CHECK_FALSE(vol1_held.load());
     CHECK(report.epubs[1].status == md::EpubStatus::written);
     CHECK(report.epubs[1].replaced);
-    // Once published, nothing holds the replaced inode (or the new file) any more.
+    // Once published, no descriptor of this process refers to the replaced (old) inode any more,
+    // nor to the new file now named vol2, which is a different inode.
+    REQUIRE(old_recorded.load());
+    const InodeId old_vol2{.device = old_device.load(), .inode = old_inode.load()};
+    const std::optional<InodeId> new_vol2 = inode_of(vol2);
+    REQUIRE(new_vol2.has_value());
+    CHECK(new_vol2 != std::optional{old_vol2});
+    CHECK_FALSE(process_holds_identity(old_vol2));
     CHECK_FALSE(process_holds_open(vol2));
 }
 

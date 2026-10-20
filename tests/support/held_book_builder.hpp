@@ -18,6 +18,7 @@
 // - Images are the mdx fixture's sniffable bytes (real PNG/GIF, header-only JPEG/WebP).
 // - The helpers throw std::out_of_range for a member that does not exist (a test bug, which
 //   Catch2 reports as an unexpected exception).
+// - assembled() is assemble() that REQUIREs success, so call it only inside a running TEST_CASE.
 
 #include "mangadex_dl/book_manifest.hpp"
 #include "mangadex_dl/epub.hpp"
@@ -25,6 +26,9 @@
 #include "support/mdx_fixture.hpp"
 #include "support/zip_forge.hpp"
 #include "support/zip_reader.hpp"
+
+#include <catch2/catch_message.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -139,6 +143,14 @@ struct BookParts {
         entries.push_back({.name = std::string{manifest_entry_name}, .data = std::move(manifest)});
     }
     return forge::build_archive(entries);
+}
+
+/// The archive bytes of `parts`, which are required to assemble.
+[[nodiscard]] inline Bytes assembled(const BookParts& parts) {
+    std::expected<Bytes, std::string> bytes = assemble(parts);
+    INFO((bytes ? std::string{} : bytes.error()));
+    REQUIRE(bytes.has_value());
+    return std::move(*bytes);
 }
 
 /// The member called `name` (mutable). Throws std::out_of_range when there is none.

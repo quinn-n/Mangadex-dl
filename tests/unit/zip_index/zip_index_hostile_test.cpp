@@ -285,6 +285,12 @@ struct Row {
         [](Bytes& b, const Layout& l) { put_le16(b, central(l, 0, central_field::flags), 0x1); });
     row("the data-descriptor flag", ZipFault::unsupported,
         [](Bytes& b, const Layout& l) { put_le16(b, central(l, 0, central_field::flags), 0x8); });
+    row("the strong-encryption flag", ZipFault::unsupported, [](Bytes& b, const Layout& l) {
+        put_le16(b, central(l, 0, central_field::flags), 0x0040);
+    });
+    row("the masked-local-header flag", ZipFault::unsupported, [](Bytes& b, const Layout& l) {
+        put_le16(b, central(l, 2, central_field::flags), 0x2000);
+    });
     row("an entry starting on disk 1", ZipFault::unsupported, [](Bytes& b, const Layout& l) {
         put_le16(b, central(l, 2, central_field::disk_start), 1);
     });
@@ -414,6 +420,25 @@ TEST_CASE("Local fields the directory does not constrain are tolerated", "[zip_i
         CHECK_FALSE(outcome.error.has_value());
         CHECK(outcome.sound);
     }
+}
+
+TEST_CASE("A flag bit outside the unsupported mask is accepted", "[zip_index][hostile]") {
+    // Bit 1 (a deflate option) does not change how STORED bytes are read; it must still match in
+    // both headers, as every flag does.
+    const Bytes base = base_archive();
+    const Layout layout = layout_of(base);
+    Bytes bytes = base;
+    forge::put_le16(bytes, central(layout, 1, central_field::flags), 0x0002);
+    forge::put_le16(bytes, local(layout, 1, local_field::flags), 0x0002);
+    const Outcome outcome = classify_bytes(bytes);
+    CHECK_FALSE(outcome.error.has_value());
+    CHECK(outcome.entries == 4);
+    CHECK(outcome.sound);
+
+    FakeReadSource source{bytes};
+    const std::expected<md::ZipIndex, ZipError> index = md::ZipIndex::read(source);
+    REQUIRE(index.has_value());
+    CHECK(index->entries().at(1).flags == 0x0002);
 }
 
 TEST_CASE("An empty entry name is a bad directory", "[zip_index][hostile]") {

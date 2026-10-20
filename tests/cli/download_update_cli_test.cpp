@@ -5,9 +5,10 @@
 // into a fresh DIR, then runs again against a variant of the same title
 // (tests/support/mdx_fixture.hpp) and asserts the exact exit code, stdout, stderr, the --json
 // report and the bytes on disk. Covers the spec's (docs/design/skip-existing-spec.md) acceptance
-// criteria 7-11 and 15, gate decision 5's three [cli] rows, idempotence, the `chapters` and
-// `single` layouts, and the in-process share of criterion 20 (progress while updating, the note
-// never colored, `warning:` yellow and plain under NO_COLOR).
+// criteria 7-11 and 15, gate decision 5's three [cli] rows, idempotence, and the `chapters` and
+// `single` layouts. The in-process share of criterion 20 (progress while updating, the note never
+// colored, `warning:` yellow and plain under NO_COLOR) is asserted exactly in
+// download_existing_cli_test.cpp (T13b).
 //
 // The variants that serve only some chapters (`clean-grown-reuse-only`, `clean-regrouped`,
 // `clean-regrouped-grown`) make the reuse observable: fetching a chapter they do not serve is a
@@ -15,7 +16,6 @@
 //
 // Catch2 test names must not start with '-' (CTest passes the name as a test spec).
 
-#include "app/io.hpp"
 #include "support/download_cli_harness.hpp"
 #include "support/io_capture.hpp"
 #include "support/mdx_fixture.hpp"
@@ -41,7 +41,6 @@ namespace md = mangadex_dl;
 namespace mdx = mangadex_dl::test::mdx;
 namespace zip = mangadex_dl::test::zip;
 using md::test::Captured;
-using md::test::Tty;
 using md::test::download_cli::concat;
 using md::test::download_cli::lines_of;
 using md::test::download_cli::list_dir;
@@ -131,16 +130,6 @@ constexpr std::string_view note_one =
     const zip::Entry* const opf = archive->find("OEBPS/content.opf");
     REQUIRE(opf != nullptr);
     return opf->text();
-}
-
-/// Whether the closing note is the last thing on stderr and starts a line of its own (at the
-/// start, after a newline, or right after the progress line was cleared with '\r').
-[[nodiscard]] bool ends_with_clean_note(std::string_view err, std::string_view note) {
-    if (!err.ends_with(note)) {
-        return false;
-    }
-    const std::size_t at = err.size() - note.size();
-    return at == 0 || err[at - 1] == '\n' || err[at - 1] == '\r';
 }
 
 // ---- criterion 7: nothing to do ----------------------------------------------------------------
@@ -763,68 +752,6 @@ TEST_CASE("download update cli: --layout chapters with --group re-picks every ch
         run_args(served.download(fresh, {"--layout", "chapters", "--group", bravo})).exit_code ==
         0);
     CHECK(snapshot(out) == snapshot(fresh));
-}
-
-// ---- criterion 20, in-process share: progress and color ----------------------------------------
-
-TEST_CASE("download update cli: a TTY shows progress while updating; the note is never colored",
-          "[cli][download][update][progress][color]") {
-    const Tree clean{mdx::clean_fixture()};
-    const Tree reuse_only{mdx::clean_grown_reuse_only_fixture()};
-    const std::filesystem::path out = clean.path("out");
-    static_cast<void>(seed(clean, out));
-
-    // A TTY stderr: progress on, and color on by default (TERM is not dumb, NO_COLOR unset).
-    const Captured r = run_args(reuse_only.download(out), Tty{.stderr_tty = true});
-    CHECK(r.exit_code == 0);
-    CHECK(r.out == path_lines(out, {vol2})); // progress never reaches stdout
-    INFO("stderr: " << r.err);
-    CHECK(r.err.contains("\r[2/2] Vol. 2: "));
-    CHECK(r.err.contains(" pages"));
-    CHECK(!r.err.contains('\x1b'));
-    CHECK(ends_with_clean_note(r.err, note_one));
-
-    // Forced color changes nothing for the note.
-    const std::filesystem::path forced = clean.path("forced");
-    static_cast<void>(seed(clean, forced));
-    const Captured c =
-        run_args(concat({"--color=always"}, reuse_only.download(forced)), Tty{.stderr_tty = true});
-    CHECK(c.exit_code == 0);
-    CHECK(!c.err.contains('\x1b'));
-    CHECK(ends_with_clean_note(c.err, note_one));
-}
-
-TEST_CASE("download update cli: warning: is yellow on a TTY and plain under NO_COLOR",
-          "[cli][download][update][color]") {
-    const Tree clean{mdx::clean_fixture()};
-    const Tree diverged{mdx::clean_diverged_fixture()}; // Vol. 02: ch 3 gone, ch 4 new
-    struct Variant {
-        std::string_view name{};
-        md::app::EnvSnapshot env{};
-        std::string_view prefix{};
-    };
-    const std::vector<Variant> variants{
-        {.name = "color", .env = {}, .prefix = "mangadex-dl: \x1b[33mwarning:\x1b[0m "},
-        {.name = "NO_COLOR", .env = {.no_color = true}, .prefix = "mangadex-dl: warning: "},
-    };
-    for (std::size_t i = 0; i < variants.size(); ++i) {
-        const Variant& v = variants[i];
-        INFO("variant: " << v.name);
-        const std::filesystem::path out = clean.path(std::format("out-{}", i));
-        static_cast<void>(seed(clean, out));
-        // A TTY stderr: color is on by default, off under NO_COLOR.
-        const Captured r = run_args(diverged.download(out), Tty{.stderr_tty = true}, v.env);
-        CHECK(r.exit_code == 0);
-        CHECK(r.out.empty());
-        INFO("stderr: " << r.err);
-        CHECK(r.err.contains(std::format(
-            "{}{}: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 chapter "
-            "MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it "
-            "without it)\n",
-            v.prefix, (out / vol2).string())));
-        CHECK(r.err.contains('\x1b') == !v.env.no_color); // the warning is the only colored text
-        CHECK(ends_with_clean_note(r.err, note_one));
-    }
 }
 
 } // namespace

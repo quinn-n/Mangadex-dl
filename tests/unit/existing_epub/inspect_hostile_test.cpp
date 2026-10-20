@@ -35,18 +35,12 @@ namespace {
 namespace md = mangadex_dl;
 namespace forge = mangadex_dl::test::forge;
 namespace held = mangadex_dl::test::held;
+using held::assembled;
 using mangadex_dl::test::FakeFault;
 using mangadex_dl::test::FakeReadSource;
 using md::ForeignReason;
 
 constexpr md::InspectFailure not_ours{.reason = ForeignReason::not_ours, .error = 0};
-
-[[nodiscard]] forge::Bytes assembled(const held::BookParts& parts) {
-    std::expected<forge::Bytes, std::string> bytes = held::assemble(parts);
-    INFO((bytes ? std::string{} : bytes.error()));
-    REQUIRE(bytes.has_value());
-    return std::move(*bytes);
-}
 
 [[nodiscard]] forge::Layout layout(const forge::Bytes& bytes) {
     std::expected<forge::Layout, std::string> found = forge::layout_of(bytes);

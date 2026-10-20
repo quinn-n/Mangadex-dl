@@ -6,10 +6,18 @@
 // FdReadSource's range checks are proven to happen before any syscall by reading through an
 // invalid descriptor: a rejected range reports short_read (or EOVERFLOW), while a range that did
 // reach pread would report io / EBADF.
+//
+// The two retry branches of the real pread loop (a positive short count, EINTR) are reached on a
+// real file through the core-private seam fs/read_source_testing.hpp, which also counts the pread
+// attempts. A regular file on a local filesystem returns a whole read at once, so without a fault
+// one read_exact is exactly one pread.
 
+#include "fs/read_source_testing.hpp" // core-private seam (src/core is on the test include path)
 #include "mangadex_dl/fs/output_dir.hpp"
 #include "mangadex_dl/fs/read_source.hpp"
 #include "support/fake_read_source.hpp"
+#include "support/fs_test_util.hpp"
+#include "support/read_only_fd.hpp"
 #include "support/temp_dir.hpp"
 #include "support/zip_forge.hpp"
 
@@ -23,7 +31,6 @@
 #include <limits>
 #include <optional>
 #include <span>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -35,10 +42,13 @@ namespace {
 namespace fs = std::filesystem;
 namespace md = mangadex_dl;
 namespace forge = mangadex_dl::test::forge;
+namespace testing = mangadex_dl::testing;
 using mangadex_dl::test::FakeFault;
 using mangadex_dl::test::FakeReadCall;
 using mangadex_dl::test::FakeReadSource;
+using mangadex_dl::test::open_read_only;
 using mangadex_dl::test::TempDir;
+using mangadex_dl::test::fs_util::make_temp_dir;
 using md::FdReadSource;
 using md::ReadError;
 using md::ReadFault;
@@ -60,12 +70,6 @@ constexpr ReadError short_read{.fault = ReadFault::short_read, .error = 0};
     return result.error();
 }
 
-[[nodiscard]] TempDir make_temp_dir() {
-    auto dir = TempDir::create("mangadex-dl-readsrc");
-    REQUIRE(dir.has_value());
-    return std::move(*dir);
-}
-
 /// Deterministic, non-repeating-looking bytes (xorshift32).
 [[nodiscard]] Bytes pattern(std::size_t size, std::uint32_t seed) {
     Bytes out;
@@ -78,15 +82,6 @@ constexpr ReadError short_read{.fault = ReadFault::short_read, .error = 0};
         out.push_back(static_cast<std::byte>(state & 0xFFU));
     }
     return out;
-}
-
-/// open(2) read-only. The only variadic call in this file.
-[[nodiscard]] UniqueFd open_read_only(const fs::path& path, int extra_flags = 0) {
-    const std::string name = path.string();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): open is variadic in C (the mode)
-    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC | extra_flags);
-    REQUIRE(fd >= 0);
-    return UniqueFd{fd};
 }
 
 /// A file holding `bytes` under `dir`, opened read-only.
@@ -246,6 +241,105 @@ TEST_CASE("FdReadSource reports io with the errno", "[read_source][fd]") {
         const UniqueFd taken = std::move(file.fd); // against the borrow contract, on purpose
         CHECK(taken.valid());
         CHECK(error_of(source.read_exact(0, out)) == io_error(EBADF));
+    }
+}
+
+// ---- FdReadSource retry branches, through the test seam ----------------------------------------
+
+TEST_CASE("FdReadSource with the seam off issues one pread per read", "[read_source][fd][seam]") {
+    const TempDir dir = make_temp_dir();
+    const Bytes contents = pattern(70'001, 31);
+    const OpenFile file = make_file(dir, contents);
+    FdReadSource source{file.fd, contents.size()};
+
+    SECTION("no fault armed") {
+        const testing::ScopedReadSourceFaults faults{{}};
+        Bytes out(contents.size());
+        REQUIRE(source.read_exact(0, out).has_value());
+        CHECK(out == contents);
+        CHECK(testing::pread_attempts() == 1);
+        CHECK(!testing::pread_faults_pending());
+    }
+    SECTION("a short count no smaller than the read stays armed for a larger one") {
+        const testing::ScopedReadSourceFaults faults{{.short_count = 64}};
+        Bytes small(64);
+        REQUIRE(source.read_exact(10, small).has_value());
+        CHECK(small == slice_of(contents, 10, 64));
+        CHECK(testing::pread_attempts() == 1);
+        CHECK(testing::pread_faults_pending());
+
+        Bytes large(65);
+        REQUIRE(source.read_exact(10, large).has_value());
+        CHECK(large == slice_of(contents, 10, 65));
+        CHECK(testing::pread_attempts() == 3); // 64 bytes, then the last one
+        CHECK(!testing::pread_faults_pending());
+    }
+}
+
+TEST_CASE("FdReadSource continues after a real positive short count", "[read_source][fd][seam]") {
+    const TempDir dir = make_temp_dir();
+    // Larger than a page and not a multiple of one, so ranges cross page boundaries.
+    const Bytes contents = pattern(70'001, 37);
+    const OpenFile file = make_file(dir, contents);
+    FdReadSource source{file.fd, contents.size()};
+
+    for (const std::size_t count : {std::size_t{1}, std::size_t{4096}, std::size_t{39'999}}) {
+        CAPTURE(count);
+        const testing::ScopedReadSourceFaults faults{{.short_count = count}};
+        Bytes out(40'000);
+        const std::expected<void, ReadError> got = source.read_exact(1234, out);
+        REQUIRE(got.has_value());
+        CHECK(out == slice_of(contents, 1234, 40'000));
+        CHECK(testing::pread_attempts() == 2); // `count` bytes, then the rest
+        CHECK(!testing::pread_faults_pending());
+    }
+}
+
+TEST_CASE("FdReadSource retries a pread that failed with EINTR", "[read_source][fd][seam]") {
+    const TempDir dir = make_temp_dir();
+    const Bytes contents = pattern(70'001, 41);
+    const OpenFile file = make_file(dir, contents);
+    FdReadSource source{file.fd, contents.size()};
+
+    const testing::ScopedReadSourceFaults faults{{.eintr_after = 0}};
+    Bytes out(contents.size());
+    const std::expected<void, ReadError> got = source.read_exact(0, out);
+    REQUIRE(got.has_value());
+    CHECK(out == contents);
+    CHECK(testing::pread_attempts() == 2); // EINTR, then the whole file
+    CHECK(!testing::pread_faults_pending());
+}
+
+TEST_CASE("FdReadSource combines a short count and EINTR in either order",
+          "[read_source][fd][seam]") {
+    const TempDir dir = make_temp_dir();
+    const Bytes contents = pattern(70'001, 43);
+    const OpenFile file = make_file(dir, contents);
+    FdReadSource source{file.fd, contents.size()};
+    Bytes out(20'000);
+
+    SECTION("EINTR, then a short count, then the rest") {
+        const testing::ScopedReadSourceFaults faults{{.short_count = 777, .eintr_after = 0}};
+        REQUIRE(source.read_exact(5000, out).has_value());
+        CHECK(out == slice_of(contents, 5000, 20'000));
+        CHECK(testing::pread_attempts() == 3);
+        CHECK(!testing::pread_faults_pending());
+    }
+    SECTION("a short count, then EINTR on the retry, then the rest") {
+        const testing::ScopedReadSourceFaults faults{{.short_count = 777, .eintr_after = 1}};
+        REQUIRE(source.read_exact(5000, out).has_value());
+        CHECK(out == slice_of(contents, 5000, 20'000));
+        CHECK(testing::pread_attempts() == 3);
+        CHECK(!testing::pread_faults_pending());
+    }
+    SECTION("a short count up to the last byte of the file, then EINTR, then the last byte") {
+        const testing::ScopedReadSourceFaults faults{
+            {.short_count = contents.size() - 1, .eintr_after = 1}};
+        Bytes all(contents.size());
+        REQUIRE(source.read_exact(0, all).has_value());
+        CHECK(all == contents);
+        CHECK(testing::pread_attempts() == 3);
+        CHECK(!testing::pread_faults_pending());
     }
 }
 
