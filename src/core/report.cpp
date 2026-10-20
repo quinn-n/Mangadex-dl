@@ -8,10 +8,13 @@
 
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/model.hpp"
+#include "report_json.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -234,7 +237,20 @@ int exit_code_for(const RunReport& report) noexcept {
     return exit_code::success;
 }
 
-std::string report_to_json(const RunReport& report) {
+std::optional<std::string> up_to_date_notice(std::size_t up_to_date) {
+    if (up_to_date == 0) {
+        return std::nullopt;
+    }
+    if (up_to_date == 1) {
+        return std::string{"1 file is already up to date; pass --overwrite to download it again"};
+    }
+    return std::format("{} files are already up to date; pass --overwrite to download them again",
+                       up_to_date);
+}
+
+namespace detail {
+
+Json report_json(const RunReport& report) {
     Json epubs = Json::array();
     for (const EpubOutcome& outcome : report.epubs) {
         epubs.push_back(epub_json(outcome));
@@ -252,11 +268,17 @@ std::string report_to_json(const RunReport& report) {
     doc["epubs"] = std::move(epubs);
     doc["skipped_chapters"] = std::move(skipped);
     doc["summary"] = summary_json(summarize(report));
+    return doc;
+}
 
+} // namespace detail
+
+std::string report_to_json(const RunReport& report) {
     // replace: titles, names and paths are untrusted bytes; the strict handler would throw on
     // invalid UTF-8. ensure_ascii=false keeps valid UTF-8 readable; control characters (ESC
     // included) are always escaped as \u00XX, so the document never carries ANSI.
-    std::string text = doc.dump(2, ' ', false, Json::error_handler_t::replace);
+    std::string text =
+        detail::report_json(report).dump(2, ' ', false, Json::error_handler_t::replace);
     text += '\n';
     return text;
 }

@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace mangadex_dl::app {
 
@@ -47,6 +48,17 @@ void print_error(Io& io, const OutputPolicy& policy, std::string_view message);
 /// The --json document (report_to_json) on stdout, written once. Never ANSI.
 void print_report_json(Io& io, const RunReport& report);
 
+/// Which row of a multi-title run the observer reports for. A default RowContext is `download`'s
+/// own output: no prefix, no counter, and finish() prints the "already up to date" note.
+struct RowContext {
+    std::string prefix{};      ///< "<file>:<line>: " (raw; terminal_safe'd with each message)
+    std::size_t position = 0;  ///< 1-based; 0 = no "(i/n) " progress counter
+    std::size_t total = 0;     ///< the n of "(i/n) "
+    bool exists_notice = true; ///< false: finish() leaves the "up to date" note to the caller
+
+    friend bool operator==(const RowContext&, const RowContext&) = default;
+};
+
 /// Turns DownloadObserver events into console output. Not thread-safe: run_download calls every
 /// event on its calling thread. Holds `io` by pointer: the Io must outlive this observer.
 ///
@@ -60,9 +72,13 @@ void print_report_json(Io& io, const RunReport& report);
 ///   message, the run's own warnings and -v lines included, passes through terminal_safe.
 /// - progress (policy.progress only): one line rewritten with '\r' and padded with spaces, cleared
 ///   before any other stderr line and at finish(). No cursor escapes.
+/// - `row` (owned copy): its prefix goes after `warning:`/`error:` (verbose and trace lines stay
+///   unprefixed), its position/total add a `(i/n) ` counter in front of the progress line, and
+///   exists_notice=false leaves the "already up to date" note to the caller.
 class ConsoleObserver final : public DownloadObserver {
 public:
-    ConsoleObserver(Io& io, const OutputPolicy& policy) noexcept : io_(&io), policy_(policy) {}
+    ConsoleObserver(Io& io, const OutputPolicy& policy, RowContext row = {})
+        : io_(&io), policy_(policy), row_(std::move(row)) {}
     ConsoleObserver(const ConsoleObserver&) = delete;
     ConsoleObserver& operator=(const ConsoleObserver&) = delete;
     ConsoleObserver(ConsoleObserver&&) = delete;
@@ -78,8 +94,9 @@ public:
 
     /// Call once run_download has returned, on every path (success, Error, interruption) and
     /// before print_error / print_report_json: clears the progress line and prints the single
-    /// "N files are already up to date" note (no `warning:` prefix, never colored, not with -q).
-    /// It counts files left alone as up to date (existing == complete) only. Idempotent.
+    /// "N files are already up to date" note (no `warning:` prefix, never colored; not with -q,
+    /// nor when row.exists_notice is false). It counts files left alone as up to date
+    /// (existing == complete) only. Idempotent.
     void finish();
 
 private:
@@ -94,6 +111,7 @@ private:
 
     Io* io_ = nullptr; ///< borrowed, never null
     OutputPolicy policy_{};
+    RowContext row_{};
 
     // Progress state for the file being built.
     bool in_epub_ = false;

@@ -22,6 +22,7 @@ enum class Errc {
     no_chapters, ///< nothing downloadable matched the language and selection
     incomplete,  ///< at least one output file failed while others may have been written
     interrupted, ///< SIGINT/SIGTERM arrived; the run unwound and cleaned up its temporaries
+    mixed_failures, ///< batch: the titles that did not complete failed in more than one way
 };
 
 [[nodiscard]] constexpr int exit_code_for(Errc code) noexcept {
@@ -39,6 +40,8 @@ enum class Errc {
         return exit_code::no_chapters;
     case Errc::incomplete:
         return exit_code::incomplete;
+    case Errc::mixed_failures:
+        return exit_code::mixed_failures;
     case Errc::interrupted:
         // Only a fallback: main() re-raises the pending signal after finish_stdout(), so the shell
         // sees the signal death (130/143). The code is returned only if re-raising is impossible.

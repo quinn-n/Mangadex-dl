@@ -160,3 +160,83 @@ cli_e2e_case(NAME stdin-closed-update
              EXPECT_EPUB "${_edge_vol2}"
              EXPECT_UNCHANGED "${_edge_vol1}"
              EXPECT_NO_GLOB "out/.*.part-*")
+
+# ---- batch: the same contract for `mangadex-dl batch FILE [DIR]` (batch spec AC24-AC29) -------------
+# The EDGE_* knobs above stay on `download`. These cases point the stdin, write-error, SIGPIPE, UTF-8
+# and color edges at `batch`, whose input is a list (FILE or `-` for stdin) instead of argv.
+set(_edge_batch_in "{{INPUTS}}/batch")
+set(_edge_batch_clean_api --api-base file://{{FIXTURES}}/clean)
+# Exact stdout of a dry run of the clean title into DIR <dir>.
+set(_edge_batch_zoe_paths_re
+    "^Zoë/Clean Title - Vol\\. 01\\.epub\nZoë/Clean Title - Vol\\. 02\\.epub\n$")
+
+# stdin: /dev/null is an empty list (exit 0 + a warning); a closed fd 0 is unreadable (exit 1, never 70).
+cli_e2e_case(NAME batch-stdin-null ARGS batch - out STDIN NULL
+             EXPECT_EXIT 0 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: <stdin>: lists no titles\n$"
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME batch-stdin-null-json ARGS batch --json - out STDIN NULL
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI
+             EXPECT_STDOUT_REGEX "\"source\": \"-\",\n  \"titles\": \\[\\],"
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: <stdin>: lists no titles\n$"
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME batch-stdin-closed ARGS batch - out STDIN CLOSED
+             EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: cannot read <stdin>: [^\n]+\n$"
+             EXPECT_ABSENT out)
+
+# Write errors: a dry run writes only to stdout, so /dev/full is exit 1 and one `write error` line
+# with the errno text, as for `download` (the flush after each row must not lose the reason).
+cli_e2e_case(NAME batch-dev-full
+             ARGS batch --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv out
+             STDOUT_FILE /dev/full
+             EXPECT_EXIT 1 EXPECT_STDERR_REGEX "^mangadex-dl: write error: No space left on device\n$"
+             EXPECT_ABSENT out)
+
+# SIGPIPE policy A: `batch ... | head -n 1` -> the writer dies by SIGPIPE, silently. The bulk title
+# (4000 loose chapters) planned one file per chapter prints well over 64 KiB of lines.
+set(_edge_batch_bulk_args batch --dry-run --layout chapters --api-base file://{{FIXTURES}}/bulk
+    ${_edge_batch_in}/bulk.csv out)
+cli_e2e_case(NAME batch-sigpipe ARGS ${_edge_batch_bulk_args} PIPE_HEAD 1
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "^[^\n]+\n$" EXPECT_STDERR_EMPTY)
+cli_e2e_case(NAME batch-sigpipe-parent-ignores ARGS ${_edge_batch_bulk_args} PIPE_HEAD 1
+             PARENT_IGNORES_SIGPIPE
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "^[^\n]+\n$" EXPECT_STDERR_EMPTY)
+
+# UTF-8: an invalid-UTF-8 FILE name is echoed as `?` (exit 1, never 70) even under LC_ALL=C; a list
+# with the byte 0xFF is a list error (exit 2); an invalid-UTF-8 DIR still gives valid --json.
+cli_e2e_case(NAME batch-invalid-utf8-file-lc-c
+             ARGS batch ${_edge_batch_clean_api} "{{INVALID_UTF8}}" out
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: cannot read \\?\\?: [^\n]+\n$"
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME batch-invalid-utf8-csv
+             ARGS batch ${_edge_batch_clean_api} ${_edge_batch_in}/invalid-utf8.csv out
+             EXPECT_EXIT 2 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/invalid-utf8\\.csv:1: not valid UTF-8\nRun 'mangadex-dl batch --help' for more information\\.\n$"
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME batch-invalid-utf8-dir-json
+             ARGS batch --json --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv
+                  "{{INVALID_UTF8}}"
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+# A UTF-8 DIR reaches stdout verbatim under C.UTF-8 and under C (locale-independent output).
+cli_e2e_case(NAME batch-utf8-dir
+             ARGS batch --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv "Zoë"
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_batch_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+cli_e2e_case(NAME batch-utf8-dir-lc-c
+             ARGS batch --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv "Zoë"
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_batch_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+
+# Color: --json never carries ANSI, even with CLICOLOR_FORCE=1; piped stderr with failing rows is plain.
+cli_e2e_case(NAME batch-json-clicolor-force
+             ARGS batch --json --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv out
+             ENV CLICOLOR_FORCE=1
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+cli_e2e_case(NAME batch-pipe-stderr-no-ansi
+             ARGS batch --api-base file://{{FIXTURES}}/nochapters ${_edge_batch_in}/nochapters-mixed.csv out
+             EXPECT_EXIT 7 EXPECT_STDOUT_EMPTY EXPECT_NO_ANSI
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/nochapters-mixed\\.csv:1: ")

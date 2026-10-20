@@ -144,6 +144,19 @@ TEST_CASE("exit_code_for: failed beats empty beats success; all-exists is succes
     CHECK(md::exit_code_for(report) == md::exit_code::incomplete);
 }
 
+TEST_CASE("up_to_date_notice: one note text for download and batch", "[report][message]") {
+    CHECK(!md::up_to_date_notice(0).has_value());
+    CHECK(md::up_to_date_notice(1) ==
+          std::optional<std::string>{
+              "1 file is already up to date; pass --overwrite to download it again"});
+    CHECK(md::up_to_date_notice(2) ==
+          std::optional<std::string>{
+              "2 files are already up to date; pass --overwrite to download them again"});
+    CHECK(md::up_to_date_notice(12) ==
+          std::optional<std::string>{
+              "12 files are already up to date; pass --overwrite to download them again"});
+}
+
 TEST_CASE("report_to_json: success shape", "[report][json]") {
     md::RunReport report = base_report();
     md::EpubOutcome written = outcome(md::EpubStatus::written, "out/Test Manga - Vol. 01.epub");

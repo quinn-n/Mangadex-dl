@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Batch CSV inputs are byte-exact test data (a UTF-8 BOM, CRLF line ends, invalid UTF-8): never
+# normalize them. tests/e2e/cases/batch.cmake checks excel.csv's bytes at configure time.
+tests/e2e/inputs/batch/*.csv -text

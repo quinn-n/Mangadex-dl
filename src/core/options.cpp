@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // `download` option validation (download plan T4). ASCII-only and locale-independent: no
-// <cctype>, no regex; numbers go through std::from_chars.
+// <cctype>, no regex; numbers go through std::from_chars. The validators `batch` shares live in
+// namespace detail (src/core/options_internal.hpp, batch plan T3a).
 #include "mangadex_dl/options.hpp"
 
 #include "mangadex_dl/attributes.hpp"
@@ -9,6 +10,7 @@
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/selection.hpp"
+#include "options_internal.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -186,7 +188,11 @@ fixture_dir(std::string_view path MANGADEX_DL_LIFETIMEBOUND) noexcept {
     return true;
 }
 
-[[nodiscard]] Result<Layout> parse_layout(std::string_view word) {
+} // namespace
+
+namespace detail {
+
+Result<Layout> parse_layout(std::string_view word) {
     if (word == "volumes") {
         return Layout::volumes;
     }
@@ -199,7 +205,7 @@ fixture_dir(std::string_view path MANGADEX_DL_LIFETIMEBOUND) noexcept {
     return std::unexpected(usage_error("--layout must be volumes, chapters or single"));
 }
 
-[[nodiscard]] Result<DirectionChoice> parse_direction(std::string_view word) {
+Result<DirectionChoice> parse_direction(std::string_view word) {
     if (word == "auto") {
         return DirectionChoice::automatic;
     }
@@ -212,8 +218,7 @@ fixture_dir(std::string_view path MANGADEX_DL_LIFETIMEBOUND) noexcept {
     return std::unexpected(usage_error("--direction must be auto, ltr or rtl"));
 }
 
-/// Selection::parse with the flag name in front of its message.
-[[nodiscard]] Result<Selection> parse_selection(std::string_view flag, std::string_view spec) {
+Result<Selection> parse_selection(std::string_view flag, std::string_view spec) {
     Result<Selection> selection = Selection::parse(spec);
     if (!selection) {
         return std::unexpected(usage_error(std::format("{}: {}", flag, selection.error().message)));
@@ -221,7 +226,69 @@ fixture_dir(std::string_view path MANGADEX_DL_LIFETIMEBOUND) noexcept {
     return selection;
 }
 
-} // namespace
+Result<DownloadOptions> validate_common(const RawDownloadArgs& raw, MangaId manga) {
+    Result<Selection> volumes = parse_selection("--volumes", raw.volumes);
+    if (!volumes) {
+        return std::unexpected(std::move(volumes).error());
+    }
+    Result<Selection> loose_chapters = parse_selection("--loose-chapters", raw.loose_chapters);
+    if (!loose_chapters) {
+        return std::unexpected(std::move(loose_chapters).error());
+    }
+    if (volumes->is_none() && loose_chapters->is_none()) {
+        return std::unexpected(
+            usage_error("--volumes and --loose-chapters are both none: nothing to download"));
+    }
+    const Result<Layout> layout = parse_layout(raw.layout);
+    if (!layout) {
+        return std::unexpected(layout.error());
+    }
+    Result<std::string> lang = validate_language(raw.lang);
+    if (!lang) {
+        return std::unexpected(std::move(lang).error());
+    }
+    const Result<DirectionChoice> direction = parse_direction(raw.direction);
+    if (!direction) {
+        return std::unexpected(direction.error());
+    }
+    std::optional<std::string> title{};
+    if (raw.title) {
+        Result<std::string> validated = validate_title_override(*raw.title);
+        if (!validated) {
+            return std::unexpected(std::move(validated).error());
+        }
+        title = std::move(*validated);
+    }
+    // Defensive: CLI11 range-checks --jobs too, but core code must not trust its caller.
+    if (raw.jobs < min_jobs || raw.jobs > max_jobs) {
+        return std::unexpected(
+            usage_error(std::format("--jobs must be between {} and {}", min_jobs, max_jobs)));
+    }
+    Result<ApiBase> api_base = ApiBase::parse(raw.api_base);
+    if (!api_base) {
+        return std::unexpected(std::move(api_base).error());
+    }
+    const bool report = !raw.no_report && api_base->kind() == ApiBase::Kind::official;
+    return DownloadOptions{
+        .manga = std::move(manga),
+        .dir = std::filesystem::path{raw.dir},
+        .volumes = std::move(*volumes),
+        .loose_chapters = std::move(*loose_chapters),
+        .layout = *layout,
+        .lang = std::move(*lang),
+        .groups = raw.groups,
+        .quality = raw.data_saver ? ImageQuality::data_saver : ImageQuality::data,
+        .direction = *direction,
+        .title = std::move(title),
+        .overwrite = raw.overwrite,
+        .dry_run = raw.dry_run,
+        .jobs = static_cast<unsigned>(raw.jobs),
+        .api_base = std::move(*api_base),
+        .report = report,
+    };
+}
+
+} // namespace detail
 
 Result<ApiBase> ApiBase::parse(std::string_view text) {
     if (std::ranges::any_of(text, [](char c) { return is_control(c) || c == ' '; })) {
@@ -334,65 +401,7 @@ Result<DownloadOptions> validate_download_args(const RawDownloadArgs& raw) {
     if (looks_like_manga_id(raw.dir)) {
         return std::unexpected(usage_error("DIR looks like a manga id: only one manga per run"));
     }
-    Result<Selection> volumes = parse_selection("--volumes", raw.volumes);
-    if (!volumes) {
-        return std::unexpected(std::move(volumes).error());
-    }
-    Result<Selection> loose_chapters = parse_selection("--loose-chapters", raw.loose_chapters);
-    if (!loose_chapters) {
-        return std::unexpected(std::move(loose_chapters).error());
-    }
-    if (volumes->is_none() && loose_chapters->is_none()) {
-        return std::unexpected(
-            usage_error("--volumes and --loose-chapters are both none: nothing to download"));
-    }
-    const Result<Layout> layout = parse_layout(raw.layout);
-    if (!layout) {
-        return std::unexpected(layout.error());
-    }
-    Result<std::string> lang = validate_language(raw.lang);
-    if (!lang) {
-        return std::unexpected(std::move(lang).error());
-    }
-    const Result<DirectionChoice> direction = parse_direction(raw.direction);
-    if (!direction) {
-        return std::unexpected(direction.error());
-    }
-    std::optional<std::string> title{};
-    if (raw.title) {
-        Result<std::string> validated = validate_title_override(*raw.title);
-        if (!validated) {
-            return std::unexpected(std::move(validated).error());
-        }
-        title = std::move(*validated);
-    }
-    // Defensive: CLI11 range-checks --jobs too, but core code must not trust its caller.
-    if (raw.jobs < min_jobs || raw.jobs > max_jobs) {
-        return std::unexpected(
-            usage_error(std::format("--jobs must be between {} and {}", min_jobs, max_jobs)));
-    }
-    Result<ApiBase> api_base = ApiBase::parse(raw.api_base);
-    if (!api_base) {
-        return std::unexpected(std::move(api_base).error());
-    }
-    const bool report = !raw.no_report && api_base->kind() == ApiBase::Kind::official;
-    return DownloadOptions{
-        .manga = std::move(*manga),
-        .dir = std::filesystem::path{raw.dir},
-        .volumes = std::move(*volumes),
-        .loose_chapters = std::move(*loose_chapters),
-        .layout = *layout,
-        .lang = std::move(*lang),
-        .groups = raw.groups,
-        .quality = raw.data_saver ? ImageQuality::data_saver : ImageQuality::data,
-        .direction = *direction,
-        .title = std::move(title),
-        .overwrite = raw.overwrite,
-        .dry_run = raw.dry_run,
-        .jobs = static_cast<unsigned>(raw.jobs),
-        .api_base = std::move(*api_base),
-        .report = report,
-    };
+    return detail::validate_common(raw, std::move(*manga));
 }
 
 } // namespace mangadex_dl

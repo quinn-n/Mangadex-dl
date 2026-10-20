@@ -5,6 +5,7 @@
 #include "mangadex_dl/version.hpp"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -68,6 +69,13 @@ void write_stderr(std::string_view text) noexcept {
     return status == 0 ? buffer : nullptr;
 }
 
+/// The errno note_stdout_errno recorded (0 = none). Atomic so a note from any thread is safe,
+/// though today only the main thread writes stdout.
+[[nodiscard]] std::atomic<int>& noted_stdout_errno() noexcept {
+    static std::atomic<int> noted{0};
+    return noted;
+}
+
 [[nodiscard]] constexpr int sgr_code(Style style) noexcept {
     switch (style) {
     case Style::bold:
@@ -94,6 +102,7 @@ Io process_io() {
         .stdout_tty = ::isatty(STDOUT_FILENO) == 1,
         .stderr_tty = ::isatty(STDERR_FILENO) == 1,
         .env = read_env(),
+        .stdin_fd = STDIN_FILENO,
     };
 }
 
@@ -118,6 +127,8 @@ void last_resort(const char* message) noexcept {
 }
 
 int finish_stdout(int rc) noexcept {
+    // The errno a mid-run flush recorded before the buffer was dropped (0 = none); consumed here.
+    const int noted = noted_stdout_errno().exchange(0);
     errno = 0; // isatty() and friends leave stale values (ENOTTY); only report what the flush sets
     bool failed = false;
     try {
@@ -131,7 +142,8 @@ int finish_stdout(int rc) noexcept {
     if (!failed) {
         return rc;
     }
-    const int saved_errno = errno;
+    const int flush_errno = errno;
+    const int saved_errno = flush_errno != 0 ? flush_errno : noted; // this flush's reason first
     const char* reason = nullptr;
     std::array<char, 256> buffer{}; // stack only: this noexcept path must not allocate
     if (saved_errno != 0) {
@@ -147,6 +159,14 @@ int finish_stdout(int rc) noexcept {
     }
     write_stderr("\n");
     return rc == exit_code::success ? exit_code::failure : rc;
+}
+
+void note_stdout_errno(int err) noexcept {
+    if (err == 0) {
+        return;
+    }
+    int none = 0;
+    static_cast<void>(noted_stdout_errno().compare_exchange_strong(none, err));
 }
 
 bool resolve_color(ColorMode mode, const EnvSnapshot& env, bool is_tty) noexcept {
