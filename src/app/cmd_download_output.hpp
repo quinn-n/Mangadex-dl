@@ -99,6 +99,11 @@ public:
     /// (existing == complete) only. Idempotent.
     void finish();
 
+    /// Files left alone so far because they hold every chapter: what the note counts. Kept on
+    /// every path, so a caller that prints the note itself (row.exists_notice false) can count
+    /// the files of a run that then ended with an Error.
+    [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
+
 private:
     /// The stderr detail for a file left alone (status exists): counts it toward the note when
     /// it is up to date, warns when it appeared during the run.

@@ -138,7 +138,7 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
     // the "N files are already up to date" note (unless the row leaves it to the caller).
     observer.finish();
 
-    TitleRun run{};
+    TitleRun run{.up_to_date = observer.up_to_date()};
     if (!report) {
         run.exit_code = report.error().exit_code();
         // Interrupted: no message. main() re-raises the signal, so the shell sees 130/143;

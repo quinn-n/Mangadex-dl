@@ -65,6 +65,9 @@ struct TitleRun {
     /// the Error's message, the exit-5 or the exit-6 line. Empty when none was printed
     /// (success, or interrupted).
     std::string closing_error{};
+    /// Files left alone as up to date, counted by the observer on every path (also when the run
+    /// ended with an Error and so has no report): what the "already up to date" note counts.
+    std::size_t up_to_date = 0;
 };
 
 /// One title, exactly as `download` runs it: fresh DownloadServices over `backend` (transport and
