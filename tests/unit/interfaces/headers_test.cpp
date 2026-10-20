@@ -1,17 +1,21 @@
-// tests/unit/interfaces/headers_test.cpp: the frozen interface headers (download plan T1) compile
-// together, and their header-inline parts behave as documented: the exit-code mapping, the
-// limits, the defaults of every option/config aggregate, the ownership shape of every class, and
-// UniqueFd. Everything declared out of line is defined by later tasks, so it is only checked in
-// unevaluated contexts here (signatures), never called.
+// tests/unit/interfaces/headers_test.cpp: the frozen interface headers (download plan T1, batch
+// plan T1) compile together, and their header-inline parts behave as documented: the exit-code
+// mapping, the limits, the defaults of every option/config aggregate, the ownership shape of every
+// class, and UniqueFd. Everything declared out of line is defined by later tasks, so it is only
+// checked in unevaluated contexts here (signatures), never called.
 #include "mangadex_dl/api_client.hpp"
 #include "mangadex_dl/attributes.hpp"
+#include "mangadex_dl/batch.hpp"
+#include "mangadex_dl/batch_csv.hpp"
 #include "mangadex_dl/download.hpp"
 #include "mangadex_dl/epub.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/fetch_pool.hpp"
 #include "mangadex_dl/filename.hpp"
+#include "mangadex_dl/fs/bounded_read.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
+#include "mangadex_dl/fs/row_dir.hpp"
 #include "mangadex_dl/image.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/manga_id.hpp"
@@ -25,6 +29,7 @@
 #include "mangadex_dl/planner.hpp"
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/selection.hpp"
+#include "mangadex_dl/text_safety.hpp"
 #include "mangadex_dl/zip.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -32,6 +37,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -41,6 +47,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -59,6 +66,9 @@ static_assert(md::exit_code_for(md::Errc::interrupted) == md::exit_code::failure
 static_assert(md::exit_code_for(md::Errc::failure) == md::exit_code::failure);
 static_assert(md::exit_code_for(md::Errc::io) == md::exit_code::failure);
 static_assert(md::exit_code_for(md::Errc::usage) == md::exit_code::usage);
+// batch: titles that failed in more than one way.
+static_assert(md::exit_code::mixed_failures == 7);
+static_assert(md::exit_code_for(md::Errc::mixed_failures) == 7);
 
 // ---- limits ----------------------------------------------------------------------------------
 static_assert(md::zip_max_entries == 65534 && md::max_zip_entries_per_epub == 65534);
@@ -72,6 +82,10 @@ static_assert(md::cover_page_limit == 100 && md::max_json_depth == 64);
 static_assert(md::default_api_base == "https://api.mangadex.org");
 static_assert(md::ca_bundle_candidates.size() == 6);
 static_assert(md::ca_bundle_candidates.front() == "/etc/ssl/certs/ca-certificates.crt");
+static_assert(md::max_list_bytes == std::size_t{1024} * 1024);
+static_assert(md::max_list_titles == 10000 && md::max_list_field_bytes == 4096);
+static_assert(md::max_list_errors == 20 && md::max_list_echo_bytes == 32);
+static_assert(md::network_streak_limit == 3);
 
 // ---- value types are aggregates (designated initializers, defaulted comparisons) ------------
 static_assert(std::is_aggregate_v<md::Chapter> && std::is_aggregate_v<md::Cover>);
@@ -83,6 +97,13 @@ static_assert(std::is_aggregate_v<md::DownloadOptions> && std::is_aggregate_v<md
 static_assert(std::is_aggregate_v<md::HttpRequest> && std::is_aggregate_v<md::RetryConfig>);
 static_assert(std::is_aggregate_v<md::EpubMetadata> && std::is_aggregate_v<md::EpubNavEntry>);
 static_assert(std::is_aggregate_v<md::FetchedPage> && std::is_aggregate_v<md::DownloadServices>);
+static_assert(std::is_aggregate_v<md::ListRecord> && std::is_aggregate_v<md::TitleList>);
+static_assert(std::is_aggregate_v<md::ListErrors> && std::is_aggregate_v<md::RowDirVerdict>);
+static_assert(std::is_aggregate_v<md::RawBatchArgs> && std::is_aggregate_v<md::BatchSettings>);
+static_assert(std::is_aggregate_v<md::BatchJob> && std::is_aggregate_v<md::RowOutcome>);
+static_assert(std::is_aggregate_v<md::TitleResult> && std::is_aggregate_v<md::BatchResult>);
+static_assert(std::is_aggregate_v<md::Utf8Decoded>);
+static_assert(std::is_same_v<md::ListResult<int>, std::expected<int, md::ListErrors>>);
 
 // ---- abstract seams: polymorphic bases that can be neither copied nor sliced ----------------
 template <class T>
@@ -92,6 +113,7 @@ constexpr bool is_interface_v =
 static_assert(is_interface_v<md::Transport> && is_interface_v<md::Clock>);
 static_assert(is_interface_v<md::TraceSink> && is_interface_v<md::DownloadObserver>);
 static_assert(is_interface_v<md::ByteSink>); // its moves are protected, for move-only sinks
+static_assert(is_interface_v<md::TitleRunner>);
 
 // ---- ownership shapes ------------------------------------------------------------------------
 template <class T>
@@ -113,6 +135,8 @@ static_assert(!std::is_default_constructible_v<md::ChapterNumber>);
 static_assert(!std::is_default_constructible_v<md::TempFile>);
 static_assert(!std::is_default_constructible_v<md::OutputDir>);
 static_assert(!std::is_default_constructible_v<md::ScopedInterruptHandlers>);
+// The collision registry owns its keys and starts empty.
+static_assert(std::is_nothrow_default_constructible_v<md::OutputRegistry>);
 
 // ---- frozen signatures of out-of-line functions (unevaluated: nothing is linked) ------------
 static_assert(std::is_same_v<decltype(&md::run_download),
@@ -154,6 +178,49 @@ static_assert(
     std::is_same_v<decltype(&md::FetchPool::run),
                    md::Result<void> (md::FetchPool::*)(std::size_t, const md::PageFetcher&,
                                                        const md::PageConsumer&, std::stop_token)>);
+// batch (T2, T3a, T3b).
+static_assert(std::is_same_v<decltype(&md::read_bounded_file),
+                             md::Result<std::string> (*)(const std::filesystem::path&,
+                                                         std::string_view, std::size_t)>);
+static_assert(std::is_same_v<decltype(&md::read_bounded_fd),
+                             md::Result<std::string> (*)(int, std::string_view, std::size_t)>);
+static_assert(
+    std::is_same_v<decltype(&md::check_row_dir),
+                   md::RowDirVerdict (*)(const std::filesystem::path&, std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::classify_dir_errno), md::RowDirKind (*)(int, bool) noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::parse_title_list),
+                   md::ListResult<md::TitleList> (*)(std::string_view, std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::validate_batch_args),
+                             md::Result<md::BatchSettings> (*)(const md::RawBatchArgs&)>);
+static_assert(
+    std::is_same_v<decltype(&md::plan_batch), md::ListResult<std::vector<md::BatchJob>> (*)(
+                                                  const md::TitleList&, const md::BatchSettings&)>);
+static_assert(std::is_same_v<decltype(&md::validate_list_dir),
+                             md::Result<std::string> (*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::join_list_dir),
+                             std::string (*)(std::string_view, std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::title_status_for), md::TitleStatus (*)(int) noexcept>);
+static_assert(std::is_same_v<decltype(&md::title_status_name),
+                             std::string_view (*)(md::TitleStatus) noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::run_batch),
+                   md::BatchResult (*)(std::span<const md::BatchJob>, md::TitleRunner&, bool)>);
+static_assert(
+    std::is_same_v<decltype(&md::batch_exit_code), int (*)(const md::BatchResult&) noexcept>);
+static_assert(std::is_same_v<decltype(&md::batch_closing_message),
+                             std::optional<std::string> (*)(const md::BatchResult&, bool)>);
+static_assert(
+    std::is_same_v<decltype(&md::exists_notice), std::optional<std::string> (*)(std::size_t)>);
+static_assert(std::is_same_v<decltype(&md::batch_to_json),
+                             std::string (*)(const md::BatchResult&, std::string_view, bool)>);
+static_assert(
+    std::is_same_v<decltype(&md::OutputRegistry::claim),
+                   std::optional<std::size_t> (md::OutputRegistry::*)(std::string, std::size_t)>);
+static_assert(std::is_same_v<decltype(&md::TitleRunner::run),
+                             md::RowOutcome (md::TitleRunner::*)(const md::BatchJob&, std::size_t,
+                                                                 std::size_t)>);
 // exit_code_for is overloaded (Errc and RunReport), so check the RunReport overload by call.
 static_assert(
     std::is_same_v<decltype(md::exit_code_for(std::declval<const md::RunReport&>())), int>);
@@ -366,4 +433,120 @@ TEST_CASE("UniqueFd closes exactly once, when its last owner dies", "[interfaces
         CHECK(owner.get() == -1);
         CHECK_FALSE(is_open(raw));
     }
+}
+
+TEST_CASE("Error and Failure map the batch category to exit code 7", "[interfaces][batch]") {
+    CHECK(md::Error{.code = md::Errc::mixed_failures}.exit_code() == md::exit_code::mixed_failures);
+
+    const md::Failure failure{md::Error{.code = md::Errc::mixed_failures, .message = "mixed"}};
+    CHECK(failure.exit_code() == 7);
+    CHECK(failure.error() == md::Error{.code = md::Errc::mixed_failures, .message = "mixed"});
+}
+
+TEST_CASE("Validated download options compare member-wise", "[interfaces][batch]") {
+    CHECK(md::DownloadOptions{} == md::DownloadOptions{});
+
+    const md::DownloadOptions dry{.dry_run = true};
+    CHECK(dry != md::DownloadOptions{});
+    CHECK(dry == md::DownloadOptions{.dry_run = true});
+
+    const md::DownloadOptions other_dir{.dir = "out"};
+    CHECK(other_dir != md::DownloadOptions{});
+    const md::DownloadOptions grouped{.groups = {"A", "B"}};
+    CHECK(grouped != md::DownloadOptions{.groups = {"B", "A"}}); // priority order matters
+    CHECK(md::DownloadOptions{.title = "T"} != md::DownloadOptions{});
+}
+
+TEST_CASE("Batch list aggregates default-construct and take partial designated init",
+          "[interfaces][batch]") {
+    const md::ListRecord record{};
+    CHECK(record.line == 0);
+    CHECK(record.manga.empty());
+    CHECK_FALSE(record.title.has_value());
+    CHECK_FALSE(record.dir.has_value());
+    CHECK_FALSE(record.group.has_value());
+    CHECK_FALSE(record.direction.has_value());
+
+    const md::ListRecord partial{.line = 3, .manga = "m", .group = "A|B"};
+    CHECK(partial.line == 3);
+    CHECK(partial.group == std::optional<std::string>{"A|B"});
+    CHECK_FALSE(partial.lang.has_value());
+    CHECK(partial != record);
+
+    const md::TitleList list{.records = {partial}};
+    CHECK_FALSE(list.has_header);
+    CHECK(list.records.size() == 1);
+    CHECK(list == md::TitleList{.has_header = false, .records = {partial}});
+
+    const md::ListErrors errors{.messages = {"f.csv:2: bad"}};
+    CHECK(errors.more == 0);
+    CHECK(errors == md::ListErrors{.messages = {"f.csv:2: bad"}, .more = 0});
+
+    const md::ListResult<md::TitleList> failed{std::unexpect, errors};
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error() == errors);
+}
+
+TEST_CASE("Batch settings and jobs default to download's defaults", "[interfaces][batch]") {
+    const md::RawBatchArgs raw{};
+    CHECK(raw.file.empty());
+    CHECK(raw.defaults.dir == ".");
+    CHECK(raw.defaults.manga.empty());
+    CHECK_FALSE(raw.defaults.title.has_value());
+    CHECK_FALSE(raw.fail_fast);
+
+    const md::RawBatchArgs stdin_args{.file = "-", .fail_fast = true};
+    CHECK(stdin_args.file == "-");
+    CHECK(stdin_args.fail_fast);
+    CHECK(stdin_args.defaults.jobs == 4);
+
+    const md::BatchSettings settings{.label = "<stdin>"};
+    CHECK(settings.file.empty());
+    CHECK(settings.label == "<stdin>");
+    CHECK(settings.base == md::DownloadOptions{});
+    CHECK_FALSE(settings.fail_fast);
+
+    const md::BatchJob job{.line = 2, .dir = "out/sub", .sub_dir = "sub"};
+    CHECK(job.line == 2);
+    CHECK(job.options == md::DownloadOptions{});
+    CHECK_FALSE(job.duplicate_of.has_value());
+    CHECK(job.dir == "out/sub");
+    CHECK(job.sub_dir == "sub");
+}
+
+TEST_CASE("Batch outcome aggregates default to an unrun, non-fatal row", "[interfaces][batch]") {
+    const md::RowOutcome outcome{};
+    CHECK(outcome.exit_code == 0);
+    CHECK(outcome.error.empty());
+    CHECK(outcome.files == md::RunSummary{});
+    CHECK_FALSE(outcome.report.has_value());
+    CHECK_FALSE(outcome.interrupted);
+    CHECK_FALSE(outcome.fatal);
+    CHECK(md::RowOutcome{.exit_code = 1, .fatal = true} != outcome);
+
+    const md::TitleResult title{};
+    CHECK(title.status == md::TitleStatus::not_run);
+    CHECK_FALSE(title.exit_code.has_value());
+    CHECK_FALSE(title.error.has_value());
+    CHECK_FALSE(title.duplicate_of.has_value());
+    CHECK_FALSE(title.report.has_value());
+
+    const md::TitleResult dup{.line = 4, .status = md::TitleStatus::duplicate, .duplicate_of = 2};
+    CHECK(dup.duplicate_of == std::optional<std::size_t>{2});
+
+    const md::BatchResult result{};
+    CHECK(result.titles.empty());
+    CHECK(result.stop == md::BatchStop::none);
+    CHECK(result.stopped_at_line == 0);
+    CHECK(md::BatchResult{.titles = {dup}, .stop = md::BatchStop::network_streak} != result);
+
+    const md::RowDirVerdict verdict{};
+    CHECK(verdict.kind == md::RowDirKind::ok);
+    CHECK(verdict.message.empty());
+    CHECK(md::RowDirVerdict{.kind = md::RowDirKind::row_error, .message = "x: Not a directory"} !=
+          verdict);
+
+    const md::Utf8Decoded decoded{};
+    CHECK(decoded.length == 0);
+    CHECK(decoded.code_point == 0);
 }

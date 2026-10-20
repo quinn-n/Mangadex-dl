@@ -7,6 +7,40 @@ data, credentials or personal paths: they are committed, and goldens may echo th
 This file itself doubles as a committed regular file (for example a DIR argument that is a file).
 
 
+Title lists for `mangadex-dl batch` (batch/)
+============================================
+
+The CSV lists the `batch` cases read (tests/e2e/cases/batch.cmake and the `batch-*` cases in
+_edge.cmake), as FILE (`{{INPUTS}}/batch/<name>.csv`) or on stdin (`STDIN batch/<name>.csv`). The ids
+are the fixture ids below. They are byte-exact test data: .gitattributes marks `batch/*.csv -text`, so
+git never rewrites their line ends, and batch.cmake fails the configure if excel.csv loses its BOM or
+its CRLF. Write or change them with `printf` (never an editor that may convert line ends), then
+check the bytes with `od -c`.
+
+  clean.csv                 headerless: 1111... (one title)
+  bulk.csv                  headerless: 3333... (the bulk tree, for the SIGPIPE cases)
+  incomplete.csv            headerless: 4444...
+  clean-unknown.csv         headerless: 1111..., 6666... (row 2 is not found)
+  nochapters-mixed.csv      headerless: 5555..., 6666... (exit 5 then 4 on the nochapters tree)
+  nochapters-fail-fast.csv  the same two rows, for the --fail-fast cases
+  two-clean.csv             headerless: 1111... twice (row 2 is a duplicate)
+  four-clean.csv            headerless: 1111..., 2222..., 3333..., 4444... (four distinct rows, for
+                            the network-failure streak)
+  comments-only.csv         only `#` comments and a blank line (an empty list)
+  row-dir.csv               `manga,dir`: 1111...,series/clean
+  row-dir-file.csv          `manga,dir`: 1111...,README/x and 1111..., (empty dir). With DIR
+                            {{INPUTS}}, row 1's dir runs into this README, a regular file
+  unknown-dir.csv           `manga,dir`: 6666...,sub (not found; must leave no directory behind)
+  dir-escape.csv            `manga,dir`: 1111...,../x (rejected: escapes DIR)
+  dir-absolute.csv          `manga,dir`: 1111...,/abs (rejected: absolute)
+  excel.csv                 UTF-8 BOM + CRLF: `manga,title` / 1111...,"Excel, Title"
+  excel-bad.csv             UTF-8 BOM + CRLF: a good row on line 2, then an unterminated quote that
+                            starts on line 3
+  invalid-utf8.csv          the byte 0xFF on line 1
+  chapter-url.csv           headerless: a chapter URL on line 1, then 1111... (not a title, not a
+                            column)
+
+
 Generated MangaDex fixtures ({{FIXTURES}})
 ==========================================
 

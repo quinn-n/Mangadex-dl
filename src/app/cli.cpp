@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "cli.hpp"
 
+#include "cmd_batch.hpp"
 #include "cmd_download.hpp"
 #include "cmd_download_output.hpp"
 #include "command.hpp"
@@ -11,6 +12,7 @@
 
 #include <CLI/CLI.hpp>
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <memory>
@@ -45,7 +47,7 @@ struct Invocation {
     return ColorMode::automatic; // "auto"; IsMember has already rejected anything else
 }
 
-/// "Run 'mangadex-dl --help' ..." or, once a subcommand was reached, "Run 'mangadex-dl download
+/// "Run 'mangadex-dl --help' ..." or, once a subcommand was reached, "Run 'mangadex-dl <command>
 /// --help' ...": the one hint line every usage error ends with.
 [[nodiscard]] std::string help_hint(const CLI::App& app) {
     const std::vector<CLI::App*> reached = app.get_subcommands();
@@ -56,11 +58,25 @@ struct Invocation {
                        reached.front()->get_name());
 }
 
+/// `batch ... --title X` (or `--title=X`): CLI11 sends the unknown option to the root, which
+/// rejects it as "not expected". `batch` has no --title because each row names its own title, so
+/// say that instead. Only for ExtrasError once `batch` was reached.
+[[nodiscard]] bool batch_got_title(const CLI::App& app, const CLI::Error& error) {
+    const std::vector<CLI::App*> reached = app.get_subcommands();
+    if (error.get_name() != "ExtrasError" || reached.empty() ||
+        reached.front()->get_name() != "batch") {
+        return false;
+    }
+    return std::ranges::any_of(app.remaining(true), [](const std::string& word) {
+        return word == "--title" || word.starts_with("--title=");
+    });
+}
+
 /// The text App::exit prints for a parse error (never for --help or --version):
 /// `mangadex-dl: error: <message>` plus the hint line. `app` is the root app (run() calls its
 /// exit()). Without a subcommand, the "subcommand required" error becomes "unknown command 'x'"
-/// or "unknown option '-x'" for the first non-empty leftover, or "missing command". User text
-/// goes through terminal_safe.
+/// or "unknown option '-x'" for the first non-empty leftover, or "missing command"; `batch` with a
+/// leftover --title says that batch has no such option. User text goes through terminal_safe.
 [[nodiscard]] std::string failure_text(const CLI::App* app, const CLI::Error& error) {
     if (app->get_subcommands().empty()) {
         const std::string name = error.get_name();
@@ -75,13 +91,20 @@ struct Invocation {
                     return std::format("{}: error: unknown option '{}'\n{}", tool_name,
                                        terminal_safe(word), help_hint(*app));
                 }
-                return std::format("{}: error: unknown command '{}' (the only command is "
-                                   "'download')\n{}",
-                                   tool_name, terminal_safe(word), help_hint(*app));
+                // The command list is spelled out here, next to the registration list in run():
+                // keep the two in step.
+                return std::format(
+                    "{}: error: unknown command '{}' (commands: download, batch)\n{}", tool_name,
+                    terminal_safe(word), help_hint(*app));
             }
-            return std::format("{}: error: missing command; try '{} download --help'\n", tool_name,
+            return std::format("{}: error: missing command; try '{} --help'\n", tool_name,
                                tool_name);
         }
+    }
+    if (batch_got_title(*app, error)) {
+        return std::format("{}: error: batch has no --title option; give each row a 'title' "
+                           "column instead\n{}",
+                           tool_name, help_hint(*app));
     }
     std::string_view message{error.what()};
     const std::string own_prefix = std::format("{}: ", tool_name);
@@ -135,7 +158,9 @@ int run(std::span<const char* const> args, Io& io) {
     add_global_options(app, inv);
 
     // Registration list, one line per subcommand (a serialization point: one track at a time).
+    // Keep failure_text's "(commands: ...)" list in step with it.
     commands.push_back(register_download(app, inv.selected));
+    commands.push_back(register_batch(app, inv.selected));
 
     // argc may be 0 (execve with an empty argv). Never index argv[0] unchecked; give CLI11 a name.
     const std::string argv0{tool_name};
