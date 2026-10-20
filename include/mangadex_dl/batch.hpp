@@ -161,10 +161,6 @@ protected:
 [[nodiscard]] std::optional<std::string> batch_closing_message(const BatchResult& result,
                                                                bool dry_run);
 
-/// "1 file already exists; ..." / "N files already exist; ..." (download's exact text), or
-/// nullopt.
-[[nodiscard]] std::optional<std::string> exists_notice(std::size_t exists);
-
 /// The --json document, ordered_json, indent 2, replace handler, '\n'-terminated, never ANSI.
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run);

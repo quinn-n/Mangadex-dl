@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The run report: status counts, the exit-code rule and the --json document (download plan T13).
+// The run report: status counts, the exit-code rule and the --json document (download plan T13;
+// `existing`, `new_chapters` and `reused_chapters` from skip-existing plan T11).
 // The document's keys and enum spellings are API (download-spec.md "Input & output"); renaming or
 // removing one is a breaking change that needs a format_version bump.
 #include "mangadex_dl/report.hpp"
@@ -12,10 +13,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace mangadex_dl {
 namespace {
@@ -92,6 +96,34 @@ constexpr int format_version = 1;
     return "unknown"; // only reachable through an out-of-range enum value
 }
 
+/// The `existing` spelling; null for none (no file of that name).
+[[nodiscard]] Json existing_json(ExistingKind existing) {
+    switch (existing) {
+    case ExistingKind::none:
+        return nullptr;
+    case ExistingKind::complete:
+        return "complete";
+    case ExistingKind::incomplete:
+        return "incomplete";
+    case ExistingKind::diverged:
+        return "diverged";
+    case ExistingKind::foreign:
+        return "foreign";
+    case ExistingKind::unchecked:
+        return "unchecked";
+    }
+    return "unknown"; // only reachable through an out-of-range enum value
+}
+
+/// A JSON array of the strings in `values`, in order.
+[[nodiscard]] Json string_array(const std::vector<std::string>& values) {
+    Json out = Json::array();
+    for (const std::string& value : values) {
+        out.push_back(value);
+    }
+    return out;
+}
+
 /// A JSON string, or null for nullopt.
 [[nodiscard]] Json nullable(const std::optional<std::string>& value) {
     if (!value) {
@@ -140,6 +172,9 @@ constexpr int format_version = 1;
     out["chapter"] = nullable(outcome.epub.chapter);
     out["status"] = status_name(outcome.status);
     out["replaced"] = outcome.replaced;
+    out["existing"] = existing_json(outcome.existing);
+    out["new_chapters"] = string_array(outcome.new_chapters);
+    out["reused_chapters"] = string_array(outcome.reused_chapters);
     out["pages"] = outcome.pages;
     out["bytes"] = outcome.bytes;
     out["error"] = outcome.error.empty() ? Json(nullptr) : Json(outcome.error);
@@ -200,6 +235,17 @@ int exit_code_for(const RunReport& report) noexcept {
         return exit_code::no_chapters;
     }
     return exit_code::success;
+}
+
+std::optional<std::string> up_to_date_notice(std::size_t up_to_date) {
+    if (up_to_date == 0) {
+        return std::nullopt;
+    }
+    if (up_to_date == 1) {
+        return std::string{"1 file is already up to date; pass --overwrite to download it again"};
+    }
+    return std::format("{} files are already up to date; pass --overwrite to download them again",
+                       up_to_date);
 }
 
 namespace detail {

@@ -38,7 +38,7 @@ void bind_selection_options(CLI::App& sub, RawDownloadArgs& args) {
 }
 
 void bind_run_options(CLI::App& sub, RawDownloadArgs& args) {
-    sub.add_flag("--overwrite", args.overwrite, "Replace files that already exist");
+    sub.add_flag("--overwrite", args.overwrite, "Re-download files even if up to date");
     sub.add_flag("-n,--dry-run", args.dry_run, "List the files to write; download nothing");
     sub.add_option("-j,--jobs", args.jobs, "Parallel image downloads, 1 to 8")
         ->type_name("N")

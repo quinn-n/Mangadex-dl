@@ -22,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -315,21 +316,6 @@ void keep_best(std::vector<std::size_t>& pool, const std::vector<Candidate>& can
     });
 }
 
-/// The index of the first --group entry matching one of the chapter's groups (by ASCII
-/// case-insensitive name or id), or the number of entries when none matches.
-[[nodiscard]] std::size_t preference_rank(const Chapter& chapter,
-                                          const std::vector<std::string>& preferred) {
-    for (std::size_t rank = 0; rank < preferred.size(); ++rank) {
-        const std::string& wanted = preferred[rank];
-        if (std::ranges::any_of(chapter.groups, [&wanted](const ScanGroup& group) {
-                return ascii_iequal(group.name, wanted) || ascii_iequal(group.id, wanted);
-            })) {
-            return rank;
-        }
-    }
-    return preferred.size();
-}
-
 struct DedupeWinner {
     std::size_t index = 0;
     std::string rule{};
@@ -348,7 +334,7 @@ pick_release(std::vector<std::size_t> pool, const std::vector<Candidate>& candid
         return std::nullopt;
     };
     keep_best(pool, candidates, [&preferred](const Candidate& candidate) {
-        return preference_rank(candidate.chapter, preferred);
+        return group_preference_rank(candidate.chapter.groups, preferred);
     });
     if (auto winner = decided("preferred group (--group)")) {
         return *std::move(winner);
@@ -750,6 +736,19 @@ make_epubs(const std::vector<const Candidate*>& kept, const PlanInput& input,
 }
 
 } // namespace
+
+std::size_t group_preference_rank(std::span<const ScanGroup> groups,
+                                  std::span<const std::string> preferred) {
+    for (std::size_t rank = 0; rank < preferred.size(); ++rank) {
+        const std::string& wanted = preferred[rank];
+        if (std::ranges::any_of(groups, [&wanted](const ScanGroup& group) {
+                return ascii_iequal(group.name, wanted) || ascii_iequal(group.id, wanted);
+            })) {
+            return rank;
+        }
+    }
+    return preferred.size();
+}
 
 std::string resolve_title(const MangaInfo& manga, std::string_view lang) {
     for (const auto& [language, text] : manga.titles) {

@@ -4,7 +4,7 @@
 // directly over ostringstream-backed Io: a default RowContext prints exactly what `download`
 // prints; a row prefix goes after `warning:`/`error:` (never on verbose lines) and is sanitized
 // with the message; position/total add a `(i/n) ` progress counter; exists_notice=false leaves the
-// "already exist" notice to the caller. Plus Io::stdin_fd and run_cli's stdin_fd parameter.
+// "already up to date" note to the caller. Plus Io::stdin_fd and run_cli's stdin_fd parameter.
 
 #include "app/cmd_download_output.hpp"
 #include "app/command.hpp"
@@ -65,11 +65,14 @@ struct Capture {
         .pages = 180,
         .bytes = 4096,
         .error = std::move(error),
+        // A file left alone here is one that is already up to date.
+        .existing =
+            status == md::EpubStatus::exists ? md::ExistingKind::complete : md::ExistingKind::none,
     };
 }
 
 /// The three lines `download` prints from the observer for one warning, one failed file and one
-/// existing file (finish()), in that order.
+/// up-to-date file (finish()), in that order.
 void drive_warning_failed_exists(app::ConsoleObserver& observer) {
     observer.on_warning("skipped Vol. 2 Ch. 3: hosted outside MangaDex");
     observer.on_epub_end(outcome(md::EpubStatus::failed, "out/T - Vol. 03.epub", "HTTP 404"));
@@ -80,7 +83,7 @@ void drive_warning_failed_exists(app::ConsoleObserver& observer) {
 constexpr std::string_view download_lines =
     "mangadex-dl: warning: skipped Vol. 2 Ch. 3: hosted outside MangaDex\n"
     "mangadex-dl: error: out/T - Vol. 03.epub: HTTP 404\n"
-    "mangadex-dl: warning: 1 file already exists; pass --overwrite to replace it\n";
+    "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n";
 
 } // namespace
 
@@ -131,9 +134,8 @@ TEST_CASE("ConsoleObserver row prefix: after the warning:/error: label, never on
           "mangadex-dl: wrote out/T - Vol. 03.epub (180 pages, 4096 bytes)\n"
           "mangadex-dl: error: list.csv:4: out/T - Vol. 05.epub: HTTP 404\n"
           "mangadex-dl: error: list.csv:4: out/T - Vol. 06.epub: failed\n"
-          "mangadex-dl: skipped out/T - Vol. 07.epub: it already exists\n"
-          "mangadex-dl: warning: list.csv:4: 1 file already exists; pass --overwrite to replace "
-          "it\n");
+          "mangadex-dl: out/T - Vol. 07.epub: up to date (0 chapters)\n"
+          "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n");
     // stdout stays download's path stream, unprefixed.
     CHECK(cap.out.str() == "out/T - Vol. 03.epub\n");
 }
@@ -189,7 +191,7 @@ TEST_CASE("ConsoleObserver without a row position draws no counter",
     CHECK(cap.err.str() == "\r[1/2] Vol. 1: 0/3 pages");
 }
 
-TEST_CASE("ConsoleObserver exists_notice=false leaves the notice to the caller",
+TEST_CASE("ConsoleObserver exists_notice=false leaves the up-to-date note to the caller",
           "[download-row-output][stderr]") {
     Capture cap;
     app::ConsoleObserver observer(cap.io, app::OutputPolicy{},

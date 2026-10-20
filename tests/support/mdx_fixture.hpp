@@ -49,11 +49,15 @@ struct PageImage {
     std::uint16_t height = 12;
     /// Listed in the at-home document but never written to disk (a 404 in fixture mode).
     bool missing = false;
+
+    friend bool operator==(const PageImage&, const PageImage&) = default;
 };
 
 struct FixtureGroup {
     std::string id{};
     std::string name{};
+
+    friend bool operator==(const FixtureGroup&, const FixtureGroup&) = default;
 };
 
 struct FixtureCreator {
@@ -82,6 +86,11 @@ struct FixtureChapter {
     /// The at-home hash. Empty: no at-home document is written (a 404 in fixture mode).
     std::string hash{};
     std::vector<PageImage> images{};
+    /// False: listed in the feed, but neither its at-home document nor its images are written, so
+    /// fetching it is a 404 (a download of it fails the file, exit 6). The feed entry is unchanged.
+    bool served = true;
+
+    friend bool operator==(const FixtureChapter&, const FixtureChapter&) = default;
 };
 
 struct FixtureCover {
@@ -90,6 +99,10 @@ struct FixtureCover {
     std::string file{};
     std::optional<std::string> locale{};
     PageImage image{.kind = ImageKind::png, .width = 6, .height = 9};
+    /// False: listed in the manga and cover documents, but the image file is not written (a 404).
+    bool served = true;
+
+    friend bool operator==(const FixtureCover&, const FixtureCover&) = default;
 };
 
 struct FixtureManga {
@@ -598,7 +611,7 @@ namespace detail {
 
 [[nodiscard]] inline std::expected<void, std::string>
 write_chapter_files(const std::filesystem::path& root, const FixtureChapter& chapter) {
-    if (chapter.hash.empty()) {
+    if (chapter.hash.empty() || !chapter.served) {
         return {};
     }
     if (const auto ok = write_json(root / "api" / "at-home" / "server" / (chapter.id + ".json"),
@@ -634,10 +647,12 @@ write_chapter_files(const std::filesystem::path& root, const FixtureChapter& cha
 ///   api/manga/<id>.json                         manga_json
 ///   api/manga/<id>/feed/offset-<n>.json         feed_pages_json (n = 0, 500, ...; always offset-0)
 ///   api/cover/offset-<n>.json                   covers_json (n = 0, 100, ...; always offset-0)
-///   api/at-home/server/<chapterId>.json         at_home_json, for chapters with a non-empty hash
+///   api/at-home/server/<chapterId>.json         at_home_json, for served chapters with a hash
 ///   at-home/data/<hash>/<p###.ext>              page images (not for PageImage::missing)
 ///   at-home/data-saver/<hash>/<s###.ext>        the same bytes under the data-saver names
-///   uploads/covers/<mangaId>/<file>             cover images
+///   uploads/covers/<mangaId>/<file>             cover images (served covers only)
+/// An unserved chapter (FixtureChapter::served) gets neither its at-home document nor its images;
+/// an unserved cover gets no image file. Both stay listed in the API documents.
 [[nodiscard]] inline std::expected<void, std::string>
 write_fixture_tree(const std::filesystem::path& root, const FixtureManga& manga) {
     if (const auto ok = detail::check_names(manga); !ok) {
@@ -669,6 +684,9 @@ write_fixture_tree(const std::filesystem::path& root, const FixtureManga& manga)
         }
     }
     for (const FixtureCover& cover : manga.covers) {
+        if (!cover.served) {
+            continue;
+        }
         if (const auto ok = detail::write_file(root / "uploads" / "covers" / manga.id / cover.file,
                                                image_bytes(cover.image));
             !ok) {
@@ -770,6 +788,178 @@ enum class IdKind : std::uint16_t { chapter = 1, group = 2, author = 3, artist =
          .file = "cover-v2.png",
          .locale = "ja"},
     };
+    return m;
+}
+
+// ---- variants of the clean title (re-run, update and regroup tests) ----------------------------
+//
+// Every variant has the clean title's manga id, manga document, covers (ids and file names) and
+// groups, so an EPUB written from `clean` is "the same book" to a later run against a variant.
+// A chapter that two trees share is the identical FixtureChapter (same id, labels, dates, hash and
+// image bytes). Group A is clean's "Clean Scans"; group B, "Bravo Scans", re-releases ch 1-3 under
+// new ids with other images. "Charlie Scans" names no group: a --group value that matches nothing.
+//
+//   tree                     feed (in feed order)              served (at-home docs + images)
+//   clean-grown              A 1, 2, 3, 4                       all
+//   clean-grown-reuse-only   A 1, 2, 3, 4                       only A ch 4; no cover images
+//   clean-regrouped          B 1, 2, 3                          nothing; no cover images
+//   clean-regrouped-served   B 1, 2, 3                          all
+//   clean-regrouped-grown    B 1, 2, 3, 2.5                     only B ch 2.5; no cover images
+//   clean-mixed-reference    A 1, 2, 3 + B 2.5                  all
+//   clean-diverged           A 1, 2, 4 (ch 3 gone)              all
+//
+// Volumes: ch 1, 2 and 2.5 are vol 1; ch 3 and 4 are vol 2.
+
+inline constexpr std::string_view clean_manga_id = "11111111-1111-4111-8111-111111111111";
+inline constexpr std::string_view clean_group_a_name = "Clean Scans";
+inline constexpr std::string_view bravo_group_name = "Bravo Scans";
+/// Matches neither group of the clean title (by name or id).
+inline constexpr std::string_view unmatched_group_name = "Charlie Scans";
+
+/// Chapter numbers n for clean_chapter_id(n): group A uses 1..4 (ch 1..4), group B 101..104.
+inline constexpr std::uint64_t clean_ch4_n = 4;
+inline constexpr std::uint64_t bravo_ch1_n = 101;
+inline constexpr std::uint64_t bravo_ch2_n = 102;
+inline constexpr std::uint64_t bravo_ch3_n = 103;
+inline constexpr std::uint64_t bravo_ch2_5_n = 104;
+
+/// The id of the clean title's chapter `n` (1..3 as in clean_fixture(), and the variants' 4 and
+/// 101..104): `11111111-0001-4000-8000-<n as 12 hex digits>`.
+[[nodiscard]] inline std::string clean_chapter_id(std::uint64_t n) {
+    return detail::fixture_uuid('1', detail::IdKind::chapter, n);
+}
+
+/// Group A, "Clean Scans": `11111111-0002-4000-8000-000000000001`.
+[[nodiscard]] inline std::string clean_group_a_id() {
+    return detail::fixture_uuid('1', detail::IdKind::group, 1);
+}
+
+/// Group B, "Bravo Scans": `11111111-0002-4000-8000-000000000002`.
+[[nodiscard]] inline std::string bravo_group_id() {
+    return detail::fixture_uuid('1', detail::IdKind::group, 2);
+}
+
+namespace detail {
+
+/// clean_fixture() with group B added to the group list (names only; no chapter changes).
+[[nodiscard]] inline FixtureManga clean_variant_base() {
+    FixtureManga m = clean_fixture();
+    m.groups.push_back({.id = bravo_group_id(), .name = std::string{bravo_group_name}});
+    return m;
+}
+
+/// Vol 2 ch 4 by group A: a PNG and a GIF page.
+[[nodiscard]] inline FixtureChapter clean_ch4() {
+    return numbered('1', clean_ch4_n,
+                    {.volume = "2",
+                     .chapter = "4",
+                     .title = "Encore",
+                     .group_ids = {clean_group_a_id()},
+                     .images = {img(ImageKind::png), img(ImageKind::gif)}});
+}
+
+/// Group B's releases of ch 1-3: clean's labels, new ids, other images (10x10, other page counts).
+[[nodiscard]] inline std::vector<FixtureChapter> bravo_ch1_to_3() {
+    const std::string group = bravo_group_id();
+    return {
+        numbered('1', bravo_ch1_n,
+                 {.volume = "1",
+                  .chapter = "1",
+                  .title = "Bravo Beginnings",
+                  .group_ids = {group},
+                  .images = {img(ImageKind::png, 10, 10), img(ImageKind::gif, 10, 10)}}),
+        numbered('1', bravo_ch2_n,
+                 {.volume = "1",
+                  .chapter = "2",
+                  .title = "Bravo Middles",
+                  .group_ids = {group},
+                  .images = {img(ImageKind::png, 10, 10), img(ImageKind::png, 10, 10),
+                             img(ImageKind::gif, 10, 10)}}),
+        numbered('1', bravo_ch3_n,
+                 {.volume = "2",
+                  .chapter = "3",
+                  .title = "Bravo Endings",
+                  .group_ids = {group},
+                  .images = {img(ImageKind::gif, 10, 10), img(ImageKind::png, 10, 10)}}),
+    };
+}
+
+/// Vol 1 ch 2.5 by group B (no A release exists).
+[[nodiscard]] inline FixtureChapter bravo_ch2_5() {
+    return numbered('1', bravo_ch2_5_n,
+                    {.volume = "1",
+                     .chapter = "2.5",
+                     .title = "Bravo Interlude",
+                     .group_ids = {bravo_group_id()},
+                     .images = {img(ImageKind::png, 9, 9), img(ImageKind::gif, 9, 9)}});
+}
+
+/// Serves only the chapter whose id is `served_id` (none when empty) and no cover image.
+inline void serve_only(FixtureManga& manga, std::string_view served_id) {
+    for (FixtureChapter& chapter : manga.chapters) {
+        chapter.served = !served_id.empty() && chapter.id == served_id;
+    }
+    for (FixtureCover& cover : manga.covers) {
+        cover.served = false;
+    }
+}
+
+} // namespace detail
+
+/// `clean` plus vol 2 ch 4 (A); everything served.
+[[nodiscard]] inline FixtureManga clean_grown_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    m.chapters.push_back(detail::clean_ch4());
+    return m;
+}
+
+/// The API documents of `clean-grown`, but only ch 4 is served and no cover image is: an update
+/// of a `clean` Vol. 02 succeeds only by reusing ch 3 (and the cover) from the existing file.
+[[nodiscard]] inline FixtureManga clean_grown_reuse_only_fixture() {
+    FixtureManga m = clean_grown_fixture();
+    detail::serve_only(m, clean_chapter_id(clean_ch4_n));
+    return m;
+}
+
+/// Group B's ch 1-3 only (A is gone); nothing is served, no cover image either.
+[[nodiscard]] inline FixtureManga clean_regrouped_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    m.chapters = detail::bravo_ch1_to_3();
+    detail::serve_only(m, {});
+    return m;
+}
+
+/// The API documents of `clean-regrouped`, everything served: `--group "Bravo Scans"` re-picks
+/// B's releases and downloads them (gate decision 5).
+[[nodiscard]] inline FixtureManga clean_regrouped_served_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    m.chapters = detail::bravo_ch1_to_3();
+    return m;
+}
+
+/// Group B's ch 1-3 plus vol 1 ch 2.5 (B); only ch 2.5 is served, no cover image.
+[[nodiscard]] inline FixtureManga clean_regrouped_grown_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    m.chapters = detail::bravo_ch1_to_3();
+    m.chapters.push_back(detail::bravo_ch2_5());
+    detail::serve_only(m, clean_chapter_id(bravo_ch2_5_n));
+    return m;
+}
+
+/// A's ch 1-3 plus B's ch 2.5, everything served: a fresh download is the reference for
+/// rebuilding a `clean` Vol. 01 from `clean-regrouped-grown`.
+[[nodiscard]] inline FixtureManga clean_mixed_reference_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    m.chapters.push_back(detail::bravo_ch2_5());
+    return m;
+}
+
+/// Vol 1 as in `clean`; vol 2 holds only ch 4 (ch 3 is gone); everything served.
+[[nodiscard]] inline FixtureManga clean_diverged_fixture() {
+    FixtureManga m = detail::clean_variant_base();
+    std::erase_if(m.chapters,
+                  [](const FixtureChapter& chapter) { return chapter.id == clean_chapter_id(3); });
+    m.chapters.push_back(detail::clean_ch4());
     return m;
 }
 
@@ -978,13 +1168,20 @@ struct NamedFixture {
     FixtureManga (*make)() = nullptr;
 };
 
-/// The five trees fixture_gen writes, by directory name.
+/// The twelve trees fixture_gen writes, by directory name (each a safe, unique path component).
 [[nodiscard]] inline std::vector<NamedFixture> all_fixtures() {
     return {{.name = "clean", .make = &clean_fixture},
             {.name = "basic", .make = &basic_fixture},
             {.name = "bulk", .make = &bulk_fixture},
             {.name = "incomplete", .make = &incomplete_fixture},
-            {.name = "nochapters", .make = &nochapters_fixture}};
+            {.name = "nochapters", .make = &nochapters_fixture},
+            {.name = "clean-grown", .make = &clean_grown_fixture},
+            {.name = "clean-grown-reuse-only", .make = &clean_grown_reuse_only_fixture},
+            {.name = "clean-regrouped", .make = &clean_regrouped_fixture},
+            {.name = "clean-regrouped-served", .make = &clean_regrouped_served_fixture},
+            {.name = "clean-regrouped-grown", .make = &clean_regrouped_grown_fixture},
+            {.name = "clean-mixed-reference", .make = &clean_mixed_reference_fixture},
+            {.name = "clean-diverged", .make = &clean_diverged_fixture}};
 }
 
 } // namespace mangadex_dl::test::mdx

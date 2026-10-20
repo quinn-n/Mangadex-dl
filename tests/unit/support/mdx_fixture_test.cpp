@@ -11,10 +11,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -599,4 +601,263 @@ TEST_CASE("TempDir creates a private directory and removes it", "[temp_dir]") {
 TEST_CASE("TempDir rejects a prefix with a slash", "[temp_dir]") {
     CHECK_FALSE(TempDir::create("a/b").has_value());
     CHECK_FALSE(TempDir::create("").has_value());
+}
+
+// ---- the clean title's variants (skip-existing plan T2)
+// ------------------------------------------
+
+namespace {
+
+/// One documented variant: chapter numbers `n` (clean_chapter_id(n)) in feed order, which of them
+/// are served, and whether the cover images are.
+struct VariantSpec {
+    std::string_view name{};
+    std::vector<std::uint64_t> feed{};
+    std::vector<std::uint64_t> served{};
+    bool covers_served = true;
+};
+
+[[nodiscard]] std::vector<VariantSpec> variant_specs() {
+    return {
+        {.name = "clean-grown", .feed = {1, 2, 3, 4}, .served = {1, 2, 3, 4}},
+        {.name = "clean-grown-reuse-only",
+         .feed = {1, 2, 3, 4},
+         .served = {4},
+         .covers_served = false},
+        {.name = "clean-regrouped", .feed = {101, 102, 103}, .served = {}, .covers_served = false},
+        {.name = "clean-regrouped-served", .feed = {101, 102, 103}, .served = {101, 102, 103}},
+        {.name = "clean-regrouped-grown",
+         .feed = {101, 102, 103, 104},
+         .served = {104},
+         .covers_served = false},
+        {.name = "clean-mixed-reference", .feed = {1, 2, 3, 104}, .served = {1, 2, 3, 104}},
+        {.name = "clean-diverged", .feed = {1, 2, 4}, .served = {1, 2, 4}},
+    };
+}
+
+/// The fixture all_fixtures() lists under `name`; nullopt when there is none.
+[[nodiscard]] std::optional<mdx::FixtureManga> fixture_named(std::string_view name) {
+    for (const mdx::NamedFixture& fixture : mdx::all_fixtures()) {
+        if (fixture.name == name) {
+            return fixture.make();
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::vector<std::string> ids_of(std::span<const std::uint64_t> numbers) {
+    std::vector<std::string> ids;
+    for (const std::uint64_t n : numbers) {
+        ids.push_back(mdx::clean_chapter_id(n));
+    }
+    return ids;
+}
+
+/// The chapter ids of a title's (single) feed page, in feed order.
+[[nodiscard]] std::vector<std::string> feed_ids(const mdx::FixtureManga& manga) {
+    const std::vector<nlohmann::json> pages = mdx::feed_pages_json(manga);
+    REQUIRE(pages.size() == 1);
+    std::vector<std::string> ids;
+    for (const nlohmann::json& chapter : pages.front().at("data")) {
+        ids.push_back(chapter.at("id").get<std::string>());
+    }
+    return ids;
+}
+
+/// The feed entry for chapter `id`; a null document when the feed has none.
+[[nodiscard]] nlohmann::json feed_entry(const mdx::FixtureManga& manga, std::string_view id) {
+    for (const nlohmann::json& page : mdx::feed_pages_json(manga)) {
+        for (const nlohmann::json& chapter : page.at("data")) {
+            if (chapter.at("id").get<std::string>() == id) {
+                return chapter;
+            }
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] bool listed(std::span<const std::uint64_t> numbers, const std::string& id) {
+    return std::ranges::any_of(numbers,
+                               [&id](std::uint64_t n) { return mdx::clean_chapter_id(n) == id; });
+}
+
+} // namespace
+
+TEST_CASE("each clean variant's feed lists exactly the documented chapters", "[mdx_fixture]") {
+    const mdx::FixtureManga clean = mdx::clean_fixture();
+    CHECK(feed_ids(clean) == ids_of(std::vector<std::uint64_t>{1, 2, 3}));
+    for (const VariantSpec& spec : variant_specs()) {
+        INFO("variant " << spec.name);
+        const std::optional<mdx::FixtureManga> found = fixture_named(spec.name);
+        REQUIRE(found.has_value());
+        const mdx::FixtureManga manga = found.value_or(mdx::FixtureManga{});
+        CHECK(manga.id == mdx::clean_manga_id);
+        CHECK(manga.title_en == clean.title_en);
+        CHECK(feed_ids(manga) == ids_of(spec.feed));
+        for (const mdx::FixtureChapter& chapter : manga.chapters) {
+            INFO("chapter " << chapter.id);
+            CHECK(chapter.served == listed(spec.served, chapter.id));
+            CHECK(!chapter.hash.empty());
+        }
+        REQUIRE(manga.covers.size() == clean.covers.size());
+        for (const mdx::FixtureCover& cover : manga.covers) {
+            CHECK(cover.served == spec.covers_served);
+        }
+    }
+}
+
+TEST_CASE("the variants' new chapters carry the documented labels, groups and images",
+          "[mdx_fixture]") {
+    const mdx::FixtureManga grown = mdx::clean_grown_fixture();
+    const mdx::FixtureManga regrouped = mdx::clean_regrouped_grown_fixture();
+    const mdx::FixtureManga clean = mdx::clean_fixture();
+    const std::string group_a = mdx::clean_group_a_id();
+    const std::string group_b = mdx::bravo_group_id();
+    CHECK(group_a == "11111111-0002-4000-8000-000000000001");
+    CHECK(group_b == "11111111-0002-4000-8000-000000000002");
+    CHECK(clean.groups.at(0).id == group_a);
+    CHECK(clean.groups.at(0).name == mdx::clean_group_a_name);
+
+    const mdx::FixtureChapter& ch4 = grown.chapters.at(3);
+    CHECK(ch4.id == mdx::clean_chapter_id(mdx::clean_ch4_n));
+    CHECK(ch4.volume == "2");
+    CHECK(ch4.chapter == "4");
+    CHECK(ch4.group_ids == std::vector<std::string>{group_a});
+    REQUIRE(ch4.images.size() == 2);
+    CHECK(ch4.images.at(0).kind == mdx::ImageKind::png);
+    CHECK(ch4.images.at(1).kind == mdx::ImageKind::gif);
+
+    // B's ch 1-3 repeat A's labels under new ids, with other image bytes.
+    for (std::size_t i = 0; i < 3; ++i) {
+        const mdx::FixtureChapter& a = clean.chapters.at(i);
+        const mdx::FixtureChapter& b = regrouped.chapters.at(i);
+        INFO("ch " << a.chapter.value_or("?"));
+        CHECK(b.id != a.id);
+        CHECK(b.volume == a.volume);
+        CHECK(b.chapter == a.chapter);
+        CHECK(b.group_ids == std::vector<std::string>{group_b});
+        CHECK(b.hash != a.hash);
+        CHECK(mdx::image_bytes(b.images.at(0)) != mdx::image_bytes(a.images.at(0)));
+    }
+    const mdx::FixtureChapter& ch2_5 = regrouped.chapters.at(3);
+    CHECK(ch2_5.id == mdx::clean_chapter_id(mdx::bravo_ch2_5_n));
+    CHECK(ch2_5.volume == "1");
+    CHECK(ch2_5.chapter == "2.5");
+    CHECK(ch2_5.group_ids == std::vector<std::string>{group_b});
+
+    // The feed names B "Bravo Scans"; no group of the clean family is named "Charlie Scans".
+    const nlohmann::json b_entry = feed_entry(regrouped, ch2_5.id);
+    REQUIRE(b_entry.is_object());
+    CHECK(b_entry.at("relationships").at(0).at("id") == group_b);
+    CHECK(b_entry.at("relationships").at(0).at("attributes").at("name").get<std::string>() ==
+          mdx::bravo_group_name);
+    for (const VariantSpec& spec : variant_specs()) {
+        const mdx::FixtureManga manga = fixture_named(spec.name).value_or(mdx::FixtureManga{});
+        REQUIRE(!manga.groups.empty());
+        for (const mdx::FixtureGroup& group : manga.groups) {
+            CHECK(group.name != mdx::unmatched_group_name);
+            CHECK(group.id != mdx::unmatched_group_name);
+        }
+    }
+}
+
+TEST_CASE("unserved chapters and covers are left out of the written tree", "[mdx_fixture]") {
+    auto dir = TempDir::create();
+    REQUIRE(dir.has_value());
+    for (const VariantSpec& spec : variant_specs()) {
+        INFO("variant " << spec.name);
+        const mdx::FixtureManga manga = fixture_named(spec.name).value_or(mdx::FixtureManga{});
+        REQUIRE(!manga.id.empty());
+        const std::filesystem::path root = dir->path() / spec.name;
+        REQUIRE(mdx::write_fixture_tree(root, manga).has_value());
+        // The API documents are always there, so the feed still lists every chapter.
+        CHECK(regular_nonempty(root / "api" / "manga" / (manga.id + ".json")));
+        CHECK(regular_nonempty(root / "api" / "manga" / manga.id / "feed" / "offset-0.json"));
+        CHECK(regular_nonempty(root / "api" / "cover" / "offset-0.json"));
+        for (const mdx::FixtureChapter& chapter : manga.chapters) {
+            INFO("chapter " << chapter.id << (chapter.served ? " (served)" : " (unserved)"));
+            CHECK(std::filesystem::exists(root / "api" / "at-home" / "server" /
+                                          (chapter.id + ".json")) == chapter.served);
+            CHECK(std::filesystem::exists(root / "at-home" / "data" / chapter.hash) ==
+                  chapter.served);
+            CHECK(std::filesystem::exists(root / "at-home" / "data-saver" / chapter.hash) ==
+                  chapter.served);
+            for (std::size_t i = 0; i < chapter.images.size(); ++i) {
+                const mdx::PageImage& image = chapter.images.at(i);
+                CHECK(regular_nonempty(root / "at-home" / "data" / chapter.hash /
+                                       mdx::page_file_name(i, image)) == chapter.served);
+                CHECK(regular_nonempty(root / "at-home" / "data-saver" / chapter.hash /
+                                       mdx::data_saver_file_name(i, image)) == chapter.served);
+            }
+        }
+        for (const mdx::FixtureCover& cover : manga.covers) {
+            INFO("cover " << cover.file);
+            CHECK(std::filesystem::exists(root / "uploads" / "covers" / manga.id / cover.file) ==
+                  spec.covers_served);
+        }
+    }
+}
+
+TEST_CASE("a chapter shared by clean and its variants is identical in every tree",
+          "[mdx_fixture]") {
+    const mdx::FixtureManga clean = mdx::clean_fixture();
+    std::vector<std::pair<std::string_view, mdx::FixtureManga>> family{{"clean", clean}};
+    for (const VariantSpec& spec : variant_specs()) {
+        family.emplace_back(spec.name, fixture_named(spec.name).value_or(mdx::FixtureManga{}));
+    }
+    // The first tree that holds a chapter id is its reference; every other copy must equal it
+    // field by field (`served` aside) and produce the same feed entry and at-home document.
+    std::vector<std::pair<mdx::FixtureChapter, nlohmann::json>> reference;
+    std::size_t compared = 0;
+    for (const auto& [name, manga] : family) {
+        INFO("tree " << name);
+        // Same manga, cover and group documents everywhere: the same book to a later run.
+        CHECK(mdx::manga_json(manga) == mdx::manga_json(clean));
+        CHECK(mdx::covers_json(manga) == mdx::covers_json(clean));
+        REQUIRE(manga.covers.size() == clean.covers.size());
+        for (std::size_t i = 0; i < manga.covers.size(); ++i) {
+            mdx::FixtureCover cover = manga.covers.at(i);
+            cover.served = true;
+            CHECK(cover == clean.covers.at(i));
+        }
+        REQUIRE(!manga.groups.empty());
+        CHECK(manga.groups.front() == clean.groups.front());
+        for (const mdx::FixtureChapter& chapter : manga.chapters) {
+            INFO("chapter " << chapter.id);
+            mdx::FixtureChapter normalized = chapter;
+            normalized.served = true;
+            const nlohmann::json entry = feed_entry(manga, chapter.id);
+            const auto same_id = [&chapter](const auto& known) {
+                return known.first.id == chapter.id;
+            };
+            if (const auto it = std::ranges::find_if(reference, same_id); it != reference.end()) {
+                CHECK(normalized == it->first);
+                CHECK(entry == it->second);
+                CHECK(mdx::at_home_json(chapter) == mdx::at_home_json(it->first));
+                ++compared;
+            } else {
+                reference.emplace_back(std::move(normalized), entry);
+            }
+        }
+    }
+    // A 1-3, A 4, B 1-3 and B 2.5: eight distinct chapters, each shared by at least two trees.
+    CHECK(reference.size() == 8);
+    CHECK(compared > reference.size());
+}
+
+TEST_CASE("all_fixtures names twelve unique trees with safe directory names", "[mdx_fixture]") {
+    const std::vector<mdx::NamedFixture> fixtures = mdx::all_fixtures();
+    CHECK(fixtures.size() == 12);
+    std::vector<std::string_view> names;
+    for (const mdx::NamedFixture& fixture : fixtures) {
+        INFO("fixture " << fixture.name);
+        CHECK(mdx::detail::safe_component(fixture.name));
+        CHECK(fixture.make != nullptr);
+        names.push_back(fixture.name);
+    }
+    std::ranges::sort(names);
+    CHECK(std::ranges::adjacent_find(names) == names.end());
+    for (const VariantSpec& spec : variant_specs()) {
+        CHECK(std::ranges::binary_search(names, spec.name));
+    }
 }

@@ -2,7 +2,7 @@
 //
 // Core-private (not under include/): the pieces run_download (src/core/download.cpp) shares with
 // its two phases, src/core/download/plan_phase.cpp and src/core/download/execute_phase.cpp
-// (download plan T14).
+// (download plan T14; skip-existing plan T10 adds download/existing.{hpp,cpp}).
 //
 // Threads: run_download, both phases and every DownloadObserver call run on the calling thread.
 // Only FetchPool workers run elsewhere; they reach this module through LineQueue::trace/note and
@@ -17,9 +17,11 @@
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
 
+#include <format>
 #include <mutex>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mangadex_dl::detail {
@@ -74,16 +76,26 @@ struct PlanResult {
 /// Errc::interrupted, the error every stop unwinds with.
 [[nodiscard]] Error interrupted_error();
 
+/// An invariant of the download module broke (never expected): Errc::failure with
+/// "internal error: <what>", so the run ends with exit 1.
+[[nodiscard]] inline Error internal_error(std::string_view what) {
+    return Error{.code = Errc::failure, .message = std::format("internal error: {}", what)};
+}
+
 /// Fetches the title, the feed and the covers, builds the plan, and reports it to the observer
 /// (on_plan, then one warning per skipped chapter except duplicates). Errors are fatal for the
 /// run: Errc::not_found, Errc::network, Errc::interrupted. A cover listing that fails is only a
 /// warning.
 [[nodiscard]] Result<PlanResult> plan_phase(RunContext& ctx);
 
-/// Dry-run: reports every file as planned or exists, touching nothing. Otherwise downloads,
-/// builds and publishes each file in order. A per-file network or media failure marks that file
-/// failed and the run continues; a local file-system failure (Errc::failure) or a stop
-/// (Errc::interrupted) aborts the run, and every temporary is discarded on the way out.
+/// Dry-run: reports every file as planned, exists or failed, touching nothing (an existing file
+/// is assessed from its central directory and manifest only). Otherwise, in order, each file is
+/// assessed (unless --overwrite; download/existing.hpp) and then written when absent, left alone
+/// (exists) when complete, diverged or foreign, or rebuilt with page reuse and replaced when
+/// incomplete. A per-file network or media failure marks that file failed (an existing file is
+/// kept) and the run continues; a local file-system failure (Errc::failure) or a stop
+/// (Errc::interrupted) aborts the run, and every temporary is discarded on the way out. The
+/// report's skipped list is reconciled with the held releases the files keep.
 [[nodiscard]] Result<RunReport> execute_phase(RunContext& ctx, const PlanResult& planned);
 
 } // namespace mangadex_dl::detail

@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +47,12 @@ struct PlanOptions {
 
 /// `title.en`, else the first alt title in `lang`, else the first title value.
 [[nodiscard]] std::string resolve_title(const MangaInfo& manga, std::string_view lang);
+
+/// The index of the first entry of `preferred` (--group names or UUIDs, in priority order) that
+/// matches one of `groups` by ASCII case-insensitive name or id, or `preferred.size()` when none
+/// matches (the worst rank). The dedupe and the update re-pick both rank releases with it.
+[[nodiscard]] std::size_t group_preference_rank(std::span<const ScanGroup> groups,
+                                                std::span<const std::string> preferred);
 
 /// `automatic` is rtl for a `ja` or `ja-ro` original and ltr otherwise.
 [[nodiscard]] Direction resolve_direction(DirectionChoice choice,

@@ -2,11 +2,12 @@
 //
 // tests/e2e/fixtures/fixture_gen.cpp: mangadex_dl_fixture_gen <out-dir>
 //
-// The body of the e2e.fixtures CTest fixture (FIXTURES_SETUP e2e_fixtures). Writes the five
-// fixture-mode trees <out-dir>/{clean,basic,bulk,incomplete,nochapters} from the canned fixtures in
-// tests/support/mdx_fixture.hpp, replacing any previous copy of each tree, so E2E cases can run
+// The body of the e2e.fixtures CTest fixture (FIXTURES_SETUP e2e_fixtures). Writes one
+// fixture-mode tree <out-dir>/<name> per entry of mdx::all_fixtures() in
+// tests/support/mdx_fixture.hpp (twelve: clean, basic, bulk, incomplete, nochapters and the seven
+// clean-* variants), replacing any previous copy of each tree, so E2E cases can run
 // `mangadex-dl download --api-base file://{{FIXTURES}}/<name> ...`.
-// Layout: tests/e2e/inputs/README.
+// Trees and layout: tests/e2e/inputs/README.
 //
 // Test-only: never installed. Exit 0 on success, 1 on any write failure, 2 on bad usage.
 

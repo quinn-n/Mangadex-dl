@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // `batch`, phase 2: the row loop over an injected TitleRunner, its stop rules, the aggregate exit
-// code, the closing message, the aggregated "already exist" notice and cross-row collision
-// detection (batch plan T3b; batch-spec.md "Exit codes" and "Input & output").
+// code, the closing message and cross-row collision detection (batch plan T3b; batch-spec.md
+// "Exit codes" and "Input & output").
 //
 // Threads: everything here runs on the calling thread. The runner's own threads (run_download's
 // pool, bridge and reporter) start and are joined inside one runner.run() call.
@@ -315,16 +315,6 @@ std::optional<std::string> batch_closing_message(const BatchResult& result, bool
     const std::string_view advice =
         retryable ? "run the same command again to retry them" : "see the errors above";
     return std::format("{} did not complete ({}); {}", of, lines_phrase(failed_lines), advice);
-}
-
-std::optional<std::string> exists_notice(std::size_t exists) {
-    if (exists == 0) {
-        return std::nullopt;
-    }
-    if (exists == 1) {
-        return std::string{"1 file already exists; pass --overwrite to replace it"};
-    }
-    return std::format("{} files already exist; pass --overwrite to replace them", exists);
 }
 
 std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t line) {

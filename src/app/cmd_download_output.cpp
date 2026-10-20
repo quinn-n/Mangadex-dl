@@ -6,15 +6,19 @@
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/text_safety.hpp"
+#include "mangadex_dl/update_plan.hpp"
 #include "mangadex_dl/version.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <ostream> // IWYU pragma: keep (std::print(std::ostream&, ...) is declared here)
 #include <print>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mangadex_dl::app {
 namespace {
@@ -74,6 +78,37 @@ constexpr std::size_t max_label_bytes = 32;
     return std::format("{} {}", count, count == 1 ? singular : plural);
 }
 
+/// What a dry-run update would do, for the -v line: "download 1 chapter: Ch. 4; reuse 2". The
+/// labels name the chapters to download (at most five, then "and K more"), in the file's reading
+/// order; the counts come from the outcome's id lists.
+[[nodiscard]] std::string update_counts(const EpubOutcome& outcome) {
+    std::vector<Chapter> fresh{};
+    for (const Chapter& chapter : outcome.epub.chapters) {
+        if (std::ranges::find(outcome.new_chapters, chapter.id) != outcome.new_chapters.end()) {
+            fresh.push_back(chapter);
+        }
+    }
+    const std::string download =
+        std::format("download {}", count_of(outcome.new_chapters.size(), "chapter", "chapters"));
+    const std::string reuse = std::format("reuse {}", outcome.reused_chapters.size());
+    const std::string labels = chapter_labels(fresh);
+    if (labels.empty()) {
+        return std::format("{}; {}", download, reuse);
+    }
+    return std::format("{}: {}; {}", download, labels, reuse);
+}
+
+/// The -v line for a dry run's planned file: "would update <path> (...)" for an incomplete file,
+/// "would replace <path> (N pages)" when --overwrite would write over a file, "would write"
+/// otherwise.
+[[nodiscard]] std::string planned_line(const EpubOutcome& outcome) {
+    if (outcome.existing == ExistingKind::incomplete) {
+        return std::format("would update {} ({})", outcome.path, update_counts(outcome));
+    }
+    return std::format("would {} {} ({})", outcome.replaced ? "replace" : "write", outcome.path,
+                       count_of(outcome.pages, "page", "pages"));
+}
+
 } // namespace
 
 OutputPolicy output_policy(const GlobalOptions& globals, const Io& io) noexcept {
@@ -127,8 +162,8 @@ void ConsoleObserver::on_plan(const Plan& plan) {
     if (policy_.quiet || policy_.verbose < 1) {
         return;
     }
-    verbose_line(std::format("planned {}; {} skipped", count_of(plan.epubs.size(), "file", "files"),
-                             count_of(plan.skipped.size(), "chapter", "chapters")));
+    plain_line(std::format("planned {}; {} skipped", count_of(plan.epubs.size(), "file", "files"),
+                           count_of(plan.skipped.size(), "chapter", "chapters")));
     for (const DedupeNote& note : plan.dedupe) {
         std::string dropped;
         for (const std::string& id : note.dropped_ids) {
@@ -137,8 +172,8 @@ void ConsoleObserver::on_plan(const Plan& plan) {
             }
             dropped += id;
         }
-        verbose_line(std::format("{}: kept {} ({}); dropped {}", note.key, note.kept_id, note.rule,
-                                 dropped));
+        plain_line(std::format("{}: kept {} ({}); dropped {}", note.key, note.kept_id, note.rule,
+                               dropped));
     }
 }
 
@@ -167,9 +202,7 @@ void ConsoleObserver::on_epub_end(const EpubOutcome& outcome) {
             std::print(io_->out, "{}\n", outcome.path); // data: the path exactly as built
         }
         if (!policy_.quiet && policy_.verbose >= 1) {
-            // `replaced` on a planned entry: the target exists and --overwrite will replace it.
-            verbose_line(std::format("would {} {} ({})", outcome.replaced ? "replace" : "write",
-                                     outcome.path, count_of(outcome.pages, "page", "pages")));
+            plain_line(planned_line(outcome));
         }
         break;
     case EpubStatus::written:
@@ -177,24 +210,51 @@ void ConsoleObserver::on_epub_end(const EpubOutcome& outcome) {
             std::print(io_->out, "{}\n", outcome.path);
         }
         if (!policy_.quiet && policy_.verbose >= 1) {
-            verbose_line(std::format("wrote {} ({}, {}{})", outcome.path,
-                                     count_of(outcome.pages, "page", "pages"),
-                                     count_of(outcome.bytes, "byte", "bytes"),
-                                     outcome.replaced ? ", replaced the existing file" : ""));
+            plain_line(std::format("wrote {} ({}, {}{})", outcome.path,
+                                   count_of(outcome.pages, "page", "pages"),
+                                   count_of(outcome.bytes, "byte", "bytes"),
+                                   outcome.replaced ? ", replaced the existing file" : ""));
         }
         break;
     case EpubStatus::exists:
-        ++exists_;
-        if (!policy_.quiet && policy_.verbose >= 1) {
-            verbose_line(std::format("skipped {}: it already exists", outcome.path));
-        }
+        left_alone(outcome);
         break;
-    case EpubStatus::failed:
+    case EpubStatus::failed: {
+        const std::string_view error =
+            outcome.error.empty() ? std::string_view{"failed"} : std::string_view{outcome.error};
+        // An update that failed never touched the file it would have replaced.
+        const std::string_view kept = outcome.existing == ExistingKind::incomplete
+                                          ? std::string_view{" (the existing file was kept)"}
+                                          : std::string_view{};
         print_error(*io_, policy_,
-                    std::format("{}{}: {}", row_.prefix, outcome.path,
-                                outcome.error.empty() ? std::string_view{"failed"}
-                                                      : std::string_view{outcome.error}));
+                    std::format("{}{}: {}{}", row_.prefix, outcome.path, error, kept));
         break;
+    }
+    }
+}
+
+void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
+    switch (outcome.existing) {
+    case ExistingKind::complete:
+        ++up_to_date_;
+        if (!policy_.quiet && policy_.verbose >= 1) {
+            plain_line(std::format("{}: up to date ({})", outcome.path,
+                                   count_of(outcome.epub.chapters.size(), "chapter", "chapters")));
+        }
+        return;
+    case ExistingKind::none:
+        // Nothing was there when the file was assessed, but a file of that name was published
+        // by someone else before ours: the new file was discarded and theirs left alone.
+        warning(std::format("{}: left alone: another file took this name while ours was being "
+                            "written, so ours was discarded; run the same command again to "
+                            "check it",
+                            outcome.path));
+        return;
+    case ExistingKind::incomplete:
+    case ExistingKind::diverged:
+    case ExistingKind::foreign:
+    case ExistingKind::unchecked:
+        return; // the run already warned about the file when it was assessed
     }
 }
 
@@ -204,20 +264,22 @@ void ConsoleObserver::on_verbose(int level, std::string_view message) {
     if (policy_.quiet || level < 1 || level > policy_.verbose) {
         return;
     }
-    verbose_line(message);
+    plain_line(message);
 }
 
 void ConsoleObserver::finish() {
     clear_progress();
     in_epub_ = false;
-    if (exists_ == 0 || exists_reported_ || !row_.exists_notice) {
+    if (up_to_date_ == 0 || up_to_date_reported_ || !row_.exists_notice) {
         return;
     }
-    exists_reported_ = true;
-    if (exists_ == 1) {
-        warning("1 file already exists; pass --overwrite to replace it");
-    } else {
-        warning(std::format("{} files already exist; pass --overwrite to replace them", exists_));
+    up_to_date_reported_ = true;
+    if (policy_.quiet) {
+        return;
+    }
+    // A note, not a warning: no `warning:` prefix and never colored.
+    if (const std::optional<std::string> note = up_to_date_notice(up_to_date_)) {
+        plain_line(*note);
     }
 }
 
@@ -234,7 +296,7 @@ void ConsoleObserver::warning(std::string_view message) {
     draw_progress();
 }
 
-void ConsoleObserver::verbose_line(std::string_view message) {
+void ConsoleObserver::plain_line(std::string_view message) {
     clear_progress();
     std::print(io_->err, "{}: {}\n", tool_name, terminal_safe(message));
     draw_progress();

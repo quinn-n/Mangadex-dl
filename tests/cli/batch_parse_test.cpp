@@ -241,9 +241,11 @@ TEST_CASE("batch: the root and download help list batch, row 7 and the pointer t
     const Captured download = run_args({"download", "--help"});
     CHECK(download.exit_code == 0);
     CHECK(download.err.empty());
-    CHECK(download.out.contains("interrupted or incomplete run can simply be restarted.\n\n"
-                                "For many titles at once, see 'mangadex-dl batch --help'.\n\n"
-                                "Exit status:\n"));
+    CHECK(download.out.contains(
+        "the new ones, so an interrupted run can be restarted and a series kept up to\n"
+        "date.\n\n"
+        "For many titles at once, see 'mangadex-dl batch --help'.\n\n"
+        "Exit status:\n"));
     CHECK(download.out.contains("\n  7   batch: "));
     check_fits_80_columns(download.out);
 }

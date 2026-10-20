@@ -3,7 +3,7 @@
 // tests/unit/batch/batch_run_test.cpp: the batch row loop (batch plan T3b) against a scripted
 // FakeRunner: the stop rules (fatal, stdout broken, --fail-fast, the network streak, interrupts),
 // duplicates, the aggregate exit code (AC7, rev1 fatal vs row-scoped `failed`), the closing
-// message, the aggregated "already exist" notice and cross-row collision detection.
+// message and cross-row collision detection.
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/interrupt.hpp"
@@ -641,18 +641,6 @@ TEST_CASE("batch_exit_code: duplicate and not_run never count", "[batch][run]") 
     CHECK(md::batch_exit_code(result) == md::exit_code::failure);
     result.stop = md::BatchStop::fail_fast;
     CHECK(md::batch_exit_code(result) == md::exit_code::mixed_failures);
-}
-
-// ---- exists_notice -----------------------------------------------------------------------------
-
-TEST_CASE("exists_notice: download's exact text", "[batch][message]") {
-    CHECK(!md::exists_notice(0).has_value());
-    CHECK(md::exists_notice(1) ==
-          std::optional<std::string>{"1 file already exists; pass --overwrite to replace it"});
-    CHECK(md::exists_notice(2) ==
-          std::optional<std::string>{"2 files already exist; pass --overwrite to replace them"});
-    CHECK(md::exists_notice(12) ==
-          std::optional<std::string>{"12 files already exist; pass --overwrite to replace them"});
 }
 
 // ---- OutputRegistry ----------------------------------------------------------------------------

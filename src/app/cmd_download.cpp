@@ -36,8 +36,10 @@ constexpr std::string_view download_footer{
     "  Show which files would be written, without downloading anything:\n"
     "    mangadex-dl download <uuid> --dry-run\n"
     "\n"
-    "Running the same command again skips the files that already exist, so an\n"
-    "interrupted or incomplete run can simply be restarted.\n"
+    "Running the same command again skips files that already hold every chapter\n"
+    "and rebuilds a file when MangaDex has added chapters to it, downloading only\n"
+    "the new ones, so an interrupted run can be restarted and a series kept up to\n"
+    "date.\n"
     "\n"
     "For many titles at once, see 'mangadex-dl batch --help'.\n"
     "\n"};

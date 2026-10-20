@@ -17,7 +17,7 @@ OPTIONS:
       --group NAME|UUID             Preferred group; repeat in priority order
       --data-saver                  Download compressed images (smaller files)
       --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
-      --overwrite                   Replace files that already exist
+      --overwrite                   Re-download files even if up to date
   -n, --dry-run                     List the files to write; download nothing
   -j, --jobs N [4]                  Parallel image downloads, 1 to 8
       --no-report                   Skip MangaDex@Home reliability reports
@@ -53,8 +53,10 @@ Examples:
   A list from another command:
     grep -v '^#done' titles.csv | mangadex-dl batch - ~/Manga
 
-Running the same command again skips the files that already exist, so an
-interrupted or incomplete batch can simply be restarted.
+Running the same command again skips files that already hold every chapter
+and rebuilds a file when MangaDex has added chapters to it, downloading only
+the new ones, so an interrupted batch can be restarted and a list of series
+kept up to date.
 
 Symlinks inside DIR are followed: don't point DIR at a directory that others
 can write to. Each title costs several API requests: a long list is a long run.

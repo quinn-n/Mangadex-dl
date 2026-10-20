@@ -135,7 +135,7 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
     ConsoleObserver observer{io, policy, row};
     Result<RunReport> report = run_download(options, services, observer);
     // On every path, before anything else is printed: clears the progress line and prints
-    // the "N files already exist" notice (unless the row leaves it to the caller).
+    // the "N files are already up to date" note (unless the row leaves it to the caller).
     observer.finish();
 
     TitleRun run{};

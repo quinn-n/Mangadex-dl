@@ -19,6 +19,7 @@
 
 #include <CLI/CLI.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <filesystem>
@@ -63,8 +64,10 @@ constexpr std::string_view batch_footer{
     "  A list from another command:\n"
     "    grep -v '^#done' titles.csv | mangadex-dl batch - ~/Manga\n"
     "\n"
-    "Running the same command again skips the files that already exist, so an\n"
-    "interrupted or incomplete batch can simply be restarted.\n"
+    "Running the same command again skips files that already hold every chapter\n"
+    "and rebuilds a file when MangaDex has added chapters to it, downloading only\n"
+    "the new ones, so an interrupted batch can be restarted and a list of series\n"
+    "kept up to date.\n"
     "\n"
     "Symlinks inside DIR are followed: don't point DIR at a directory that others\n"
     "can write to. Each title costs several API requests: a long list is a long run.\n"
@@ -109,6 +112,15 @@ void print_warning(Io& io, const OutputPolicy& policy, std::string_view message)
                paint("warning:", Style::yellow, policy.color_stderr), terminal_safe(message));
 }
 
+/// `mangadex-dl: <message>` (not with -q, never colored), the same note line ConsoleObserver
+/// prints.
+void print_note(Io& io, const OutputPolicy& policy, std::string_view message) {
+    if (policy.quiet) {
+        return;
+    }
+    std::print(io.err, "{}: {}\n", tool_name, terminal_safe(message));
+}
+
 /// The list's bytes: FILE through read_bounded_file, or "-" through read_bounded_fd on
 /// io.stdin_fd (borrowed: never closed, its flags never changed). Opens nothing else.
 [[nodiscard]] Result<std::string> read_list(const BatchSettings& settings, Io& io,
@@ -123,13 +135,12 @@ void print_warning(Io& io, const OutputPolicy& policy, std::string_view message)
     return read_bounded_file(std::filesystem::path{settings.file}, settings.label, max_list_bytes);
 }
 
-/// The total of every row's "already exists" count, for the single end-of-batch notice.
-[[nodiscard]] std::size_t total_exists(const BatchResult& result) noexcept {
-    std::size_t exists = 0;
-    for (const TitleResult& row : result.titles) {
-        exists += row.files.exists;
-    }
-    return exists;
+/// The files of `report` left alone because they already hold every chapter.
+[[nodiscard]] std::size_t count_up_to_date(const RunReport& report) noexcept {
+    return static_cast<std::size_t>(
+        std::ranges::count_if(report.epubs, [](const EpubOutcome& file) {
+            return file.status == EpubStatus::exists && file.existing == ExistingKind::complete;
+        }));
 }
 
 /// Is a local error from run_download global (the batch stops)? The pre-flight has already
@@ -203,6 +214,7 @@ public:
         }
         if (run.report) {
             warn_collisions(job, prefix, *run.report);
+            up_to_date_ += count_up_to_date(*run.report);
             outcome.files = summarize(*run.report);
             if (policy_->json) { // only --json needs the per-row document
                 outcome.report = std::move(run.report);
@@ -216,6 +228,10 @@ public:
                       std::format("{}same as line {}; skipped", row_prefix(job),
                                   job.duplicate_of.value_or(0)));
     }
+
+    /// Files left alone across every row so far because they hold every chapter: the count for
+    /// the single end-of-batch note.
+    [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
 
     [[nodiscard]] bool output_failed() override {
         if (!io_->out) {
@@ -266,6 +282,7 @@ private:
     Io* io_ = nullptr;                        ///< borrowed, never null
     const OutputPolicy* policy_ = nullptr;    ///< borrowed, never null
     OutputRegistry* registry_ = nullptr;      ///< borrowed, never null
+    std::size_t up_to_date_ = 0;
 };
 
 class BatchCommand final : public Command {
@@ -358,8 +375,8 @@ int run_batch_command(const RawBatchArgs& args, const GlobalOptions& globals, Io
         // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
         return batch_exit_code(result);
     }
-    if (const std::optional<std::string> notice = exists_notice(total_exists(result))) {
-        print_warning(io, policy, *notice);
+    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
+        print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
     }
     if (const std::optional<std::string> closing = batch_closing_message(result, dry_run)) {
         print_error(io, policy, *closing); // even with -q and --json
