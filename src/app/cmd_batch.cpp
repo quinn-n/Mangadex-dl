@@ -19,7 +19,6 @@
 
 #include <CLI/CLI.hpp>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <filesystem>
@@ -135,14 +134,6 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message) {
     return read_bounded_file(std::filesystem::path{settings.file}, settings.label, max_list_bytes);
 }
 
-/// The files of `report` left alone because they already hold every chapter.
-[[nodiscard]] std::size_t count_up_to_date(const RunReport& report) noexcept {
-    return static_cast<std::size_t>(
-        std::ranges::count_if(report.epubs, [](const EpubOutcome& file) {
-            return file.status == EpubStatus::exists && file.existing == ExistingKind::complete;
-        }));
-}
-
 /// Is a local error from run_download global (the batch stops)? The pre-flight has already
 /// turned the row-scoped directory cases into `failed` rows, so whatever is left of failure, io
 /// and usage is treated as global: the conservative choice (batch plan rev1).
@@ -208,13 +199,15 @@ public:
                 .prefix = prefix, .position = position, .total = total, .exists_notice = false});
 
         RowOutcome outcome{.exit_code = run.exit_code, .error = std::move(run.closing_error)};
+        // From the observer, not the report: a row that ends with an Error after leaving files
+        // alone has no report, and download's own note would still count them.
+        up_to_date_ += run.up_to_date;
         if (run.error) {
             outcome.interrupted = run.error->code == Errc::interrupted;
             outcome.fatal = is_fatal(run.error->code);
         }
         if (run.report) {
             warn_collisions(job, prefix, *run.report);
-            up_to_date_ += count_up_to_date(*run.report);
             outcome.files = summarize(*run.report);
             if (policy_->json) { // only --json needs the per-row document
                 outcome.report = std::move(run.report);
