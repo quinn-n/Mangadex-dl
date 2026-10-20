@@ -136,14 +136,16 @@ return finish_stdout(rc);                  // never std::exit
   1. reset `errno`;
   2. `std::cout.flush()`;
   3. fail if `std::cout.bad()`, `std::fflush(stdout) != 0` or `std::ferror(stdout)`;
-  4. on failure print `<tool>: write error: <reason>` and turn rc 0 into 1. The reason is `strerror(errno)` when the flush set errno, and `output error` otherwise.
+  4. on failure print `<tool>: write error: <reason>` and turn rc 0 into 1. The reason is the `strerror_r` text of the errno of the **first** failed stdout write or flush, and `output error` only when none was observed.
 
-  The reason text is **best-effort**. It depends on which write failed and when, and on the libc. Tests assert only **exit 1** plus the **`<tool>: write error` prefix**, never the reason.
+  In this project, `process_io()` installs `RecordingStdioBuf` (`src/app/recording_stdio_buf.hpp`) as `std::cout`'s buffer. It passes calls straight through to the `stdout` FILE* and records that first errno. Without it the errno is lost whenever the first failure happens before `finish_stdout`: a write to the tied `std::cerr` flushes stdout first, and an overflow of the stdio buffer in the middle of a run fails the same way. glibc drops the buffer after a failed write, so the final flush has nothing to write and sets no errno.
+
+  Tests may pin the reason text (`No space left on device`) only under the E2E driver's hermetic `LC_ALL=C.UTF-8` on glibc. On any other libc, tests assert only **exit 1** plus the **`<tool>: write error` prefix**.
 
   Stdio buffering defers a `/dev/full` error to exit, where it would otherwise be silently lost: plain printing to `/dev/full` exits 0.
   - `std::print(std::ostream&, …)` **does not throw** on a failed write. It sets `badbit`, so this check is the real guard; stop long output loops early with `if (!io.out)`.
   - `std::print(FILE*, …)` **throws** `std::system_error`.
-  - Reset `errno` before flushing, because `isatty` leaves a stale `ENOTTY`. Print `strerror` only when the flush set errno; otherwise print the generic `output error`.
+  - Reset `errno` before flushing, because `isatty` leaves a stale `ENOTTY`. Report the first recorded errno (above); print the generic `output error` only when there is none.
 - **Never `fclose(stdout)`. Never close stderr:** sanitizers report there after `main` returns.
 
 ## Signals and partial state
