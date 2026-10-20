@@ -26,6 +26,7 @@
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/update_plan.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -41,13 +42,19 @@
 namespace mangadex_dl::detail {
 namespace {
 
-[[nodiscard]] Error internal_error(std::string_view what) {
-    return Error{.code = Errc::failure, .message = std::format("internal error: {}", what)};
-}
-
 /// "1 chapter" / "N chapters".
 [[nodiscard]] std::string chapters_count(std::size_t count) {
     return count == 1 ? std::string{"1 chapter"} : std::format("{} chapters", count);
+}
+
+/// " (Ch. 3, Ch. 4)": the labels of `chapters` (at most 5, then "and K more"), or "" unless
+/// every one of the `count` chapters a message counts was resolved to a label (a counts-only
+/// message beats a list that silently names fewer chapters than it counts).
+[[nodiscard]] std::string labels_suffix(std::span<const Chapter> chapters, std::size_t count) {
+    if (chapters.empty() || chapters.size() != count) {
+        return {};
+    }
+    return std::format(" ({})", chapter_labels(chapters));
 }
 
 /// "<path>: <key>: " or "<path>: " when the key label is empty.
@@ -254,11 +261,32 @@ std::string foreign_warning(std::string_view path, const InspectFailure& failure
     return std::format("{}: left alone: {}; {}", path, reason, remedy);
 }
 
-std::string diverged_warning(std::string_view path, const UpdateDecision& decision) {
-    return std::format("{}: MangaDex lists {} this file lacks, but the file holds {} MangaDex no "
-                       "longer lists; left it alone (pass --overwrite to rebuild it without them)",
+std::string diverged_warning(std::string_view path, const UpdateDecision& decision,
+                             std::span<const ManifestChapter> held) {
+    // The chapters MangaDex lists that the file lacks: the final list's entries for `missing`.
+    std::vector<Chapter> lacking{};
+    lacking.reserve(decision.missing.size());
+    for (const std::size_t planned : decision.missing) {
+        const auto entry = std::ranges::find(decision.chapters, planned, &FinalChapter::planned);
+        if (entry != decision.chapters.end()) {
+            lacking.push_back(entry->chapter);
+        }
+    }
+    // The chapters the file holds that MangaDex no longer lists: `extra` indexes the manifest.
+    std::vector<Chapter> unlisted{};
+    unlisted.reserve(decision.extra.size());
+    for (const std::size_t index : decision.extra) {
+        if (index < held.size()) {
+            unlisted.push_back(chapter_from(held[index]));
+        }
+    }
+    const std::size_t extra = decision.extra.size();
+    return std::format("{}: MangaDex lists {} this file lacks{}, but the file holds {} MangaDex "
+                       "no longer lists{}; left it alone (pass --overwrite to rebuild it without "
+                       "{})",
                        path, chapters_count(decision.missing.size()),
-                       chapters_count(decision.extra.size()));
+                       labels_suffix(lacking, decision.missing.size()), chapters_count(extra),
+                       labels_suffix(unlisted, extra), extra == 1 ? "it" : "them");
 }
 
 std::string damaged_warning(std::string_view path, const Chapter& chapter) {
@@ -276,7 +304,7 @@ std::string repick_line(std::string_view path, const Repick& repick) {
         repick.held_group.empty() ? std::string{"no group"} : repick.held_group;
     const std::string planned = repick.planned_group.empty()
                                     ? std::string{"the planned release"}
-                                    : std::format("{}'s", repick.planned_group);
+                                    : std::format("the release by {}", repick.planned_group);
     return std::format("{}replacing the release in the file ({}) with {} (--group)",
                        key_prefix(path, repick.key_label), held, planned);
 }
@@ -291,13 +319,8 @@ std::string updating_line(std::string_view path, const UpdateDecision& decision)
             ++reused;
         }
     }
-    const std::string labels = chapter_labels(fresh);
-    const std::string new_count = fresh.size() == 1 ? std::string{"1 new chapter"}
-                                                    : std::format("{} new chapters", fresh.size());
-    if (labels.empty()) {
-        return std::format("updating {}: {}, {} reused", path, new_count, reused);
-    }
-    return std::format("updating {}: {}, {} reused ({})", path, new_count, reused, labels);
+    return std::format("updating {}: downloading {}{}, reusing {}", path,
+                       chapters_count(fresh.size()), labels_suffix(fresh, fresh.size()), reused);
 }
 
 void announce(DownloadObserver& observer, std::string_view path, const Assessment& assessment) {
@@ -312,7 +335,12 @@ void announce(DownloadObserver& observer, std::string_view path, const Assessmen
         return;
     case ExistingKind::diverged:
         if (assessment.decision) {
-            observer.on_warning(diverged_warning(path, *assessment.decision));
+            // Without the held book (never, for an assessed file) the warning only counts.
+            const std::span<const ManifestChapter> held =
+                assessment.held
+                    ? std::span<const ManifestChapter>{assessment.held->manifest.chapters}
+                    : std::span<const ManifestChapter>{};
+            observer.on_warning(diverged_warning(path, *assessment.decision, held));
         }
         return;
     case ExistingKind::complete:

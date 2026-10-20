@@ -28,15 +28,16 @@ struct Io {
     bool stdout_tty = false;
     bool stderr_tty = false;
     EnvSnapshot env{};
+    int stdin_fd = -1; ///< fd to read stdin from; borrowed, never closed; -1 = closed (the default)
 };
 
-/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot. On the first call it
-/// also installs a RecordingStdioBuf (recording_stdio_buf.hpp) over `stdout` as std::cout's buffer,
-/// for finish_stdout(). That buffer is a function-local static, so it is destroyed only during
-/// static destruction, and its owner puts std::cout's original buffer back first. libstdc++'s final
-/// flush of std::cout (its ios_base::Init, constructed earlier and therefore destroyed later) never
-/// reaches a destroyed buffer, and std::cerr's tie points at the std::cout object, which is never
-/// destroyed.
+/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0. On the
+/// first call it also installs a RecordingStdioBuf (recording_stdio_buf.hpp) over `stdout` as
+/// std::cout's buffer, for finish_stdout(). That buffer is a function-local static, so it is
+/// destroyed only during static destruction, and its owner puts std::cout's original buffer back
+/// first. libstdc++'s final flush of std::cout (its ios_base::Init, constructed earlier and
+/// therefore destroyed later) never reaches a destroyed buffer, and std::cerr's tie points at the
+/// std::cout object, which is never destroyed.
 [[nodiscard]] Io process_io();
 
 /// SIGPIPE policy A: default disposition and unblocked, even if the parent ignored or blocked it,

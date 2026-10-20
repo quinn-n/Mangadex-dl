@@ -8,6 +8,7 @@
 #include "fs/output_dir_testing.hpp" // core-private seam (src/core is on the test include path)
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
+#include "support/fs_test_util.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -17,9 +18,6 @@
 #include <cerrno>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <ios>
-#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -37,38 +35,13 @@ using mangadex_dl::Errc;
 using mangadex_dl::OutputDir;
 using mangadex_dl::PublishOutcome;
 using mangadex_dl::test::TempDir;
-
-[[nodiscard]] TempDir make_temp_dir() {
-    auto dir = TempDir::create("mangadex-dl-outdir");
-    REQUIRE(dir.has_value());
-    return std::move(*dir);
-}
+using mangadex_dl::test::fs_util::list_dir;
+using mangadex_dl::test::fs_util::make_temp_dir;
+using mangadex_dl::test::fs_util::read_file;
+using mangadex_dl::test::fs_util::write_file;
 
 [[nodiscard]] std::span<const std::byte> as_bytes(std::string_view text) noexcept {
     return std::as_bytes(std::span{text.data(), text.size()});
-}
-
-/// The names in `dir`, sorted.
-[[nodiscard]] std::vector<std::string> list_dir(const fs::path& dir) {
-    std::vector<std::string> names{};
-    for (const fs::directory_entry& entry : fs::directory_iterator{dir}) {
-        names.push_back(entry.path().filename().string());
-    }
-    std::ranges::sort(names);
-    return names;
-}
-
-[[nodiscard]] std::string read_file(const fs::path& path) {
-    std::ifstream in{path, std::ios::binary};
-    REQUIRE(in.good());
-    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
-}
-
-void write_file(const fs::path& path, std::string_view content) {
-    std::ofstream out{path, std::ios::binary};
-    REQUIRE(out.good());
-    out.write(content.data(), static_cast<std::streamsize>(content.size()));
-    REQUIRE(out.good());
 }
 
 /// Whether `name` is a named fallback temporary for `final_name`.

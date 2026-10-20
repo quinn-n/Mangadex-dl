@@ -192,6 +192,7 @@ Io process_io() {
         .stdout_tty = ::isatty(STDOUT_FILENO) == 1,
         .stderr_tty = ::isatty(STDERR_FILENO) == 1,
         .env = read_env(),
+        .stdin_fd = STDIN_FILENO,
     };
 }
 

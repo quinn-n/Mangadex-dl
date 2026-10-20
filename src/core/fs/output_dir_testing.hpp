@@ -36,7 +36,8 @@ void force_skip_existing_precheck(bool on) noexcept;
 /// The TempFile system calls force_io_error can fail.
 enum class IoStage {
     write, ///< write(2) of buffered or direct data
-    fsync, ///< fsync(2) of the temporary in sync_and_close()
+    fsync, ///< fsync(2) of the temporary in sync_and_close(), and the re-sync after the fchmod of
+           ///< a temporary the caller already synced, in publish_replacing()
     close, ///< close(2) of a named fallback temporary in sync_and_close() (O_TMPFILE never closes
            ///< there: its descriptor is needed for the publishing linkat)
     chmod, ///< fchmod(2) of the temporary in publish_replacing() (keeping the old file's mode)

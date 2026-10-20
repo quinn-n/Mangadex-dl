@@ -25,6 +25,10 @@ inline constexpr int not_found = 4;
 inline constexpr int no_chapters = 5;
 /// download: at least one output file failed; others may have been written.
 inline constexpr int incomplete = 6;
+/// batch: the titles that did not complete failed in more than one way (more than one distinct
+/// code among 1, 3, 4, 5 and 6; a row-scoped local failure counts as 1); the per-title results
+/// say which.
+inline constexpr int mixed_failures = 7;
 
 /// An exception reached main(): a bug. Tests assert it never appears.
 inline constexpr int internal = 70;

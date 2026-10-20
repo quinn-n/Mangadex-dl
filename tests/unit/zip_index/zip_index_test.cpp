@@ -11,6 +11,7 @@
 #include "mangadex_dl/zip.hpp"
 #include "mangadex_dl/zip_index.hpp"
 #include "support/fake_read_source.hpp"
+#include "support/read_only_fd.hpp"
 #include "support/temp_dir.hpp"
 #include "support/zip_forge.hpp"
 #include "support/zip_reader.hpp"
@@ -37,6 +38,7 @@ namespace zip = mangadex_dl::test::zip;
 namespace forge = mangadex_dl::test::forge;
 using mangadex_dl::test::FakeReadCall;
 using mangadex_dl::test::FakeReadSource;
+using mangadex_dl::test::open_read_only;
 using mangadex_dl::test::TempDir;
 
 /// Names deliberately out of sorted order, plus an empty member, so find() cannot rely on the
@@ -89,15 +91,6 @@ void check_against_reference(md::ReadSource& source, const md::ZipIndex& index,
         REQUIRE(data.has_value());
         CHECK(*data == want.data_offset);
     }
-}
-
-/// open(2) read-only. The only variadic call in this file.
-[[nodiscard]] md::UniqueFd open_read_only(const fs::path& path, int extra_flags = 0) {
-    const std::string name = path.string();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): open is variadic in C (the mode)
-    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC | extra_flags);
-    REQUIRE(fd >= 0);
-    return md::UniqueFd{fd};
 }
 
 } // namespace

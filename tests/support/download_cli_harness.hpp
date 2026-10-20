@@ -3,8 +3,9 @@
 // (tests/cli/download_*_test.cpp), which run the whole chain through run(args, Io&) against a
 // hermetic fixture tree (tests/support/mdx_fixture.hpp) written into a fresh temporary directory.
 //
-// Header-only and Catch2-aware: make_temp_dir(), read_file() and Tree's constructor REQUIRE their
-// preconditions, so they may only be called from inside a running TEST_CASE.
+// Header-only and Catch2-aware: make_temp_dir(), read_file() (both from fs_test_util.hpp) and
+// Tree's constructor REQUIRE their preconditions, so they may only be called from inside a
+// running TEST_CASE.
 //
 //     const Tree tree{mdx::clean_fixture()};
 //     const std::filesystem::path out = tree.path("out");
@@ -13,6 +14,7 @@
 
 #include "app/cli.hpp"
 #include "app/io.hpp"
+#include "support/fs_test_util.hpp" // IWYU pragma: export
 #include "support/io_capture.hpp"
 #include "support/mdx_fixture.hpp"
 #include "support/temp_dir.hpp"
@@ -21,18 +23,13 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
 #include <initializer_list>
-#include <ios>
-#include <iterator>
 #include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -75,28 +72,13 @@ namespace mangadex_dl::test::download_cli {
 
 // ---- files -----------------------------------------------------------------------------------
 
-[[nodiscard]] inline TempDir make_temp_dir() {
-    auto tmp = TempDir::create("mangadex-dl-cli");
-    INFO((tmp ? std::string{} : tmp.error()));
-    REQUIRE(tmp.has_value());
-    return std::move(*tmp);
-}
+using fs_util::make_temp_dir;
+using fs_util::read_file;
 
-/// The names in `dir`, sorted; empty when it does not exist.
+/// The names in `dir`, sorted; empty when it does not exist (a run that failed before creating
+/// DIR), unlike fs_util::list_dir.
 [[nodiscard]] inline std::vector<std::string> list_dir(const std::filesystem::path& dir) {
-    std::vector<std::string> names{};
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-        names.push_back(entry.path().filename().string());
-    }
-    std::ranges::sort(names);
-    return names;
-}
-
-[[nodiscard]] inline std::string read_file(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    REQUIRE(in.good());
-    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+    return fs_util::list_dir_if_exists(dir);
 }
 
 /// Every file in `dir` by name, with its bytes.
@@ -114,7 +96,7 @@ snapshot(const std::filesystem::path& dir) {
 class Tree {
 public:
     explicit Tree(const mdx::FixtureManga& manga)
-        : tmp_(make_temp_dir()), root_(tmp_.path() / "fixture"), id_(manga.id) {
+        : tmp_(make_temp_dir("mangadex-dl-cli")), root_(tmp_.path() / "fixture"), id_(manga.id) {
         const auto written = mdx::write_fixture_tree(root_, manga);
         INFO((written ? std::string{} : written.error()));
         REQUIRE(written.has_value());

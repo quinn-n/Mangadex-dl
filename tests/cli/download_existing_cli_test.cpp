@@ -13,10 +13,11 @@
 // - criterion 20 (the in-process share): update progress on a TTY, the uncoloured note, and a
 //   yellow `warning:` that is plain under NO_COLOR.
 //
-// The "appeared while it was being written" warning needs a file to appear between the
-// assessment and the publish of a fresh file. The fixture backend refuses FIFOs, so no in-process
-// run can block at that point deterministically; it is covered by tests/cli/download_output_test
-// (the observer's exact line) and by the T10 publish-race unit tests (the core outcome).
+// The "another file took this name while ours was being written" warning needs a file to appear
+// between the assessment and the publish of a fresh file. The fixture backend refuses FIFOs, so no
+// in-process run can block at that point deterministically; it is covered by
+// tests/cli/download_output_test (the observer's exact line) and by the T10 publish-race unit tests
+// (the core outcome).
 //
 // Catch2 test names must not start with '-' (CTest passes the name as a test spec).
 
@@ -103,8 +104,8 @@ constexpr std::string_view remedy_overwrite = "pass --overwrite to replace it";
 
 /// The diverged warning after "<path>: " for clean -> clean-diverged (ch 4 new, ch 3 gone).
 constexpr std::string_view diverged_message =
-    "MangaDex lists 1 chapter this file lacks, but the file holds 1 chapter MangaDex no longer "
-    "lists; left it alone (pass --overwrite to rebuild it without them)";
+    "MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 chapter MangaDex no "
+    "longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it without it)";
 
 /// The damage warning after "<path>: " for the clean Vol. 02's only chapter.
 constexpr std::string_view damaged_message =

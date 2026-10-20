@@ -99,6 +99,9 @@ struct DownloadOptions {
     unsigned jobs = 4;
     ApiBase api_base{};
     bool report = true; ///< send MD@H reliability reports (official API only)
+
+    /// Member-wise; batch uses it to spot rows that would repeat an earlier row's download.
+    friend bool operator==(const DownloadOptions&, const DownloadOptions&) = default;
 };
 
 /// Turns raw strings into DownloadOptions. Errc::usage with a one-line message (plus a hint) for:

@@ -5,6 +5,7 @@
 #include "io.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
+#include "mangadex_dl/text_safety.hpp"
 #include "mangadex_dl/update_plan.hpp"
 #include "mangadex_dl/version.hpp"
 
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <ostream> // IWYU pragma: keep (std::print(std::ostream&, ...) is declared here)
 #include <print>
 #include <string>
@@ -27,63 +29,6 @@ constexpr std::size_t max_label_bytes = 32;
 
 [[nodiscard]] constexpr bool is_continuation(unsigned char byte) noexcept {
     return byte >= 0x80 && byte <= 0xBF;
-}
-
-/// Code points that may change how a terminal renders the rest of the line, or that are invisible
-/// and could disguise a message.
-[[nodiscard]] constexpr bool is_unsafe_code_point(std::uint32_t cp) noexcept {
-    return (cp >= 0x80 && cp <= 0x9F)        // C1 controls (CSI is U+009B)
-           || cp == 0x061C                   // ARABIC LETTER MARK
-           || (cp >= 0x200B && cp <= 0x200F) // zero-width space/joiners, LRM, RLM
-           || (cp >= 0x202A && cp <= 0x202E) // bidi embeddings and overrides
-           || cp == 0x2028 || cp == 0x2029   // line and paragraph separators
-           || (cp >= 0x2060 && cp <= 0x206F) // word joiner, invisible operators, bidi isolates
-           || cp == 0xFEFF;                  // zero-width no-break space (BOM)
-}
-
-/// One multi-byte UTF-8 sequence: its length in bytes (0 = not well-formed) and its code point.
-struct Decoded {
-    std::size_t length = 0;
-    std::uint32_t code_point = 0;
-};
-
-/// Decodes the well-formed UTF-8 sequence (2 to 4 bytes) starting at `text[pos]`, which is >= 0x80
-/// and inside `text`. Length 0 when the bytes there are not well-formed: overlong forms,
-/// surrogates, values above U+10FFFF and sequences cut short by the end of `text` included.
-[[nodiscard]] Decoded decode_multibyte(std::string_view text, std::size_t pos) noexcept {
-    const auto lead = static_cast<unsigned char>(text[pos]);
-    std::size_t length = 0;
-    std::uint32_t cp = 0;
-    unsigned char low = 0x80; // allowed range of the second byte (Unicode table 3-7)
-    unsigned char high = 0xBF;
-    if (lead >= 0xC2 && lead <= 0xDF) {
-        length = 2;
-        cp = lead & 0x1FU;
-    } else if (lead >= 0xE0 && lead <= 0xEF) {
-        length = 3;
-        cp = lead & 0x0FU;
-        low = lead == 0xE0 ? 0xA0 : 0x80;
-        high = lead == 0xED ? 0x9F : 0xBF;
-    } else if (lead >= 0xF0 && lead <= 0xF4) {
-        length = 4;
-        cp = lead & 0x07U;
-        low = lead == 0xF0 ? 0x90 : 0x80;
-        high = lead == 0xF4 ? 0x8F : 0xBF;
-    } else {
-        return Decoded{};
-    }
-    if (text.size() - pos < length) {
-        return Decoded{};
-    }
-    for (std::size_t i = 1; i < length; ++i) {
-        const auto byte = static_cast<unsigned char>(text[pos + i]);
-        const bool ok = i == 1 ? (byte >= low && byte <= high) : is_continuation(byte);
-        if (!ok) {
-            return Decoded{};
-        }
-        cp = (cp << 6U) | (byte & 0x3FU);
-    }
-    return Decoded{.length = length, .code_point = cp};
 }
 
 /// `text` (valid UTF-8) cut to at most `max_bytes` on a code-point boundary, plus "..." when cut.
@@ -133,9 +78,9 @@ struct Decoded {
     return std::format("{} {}", count, count == 1 ? singular : plural);
 }
 
-/// What a dry-run update would do, for the -v line: "1 new chapter, 2 reused: Ch. 4". The labels
-/// name the new chapters (at most five, then "and K more"), in the file's reading order; the
-/// counts come from the outcome's id lists.
+/// What a dry-run update would do, for the -v line: "download 1 chapter: Ch. 4; reuse 2". The
+/// labels name the chapters to download (at most five, then "and K more"), in the file's reading
+/// order; the counts come from the outcome's id lists.
 [[nodiscard]] std::string update_counts(const EpubOutcome& outcome) {
     std::vector<Chapter> fresh{};
     for (const Chapter& chapter : outcome.epub.chapters) {
@@ -143,14 +88,14 @@ struct Decoded {
             fresh.push_back(chapter);
         }
     }
-    std::string counts = std::format(
-        "{}, {} reused", count_of(outcome.new_chapters.size(), "new chapter", "new chapters"),
-        outcome.reused_chapters.size());
+    const std::string download =
+        std::format("download {}", count_of(outcome.new_chapters.size(), "chapter", "chapters"));
+    const std::string reuse = std::format("reuse {}", outcome.reused_chapters.size());
     const std::string labels = chapter_labels(fresh);
     if (labels.empty()) {
-        return counts;
+        return std::format("{}; {}", download, reuse);
     }
-    return std::format("{}: {}", counts, labels);
+    return std::format("{}: {}; {}", download, labels, reuse);
 }
 
 /// The -v line for a dry run's planned file: "would update <path> (...)" for an incomplete file,
@@ -187,7 +132,7 @@ std::string terminal_safe(std::string_view text) {
             ++pos;
             continue;
         }
-        const Decoded decoded = decode_multibyte(text, pos);
+        const Utf8Decoded decoded = decode_utf8_at(text, pos); // a lead byte >= 0x80
         if (decoded.length == 0) {
             out += '?'; // one '?' per invalid byte, then resynchronize on the next byte
             ++pos;
@@ -281,7 +226,8 @@ void ConsoleObserver::on_epub_end(const EpubOutcome& outcome) {
         const std::string_view kept = outcome.existing == ExistingKind::incomplete
                                           ? std::string_view{" (the existing file was kept)"}
                                           : std::string_view{};
-        print_error(*io_, policy_, std::format("{}: {}{}", outcome.path, error, kept));
+        print_error(*io_, policy_,
+                    std::format("{}{}: {}{}", row_.prefix, outcome.path, error, kept));
         break;
     }
     }
@@ -299,8 +245,9 @@ void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
     case ExistingKind::none:
         // Nothing was there when the file was assessed, but a file of that name was published
         // by someone else before ours: the new file was discarded and theirs left alone.
-        warning(std::format("{}: appeared while it was being written; left alone (pass "
-                            "--overwrite to replace it)",
+        warning(std::format("{}: left alone: another file took this name while ours was being "
+                            "written, so ours was discarded; run the same command again to "
+                            "check it",
                             outcome.path));
         return;
     case ExistingKind::incomplete:
@@ -323,7 +270,7 @@ void ConsoleObserver::on_verbose(int level, std::string_view message) {
 void ConsoleObserver::finish() {
     clear_progress();
     in_epub_ = false;
-    if (up_to_date_ == 0 || up_to_date_reported_) {
+    if (up_to_date_ == 0 || up_to_date_reported_ || !row_.exists_notice) {
         return;
     }
     up_to_date_reported_ = true;
@@ -331,12 +278,8 @@ void ConsoleObserver::finish() {
         return;
     }
     // A note, not a warning: no `warning:` prefix and never colored.
-    if (up_to_date_ == 1) {
-        plain_line("1 file is already up to date; pass --overwrite to download it again");
-    } else {
-        plain_line(std::format("{} files are already up to date; pass --overwrite to download "
-                               "them again",
-                               up_to_date_));
+    if (const std::optional<std::string> note = up_to_date_notice(up_to_date_)) {
+        plain_line(*note);
     }
 }
 
@@ -345,8 +288,11 @@ void ConsoleObserver::warning(std::string_view message) {
         return;
     }
     clear_progress();
+    // The row prefix is sanitized together with the message: it may carry FILE as typed.
+    std::string text = row_.prefix;
+    text += message;
     std::print(io_->err, "{}: {} {}\n", tool_name,
-               paint("warning:", Style::yellow, policy_.color_stderr), terminal_safe(message));
+               paint("warning:", Style::yellow, policy_.color_stderr), terminal_safe(text));
     draw_progress();
 }
 
@@ -360,8 +306,10 @@ void ConsoleObserver::draw_progress() {
     if (!policy_.progress || !in_epub_) {
         return;
     }
-    std::string line = std::format("[{}/{}] {}: {}/{} pages", index_ + 1, total_epubs_, label_,
-                                   pages_done_, pages_total_);
+    std::string line =
+        row_.position > 0 ? std::format("({}/{}) ", row_.position, row_.total) : std::string{};
+    line += std::format("[{}/{}] {}: {}/{} pages", index_ + 1, total_epubs_, label_, pages_done_,
+                        pages_total_);
     const std::size_t width = line.size();
     // Pad over whatever is left of a longer previous line. Bytes never undercount the columns
     // of UTF-8 text (a 3-byte CJK character is 2 columns), so the padding always covers it.

@@ -340,11 +340,6 @@ struct HeldCopy {
     return file_failure("the existing file changed or could not be read during the update");
 }
 
-/// An invariant of this module broke (never expected): ends the run with exit 1.
-[[nodiscard]] Error internal_error(std::string_view what) {
-    return Error{.code = Errc::failure, .message = std::format("internal error: {}", what)};
-}
-
 /// A fresh build's final list: every planned chapter downloaded at the run's quality.
 [[nodiscard]] std::vector<FinalChapter> fresh_chapters(const PlannedEpub& epub,
                                                        ImageQuality quality) {

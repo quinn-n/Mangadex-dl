@@ -597,17 +597,90 @@ TEST_CASE("download existing: foreign warnings give the fixed reason and remedy,
           "a: left alone: changed while it was being updated; pass --overwrite to replace it");
 }
 
-TEST_CASE("download existing: the diverged warning counts chapters, singular and plural",
+namespace {
+
+/// A final-list entry for the planned chapter `planned` (Vol. 2 Ch. `chapter`).
+[[nodiscard]] md::FinalChapter final_entry(std::string chapter, md::ChapterSource source,
+                                           std::size_t planned = 0) {
+    return md::FinalChapter{
+        .chapter = md::Chapter{.id = "x", .volume = "2", .chapter = std::move(chapter)},
+        .source = source,
+        .planned = planned,
+    };
+}
+
+/// A held manifest record for Vol. 2 Ch. `chapter`.
+[[nodiscard]] md::ManifestChapter held_record(std::string chapter) {
+    return md::ManifestChapter{.id = "h", .volume = "2", .chapter = std::move(chapter)};
+}
+
+} // namespace
+
+TEST_CASE("download existing: the diverged warning counts and names chapters, singular and plural",
           "[download][existing][messages]") {
-    md::UpdateDecision decision{.state = md::UpdateState::diverged, .missing = {3}, .extra = {1}};
-    CHECK(detail::diverged_warning("out/v.epub", decision) ==
-          "out/v.epub: MangaDex lists 1 chapter this file lacks, but the file holds 1 chapter "
-          "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)");
+    md::UpdateDecision decision{.state = md::UpdateState::diverged,
+                                .chapters = {final_entry("4", md::ChapterSource::download, 3)},
+                                .missing = {3},
+                                .extra = {1}};
+    const std::vector<md::ManifestChapter> held{
+        held_record("1"), held_record("3"), held_record("5"), held_record("6"),
+        held_record("7"), held_record("8"), held_record("9"), held_record("10")};
+    // One unlisted chapter: "without it".
+    CHECK(detail::diverged_warning("out/v.epub", decision, held) ==
+          "out/v.epub: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 "
+          "chapter MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild "
+          "it without it)");
+    // More than one: "without them".
+    decision.chapters = {final_entry("2", md::ChapterSource::download, 1),
+                         final_entry("2.5", md::ChapterSource::download, 2)};
     decision.missing = {1, 2};
-    decision.extra = {0, 4, 5};
-    CHECK(detail::diverged_warning("v", decision) ==
-          "v: MangaDex lists 2 chapters this file lacks, but the file holds 3 chapters MangaDex "
-          "no longer lists; left it alone (pass --overwrite to rebuild it without them)");
+    decision.extra = {0, 1, 2};
+    CHECK(detail::diverged_warning("v", decision, held) ==
+          "v: MangaDex lists 2 chapters this file lacks (Ch. 2, Ch. 2.5), but the file holds 3 "
+          "chapters MangaDex no longer lists (Ch. 1, Ch. 3, Ch. 5); left it alone (pass "
+          "--overwrite to rebuild it without them)");
+}
+
+TEST_CASE("download existing: the diverged warning shows at most 5 labels per side",
+          "[download][existing][messages]") {
+    md::UpdateDecision decision{.state = md::UpdateState::diverged};
+    for (std::size_t n = 0; n < 7; ++n) {
+        decision.chapters.push_back(
+            final_entry(std::to_string(n + 11), md::ChapterSource::download, n));
+        decision.missing.push_back(n);
+    }
+    std::vector<md::ManifestChapter> held{};
+    for (int n = 1; n <= 8; ++n) {
+        held.push_back(held_record(std::to_string(n)));
+        decision.extra.push_back(held.size() - 1);
+    }
+    CHECK(detail::diverged_warning("v", decision, held) ==
+          "v: MangaDex lists 7 chapters this file lacks (Ch. 11, Ch. 12, Ch. 13, Ch. 14, Ch. 15 "
+          "and 2 more), but the file holds 8 chapters MangaDex no longer lists (Ch. 1, Ch. 2, Ch. "
+          "3, Ch. 4, Ch. 5 and 3 more); left it alone (pass --overwrite to rebuild it without "
+          "them)");
+}
+
+TEST_CASE("download existing: the diverged warning only counts what it cannot name",
+          "[download][existing][messages]") {
+    // A side whose chapters do not all resolve (no final-list entry, a held index out of range)
+    // is counted without a list; the other side keeps its labels.
+    md::UpdateDecision decision{.state = md::UpdateState::diverged,
+                                .chapters = {final_entry("4", md::ChapterSource::download, 0)},
+                                .missing = {0, 5},
+                                .extra = {0}};
+    const std::vector<md::ManifestChapter> held{held_record("3")};
+    CHECK(detail::diverged_warning("v", decision, held) ==
+          "v: MangaDex lists 2 chapters this file lacks, but the file holds 1 chapter MangaDex no "
+          "longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it without it)");
+    decision.missing = {0};
+    decision.extra = {0, 1};
+    CHECK(detail::diverged_warning("v", decision, held) ==
+          "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
+          "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)");
+    CHECK(detail::diverged_warning("v", decision, {}) ==
+          "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
+          "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)");
 }
 
 TEST_CASE("download existing: kept, re-pick and updating lines", "[download][existing][messages]") {
@@ -622,35 +695,34 @@ TEST_CASE("download existing: kept, re-pick and updating lines", "[download][exi
                                     .held_group = "Clean Scans",
                                     .planned_group = "Bravo Scans",
                                     .key_label = "Vol. 1 Ch. 2"}) ==
-          "v: Vol. 1 Ch. 2: replacing the release in the file (Clean Scans) with Bravo Scans's "
-          "(--group)");
+          "v: Vol. 1 Ch. 2: replacing the release in the file (Clean Scans) with the release by "
+          "Bravo Scans (--group)");
     // Group names may be empty (a release without groups).
     CHECK(detail::repick_line("v", {.held_id = "h", .planned_id = "p", .key_label = "Ch. 7"}) ==
           "v: Ch. 7: replacing the release in the file (no group) with the planned release "
           "(--group)");
 
     md::UpdateDecision decision{.state = md::UpdateState::incomplete};
-    const auto entry = [](std::string chapter, md::ChapterSource source) {
-        return md::FinalChapter{
-            .chapter = md::Chapter{.id = "x", .volume = "2", .chapter = std::move(chapter)},
-            .source = source,
-        };
-    };
-    decision.chapters = {entry("3", md::ChapterSource::reuse),
-                         entry("4", md::ChapterSource::download)};
+    decision.chapters = {final_entry("3", md::ChapterSource::reuse),
+                         final_entry("4", md::ChapterSource::download)};
     CHECK(detail::updating_line("out/v.epub", decision) ==
-          "updating out/v.epub: 1 new chapter, 1 reused (Ch. 4)");
-    decision.chapters = {entry("1", md::ChapterSource::reuse), entry("2", md::ChapterSource::reuse),
-                         entry("3", md::ChapterSource::download),
-                         entry("4", md::ChapterSource::download)};
+          "updating out/v.epub: downloading 1 chapter (Ch. 4), reusing 1");
+    decision.chapters = {final_entry("1", md::ChapterSource::reuse),
+                         final_entry("2", md::ChapterSource::reuse),
+                         final_entry("3", md::ChapterSource::download),
+                         final_entry("4", md::ChapterSource::download)};
     CHECK(detail::updating_line("v", decision) ==
-          "updating v: 2 new chapters, 2 reused (Ch. 3, Ch. 4)");
+          "updating v: downloading 2 chapters (Ch. 3, Ch. 4), reusing 2");
     decision.chapters.clear();
     for (int n = 1; n <= 7; ++n) {
-        decision.chapters.push_back(entry(std::to_string(n), md::ChapterSource::download));
+        decision.chapters.push_back(final_entry(std::to_string(n), md::ChapterSource::download));
     }
     CHECK(detail::updating_line("v", decision) ==
-          "updating v: 7 new chapters, 0 reused (Ch. 1, Ch. 2, Ch. 3, Ch. 4, Ch. 5 and 2 more)");
+          "updating v: downloading 7 chapters (Ch. 1, Ch. 2, Ch. 3, Ch. 4, Ch. 5 and 2 more), "
+          "reusing 0");
+    // Nothing to download (never for an incomplete file): counts only.
+    decision.chapters = {final_entry("1", md::ChapterSource::reuse)};
+    CHECK(detail::updating_line("v", decision) == "updating v: downloading 0 chapters, reusing 1");
 }
 
 TEST_CASE("download existing: announce reports what each assessment found",
@@ -671,12 +743,31 @@ TEST_CASE("download existing: announce reports what each assessment found",
                   "p: left alone: not an EPUB made by mangadex-dl; use another DIR or --title"});
         CHECK(observer.verbose.empty());
     }
-    SECTION("diverged warns") {
+    SECTION("diverged warns, naming the held chapters") {
+        assessment.kind = md::ExistingKind::diverged;
+        assessment.decision =
+            md::UpdateDecision{.chapters = {final_entry("4", md::ChapterSource::download, 0)},
+                               .missing = {0},
+                               .extra = {1, 2}};
+        assessment.held = md::HeldBook{};
+        assessment.held->manifest.chapters = {held_record("1"), held_record("2"), held_record("3")};
+        detail::announce(observer, "p", assessment);
+        CHECK(observer.warnings ==
+              std::vector<std::string>{
+                  "p: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 "
+                  "chapters MangaDex no longer lists (Ch. 2, Ch. 3); left it alone (pass "
+                  "--overwrite to rebuild it without them)"});
+        CHECK(observer.verbose.empty());
+    }
+    SECTION("diverged without the held book still warns, with counts only for that side") {
         assessment.kind = md::ExistingKind::diverged;
         assessment.decision = md::UpdateDecision{.missing = {0}, .extra = {1, 2}};
         detail::announce(observer, "p", assessment);
-        REQUIRE(observer.warnings.size() == 1);
-        CHECK(observer.warnings[0].starts_with("p: MangaDex lists 1 chapter this file lacks"));
+        CHECK(observer.warnings ==
+              std::vector<std::string>{
+                  "p: MangaDex lists 1 chapter this file lacks, but the file holds 2 chapters "
+                  "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it "
+                  "without them)"});
         CHECK(observer.verbose.empty());
     }
     SECTION("complete and incomplete list kept and re-picked releases at -v") {
@@ -694,6 +785,7 @@ TEST_CASE("download existing: announce reports what each assessment found",
         CHECK(observer.verbose ==
               std::vector<std::pair<int, std::string>>{
                   {1, "f: Ch. 1: kept the release already in the file (h) instead of p"},
-                  {1, "f: Ch. 2: replacing the release in the file (A) with B's (--group)"}});
+                  {1, "f: Ch. 2: replacing the release in the file (A) with the release by B "
+                      "(--group)"}});
     }
 }

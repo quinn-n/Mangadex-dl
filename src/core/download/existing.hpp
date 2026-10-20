@@ -22,6 +22,7 @@
 // Threads: calling thread only. Nothing here is shared with the FetchPool.
 #pragma once
 
+#include "mangadex_dl/book_manifest.hpp"
 #include "mangadex_dl/download.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/existing_epub.hpp"
@@ -114,9 +115,14 @@ struct Assessment {
 /// `<path>: left alone: <reason>[ (<strerror>)]; <remedy>`. The errno text only for unreadable.
 [[nodiscard]] std::string foreign_warning(std::string_view path, const InspectFailure& failure);
 
-/// `<path>: MangaDex lists N chapters this file lacks, but the file holds M chapters MangaDex no
-/// longer lists; left it alone (pass --overwrite to rebuild it without them)`.
-[[nodiscard]] std::string diverged_warning(std::string_view path, const UpdateDecision& decision);
+/// `<path>: MangaDex lists N chapters this file lacks (Ch. 4, ...), but the file holds M chapters
+/// MangaDex no longer lists (Ch. 3, ...); left it alone (pass --overwrite to rebuild it without
+/// them)`, with "1 chapter" and "without it" when the count is one. Each list shows at most 5
+/// labels, then "and K more". The lacking chapters are the final-list entries for
+/// `decision.missing`; the unlisted ones are `held[i]` for each i in `decision.extra`. A list is
+/// left out (counts only) unless every chapter it counts resolves to a label.
+[[nodiscard]] std::string diverged_warning(std::string_view path, const UpdateDecision& decision,
+                                           std::span<const ManifestChapter> held);
 
 /// `<path>: Ch. 3 in the existing file is damaged; downloading it again`.
 [[nodiscard]] std::string damaged_warning(std::string_view path, const Chapter& chapter);
@@ -124,11 +130,12 @@ struct Assessment {
 /// `<path>: Vol. 1 Ch. 1: kept the release already in the file (<held id>) instead of <id>`.
 [[nodiscard]] std::string kept_line(std::string_view path, const KeptRelease& kept);
 
-/// `<path>: Vol. 1 Ch. 1: replacing the release in the file (<groups>) with <groups>'s
-/// (--group)`. Empty group names read "no group" and "the planned release".
+/// `<path>: Vol. 1 Ch. 1: replacing the release in the file (<groups>) with the release by
+/// <groups> (--group)`. Empty group names read "no group" and "the planned release".
 [[nodiscard]] std::string repick_line(std::string_view path, const Repick& repick);
 
-/// `updating <path>: 1 new chapter, 2 reused (Ch. 4)` (at most 5 labels, then "and K more").
+/// `updating <path>: downloading 1 chapter (Ch. 4), reusing 2` (at most 5 labels, then "and K
+/// more"; no parenthesis when nothing is downloaded).
 [[nodiscard]] std::string updating_line(std::string_view path, const UpdateDecision& decision);
 
 /// Tells `observer` what `assessment` found: the foreign or diverged warning, or for a complete

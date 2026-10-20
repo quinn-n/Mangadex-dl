@@ -18,7 +18,7 @@ Status: APPROVED at the design gate (2026-10-19), with amendment 5. Produced by 
    - **Report:**
      - Re-picked ids go in `new_chapters`.
      - `skipped_chapters` reconciliation follows the normal plan choice: H is not held after the rebuild, so no "kept" substitution is needed for it.
-     - `-v` line: `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with <group>'s (--group)`.
+     - `-v` line: `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with the release by <group> (--group)`. An empty planned group reads `with the planned release (--group)`; an empty held group reads `(no group)`.
    - **Acceptance:**
      - `[unit]` rank comparison: better replaces; equal or worse keeps; no `--group` keeps.
      - `[cli]` `clean`, then `clean-regrouped` **with `--group <B>`** → both volumes are rebuilt with B's releases (B's images must be served by that fixture variant), and the files are byte-identical to a fresh B download.
@@ -92,7 +92,7 @@ There are no new flags and no new exit codes.
    - `ENOENT` → absent.
    - `EACCES`/`EPERM`/`EIO` → **foreign** ("cannot be read").
    - Any other errno → `Errc::failure`, exit 1.
-   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
+   - Record the identity `(st_dev, st_ino, st_size, st_mtim, st_ctim, st_mode & 07777)`; ctime catches a same-size rewrite whose mtime was restored (fact-check V12).
    - In a real run, **keep the fd open until publish**. Every later read goes through it.
 2. **Zip structure.**
    - `pread` loops retry `EINTR`; a short read means foreign.
@@ -207,14 +207,16 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
     - Reasons: not a regular file · cannot be read (`<strerror>`) · not an EPUB made by mangadex-dl · holds a different book · changed by another program · made by a newer mangadex-dl · changed while it was being updated.
     - Remedies: "rename or remove it, or use another DIR" / "use another DIR or --title" / "pass --overwrite to replace it".
     - Nothing read from the file is ever echoed.
-  - Diverged: `warning: <path>: MangaDex lists N chapters this file lacks, but the file holds M chapters MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)`.
+  - Diverged: `warning: <path>: MangaDex lists N chapters this file lacks (Ch. 4, …), but the file holds M chapters MangaDex no longer lists (Ch. 3, …); left it alone (pass --overwrite to rebuild it without them)`.
+    - Each list shows ≤ 5 labels, then `and K more`; a side whose chapters cannot all be named is counted only.
+    - Singular: `1 chapter`, and `without it` when M == 1, e.g. `warning: <path>: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 chapter MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it without it)`.
   - Damaged held chapter: `warning: <path>: Ch. 3 in the existing file is damaged; downloading it again`.
   - Failed update: `error: <path>: <error> (the existing file was kept)`.
-  - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: appeared while it was being written; left alone (pass --overwrite to replace it)`. Added in T11 after review.
+  - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: left alone: another file took this name while ours was being written, so ours was discarded; run the same command again to check it`. Added in T11 after review; reworded to the `left alone: <reason>; <remedy>` shape in the message polish.
 - **`-v`:**
   - `<path>: up to date (N chapters)` (singular: `(1 chapter)`, as the README states)
-  - `updating <path>: 1 new chapter, 2 reused (Ch. 4)` (≤ 5 labels, then `and K more`)
-  - in a dry run: `would update <path> (1 new chapter, 2 reused: Ch. 4)`
+  - `updating <path>: downloading 1 chapter (Ch. 4), reusing 2` (≤ 5 labels, then `and K more`; counts only without labels: `downloading 2 chapters, reusing 0`)
+  - in a dry run: `would update <path> (download 1 chapter: Ch. 4; reuse 2)` (counts only without labels: `(download 2 chapters; reuse 0)`)
   - `<path>: Vol. 1 Ch. 1: kept the release already in the file (<held id>) instead of <plan id>`
 - **Display:** progress and colour are unchanged, and the up-to-date note is never coloured.
 
@@ -255,10 +257,10 @@ Unchanged; there are no new codes.
 
 ## Data & state
 - **Reads:** `DIR/<name>.epub` read-only, through the inspection fd during a rebuild.
-- **Writes:** the `.epub` (0644) and its temp only, plus the manifest inside new EPUBs.
+- **Writes:** the `.epub` (0644 minus umask for a new file; the old permission bits on an update) and its temp only, plus the manifest inside new EPUBs.
 - **Replacing a file:**
   - It applies only to our own `incomplete` files with an unchanged identity, and is never lossy.
-  - It creates a new inode, so mode, owner and hard links are not kept.
+  - It creates a new inode. The permission bits (`st_mode & 0777`) are re-applied with `fchmod` before the fsync, without the umask; set-ID and sticky bits, owner, group, ACLs, xattrs and hard links are not kept. A failed `fchmod` fails the update: the temp is discarded and the old file is kept. (Polish round, 2026-10-20.)
   - The last rename wins.
 - **Threads:** inspection and copying run on the calling thread. The FetchPool and tsan scope are unchanged.
 - **Docs to update:** README Output and the JSON schema (around lines 145–169), the "never overwritten unless --overwrite" line (308), the `.part-` note (316), and `download-spec.md`.
@@ -347,7 +349,7 @@ Unchanged; there are no new codes.
     - `--overwrite` replaces all of them (`unchecked`).
 15. `[cli]` `--dry-run` on `clean-grown` over an existing DIR:
     - stdout is the Vol. 02 path;
-    - `-v`: `would update … (1 new chapter, 1 reused: Ch. 4)`;
+    - `-v`: `would update … (download 1 chapter: Ch. 4; reuse 1)`;
     - JSON `planned` + `replaced:true` + the lists;
     - no file is modified.
 16. `[cli]` **Failed update:** a failed download of the new chapter → exit 6, the old file byte-unchanged, and the error ends "(the existing file was kept)". `-q` hides every new note. `--json --color=always` produces no ANSI.
@@ -370,7 +372,7 @@ Unchanged; there are no new codes.
 - union rebuilds of diverged files;
 - orphan cleanup;
 - rebuilding on a quality change;
-- keeping edits, mode, owner or links on replace;
+- keeping edits, owner, group, ACLs/xattrs, set-ID bits or links on replace (the permission bits are kept);
 - resuming within a file;
 - a read-only DIR where everything is up to date (still exit 1);
 - config/env, completions, man page.

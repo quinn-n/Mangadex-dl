@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,11 @@ struct RunReport {
 /// exit_code::incomplete (6) if any file failed, else exit_code::no_chapters (5) if there are no
 /// files, else exit_code::success. "Everything already existed" is success.
 [[nodiscard]] int exit_code_for(const RunReport& report) noexcept;
+
+/// The note printed once a run (`download`) or a whole list (`batch`) has left `up_to_date`
+/// files alone because they already hold every chapter: "1 file is already up to date; ..." /
+/// "N files are already up to date; ...", or nullopt for 0.
+[[nodiscard]] std::optional<std::string> up_to_date_notice(std::size_t up_to_date);
 
 /// The --json document: `format_version: 1` and the design's schema, invalid UTF-8 replaced by
 /// U+FFFD, never ANSI, terminated by '\n'.

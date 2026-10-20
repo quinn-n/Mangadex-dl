@@ -12,11 +12,14 @@
 // open_existing's O_NOCTTY is not observable afterwards (the kernel drops it from the F_GETFL
 // flags) and only matters for a terminal opened by a process without a controlling terminal,
 // so it is not asserted. publish_replacing keeping the old permission bits is asserted on both
-// temporary paths, for a temporary the caller synced first, and for a failed fchmod.
+// temporary paths, for a temporary the caller synced first (including a failed fsync after its
+// fchmod), for a failed fchmod, and for a link, FIFO or directory planted under a closed named
+// temporary.
 
 #include "fs/output_dir_testing.hpp" // core-private seam (src/core is on the test include path)
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
+#include "support/fs_test_util.hpp"
 #include "support/temp_dir.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -28,8 +31,6 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -59,38 +60,13 @@ using mangadex_dl::OutputDir;
 using mangadex_dl::ReplaceOutcome;
 using mangadex_dl::UniqueFd;
 using mangadex_dl::test::TempDir;
-
-[[nodiscard]] TempDir make_temp_dir() {
-    auto dir = TempDir::create("mangadex-dl-existing");
-    REQUIRE(dir.has_value());
-    return std::move(*dir);
-}
+using mangadex_dl::test::fs_util::list_dir;
+using mangadex_dl::test::fs_util::make_temp_dir;
+using mangadex_dl::test::fs_util::read_file;
+using mangadex_dl::test::fs_util::write_file;
 
 [[nodiscard]] std::span<const std::byte> as_bytes(std::string_view text) noexcept {
     return std::as_bytes(std::span{text.data(), text.size()});
-}
-
-/// The names in `dir`, sorted.
-[[nodiscard]] std::vector<std::string> list_dir(const fs::path& dir) {
-    std::vector<std::string> names{};
-    for (const fs::directory_entry& entry : fs::directory_iterator{dir}) {
-        names.push_back(entry.path().filename().string());
-    }
-    std::ranges::sort(names);
-    return names;
-}
-
-[[nodiscard]] std::string read_file(const fs::path& path) {
-    std::ifstream in{path, std::ios::binary};
-    REQUIRE(in.good());
-    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
-}
-
-void write_file(const fs::path& path, std::string_view content) {
-    std::ofstream out{path, std::ios::binary};
-    REQUIRE(out.good());
-    out.write(content.data(), static_cast<std::streamsize>(content.size()));
-    REQUIRE(out.good());
 }
 
 /// Every byte of the file behind `fd`, read with pread from offset 0 (the descriptor's offset
@@ -780,4 +756,76 @@ TEST_CASE("publish_replacing a failed fchmod discards the temporary and keeps th
     CHECK(mode_of(target) == 0600U);
     CHECK(lstat_of(target).st_ino == inspected.identity.inode);
     CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+}
+
+TEST_CASE("publish_replacing a failed sync after the mode change of a synced temporary keeps the "
+          "old file",
+          "[output_dir][existing][mode]") {
+    // A temporary the caller synced first gets a second fsync after its fchmod (a named one is
+    // reopened by name for it), so the new mode is durable before the rename.
+    const bool fallback = GENERATE(false, true);
+    CAPTURE(fallback);
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), 0600) == 0);
+    OutputDir out = open_dir(dir.path(), fallback);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+
+    mangadex_dl::TempFile temp = make_temp(out, "book.epub", "new content");
+    REQUIRE(temp.sync_and_close().has_value());
+    const testing::ScopedIoError fault{testing::IoStage::fsync, EIO};
+    const auto outcome = out.publish_replacing(std::move(temp), "book.epub", inspected.identity);
+    REQUIRE(!outcome.has_value());
+    CHECK(outcome.error().code == Errc::failure);
+    CHECK(outcome.error().message.contains("cannot sync 'book.epub'"));
+    CHECK(outcome.error().message.contains("Input/output error"));
+    CHECK(read_file(target) == "old content");
+    CHECK(mode_of(target) == 0600U);
+    CHECK(lstat_of(target).st_ino == inspected.identity.inode);
+    CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+}
+
+TEST_CASE("publish_replacing refuses a FIFO or directory planted under a closed temporary",
+          "[output_dir][existing][mode]") {
+    // The reopen of a closed named temporary opens a FIFO (O_NONBLOCK: no writer needed) or a
+    // directory, then refuses it on file type. A FIFO has one link, so only the type check stops
+    // it; a directory has two, so either check would.
+    const Kind kind = GENERATE(Kind::fifo, Kind::directory);
+    CAPTURE(kind);
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), 0600) == 0);
+    OutputDir out = open_dir(dir.path(), true);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+
+    // Every descriptor the temporary opens (its own, a private directory descriptor, the reopen)
+    // is closed again by the time publish_replacing returns.
+    const std::size_t fds_before = open_fd_count();
+    mangadex_dl::TempFile temp = make_temp(out, "book.epub", "new content");
+    REQUIRE(temp.sync_and_close().has_value());
+    const std::string part = the_part_name(dir.path());
+    fs::remove(dir.path() / part);
+    const std::optional<UniqueFd> none = make_kind(dir.path(), part, kind);
+    const mode_t planted_mode = mode_of(dir.path() / part);
+
+    const auto outcome = out.publish_replacing(std::move(temp), "book.epub", inspected.identity);
+    REQUIRE(!outcome.has_value());
+    CHECK(outcome.error().code == Errc::failure);
+    CHECK(outcome.error().message ==
+          "cannot set the mode of 'book.epub': its temporary file was replaced");
+    CHECK(open_fd_count() == fds_before);
+    CHECK(read_file(target) == "old content");
+    CHECK(mode_of(target) == 0600U);
+    CHECK(lstat_of(target).st_ino == inspected.identity.inode);
+    if (kind == Kind::fifo) {
+        // The discarded temporary unlinked its name, i.e. the planted FIFO.
+        CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+    } else {
+        // unlinkat without AT_REMOVEDIR cannot remove a directory: it stays, mode unchanged.
+        CHECK(list_dir(dir.path()) == std::vector<std::string>{part, "book.epub"}); // dot first
+        CHECK(fs::is_directory(fs::symlink_status(dir.path() / part)));
+        CHECK(mode_of(dir.path() / part) == planted_mode);
+    }
 }

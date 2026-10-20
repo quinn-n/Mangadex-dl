@@ -17,6 +17,7 @@
 #include "support/fake_read_source.hpp"
 #include "support/held_book_builder.hpp"
 #include "support/mdx_fixture.hpp"
+#include "support/read_only_fd.hpp"
 #include "support/temp_dir.hpp"
 #include "support/zip_forge.hpp"
 #include "support/zip_reader.hpp"
@@ -33,8 +34,6 @@
 #include <utility>
 #include <vector>
 
-#include <fcntl.h>
-
 namespace {
 
 namespace fs = std::filesystem;
@@ -42,10 +41,12 @@ namespace md = mangadex_dl;
 namespace zip = mangadex_dl::test::zip;
 namespace forge = mangadex_dl::test::forge;
 namespace held = mangadex_dl::test::held;
+using held::assembled;
 namespace mdx = mangadex_dl::test::mdx;
 using held::ImageKind;
 using mangadex_dl::test::FakeFault;
 using mangadex_dl::test::FakeReadSource;
+using mangadex_dl::test::open_read_only;
 using mangadex_dl::test::TempDir;
 
 /// A one-page book whose page is `name` holding `data` (the CRC in the archive matches it).
@@ -57,13 +58,6 @@ using mangadex_dl::test::TempDir;
     page.data = data;
     parts.manifest.chapters[0].images[0] = name;
     return parts;
-}
-
-[[nodiscard]] forge::Bytes assembled(const held::BookParts& parts) {
-    std::expected<forge::Bytes, std::string> bytes = held::assemble(parts);
-    INFO((bytes ? std::string{} : bytes.error()));
-    REQUIRE(bytes.has_value());
-    return std::move(*bytes);
 }
 
 /// Inspects `bytes` (which must succeed) and returns the held book.
@@ -107,13 +101,6 @@ using mangadex_dl::test::TempDir;
         forge::set_byte(bytes, 20 + i, static_cast<std::byte>((height >> shift) & 0xFFU));
     }
     return bytes;
-}
-
-/// open(2) read-only.
-[[nodiscard]] md::UniqueFd open_read_only(const fs::path& path) {
-    const std::string name = path.string();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): open is variadic in C (the mode)
-    return md::UniqueFd{::open(name.c_str(), O_RDONLY | O_CLOEXEC)};
 }
 
 } // namespace

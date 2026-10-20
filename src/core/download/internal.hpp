@@ -17,9 +17,11 @@
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
 
+#include <format>
 #include <mutex>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mangadex_dl::detail {
@@ -73,6 +75,12 @@ struct PlanResult {
 
 /// Errc::interrupted, the error every stop unwinds with.
 [[nodiscard]] Error interrupted_error();
+
+/// An invariant of the download module broke (never expected): Errc::failure with
+/// "internal error: <what>", so the run ends with exit 1.
+[[nodiscard]] inline Error internal_error(std::string_view what) {
+    return Error{.code = Errc::failure, .message = std::format("internal error: {}", what)};
+}
 
 /// Fetches the title, the feed and the covers, builds the plan, and reports it to the observer
 /// (on_plan, then one warning per skipped chapter except duplicates). Errors are fatal for the
