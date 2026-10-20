@@ -69,9 +69,10 @@ enum class PublishOutcome {
 };
 
 /// What identifies one existing file between inspection and publish: the inode (device and
-/// number) plus its size, modification and status-change times, as fstat reported them. Native
-/// types, assigned straight from `struct stat`. Any chmod, link-count change or rewrite updates
-/// the ctime, so it compares unequal (conservatively "changed").
+/// number) plus its size, modification and status-change times and its mode bits, as fstat
+/// reported them. Native types, assigned straight from `struct stat`. Any chmod, link-count change
+/// or rewrite updates the ctime, so it compares unequal (conservatively "changed"); comparing
+/// `mode` as well therefore adds no new "changed" case.
 struct FileIdentity {
     dev_t device{};
     ino_t inode{};
@@ -80,6 +81,9 @@ struct FileIdentity {
     long mtime_nsec{};
     time_t ctime_sec{};
     long ctime_nsec{};
+    /// `st_mode & 07777`: the permission bits plus set-user-ID, set-group-ID and sticky (the file
+    /// type is not part of it). publish_replacing gives the new file the permission bits.
+    mode_t mode{};
 
     friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
 };
@@ -96,8 +100,9 @@ enum class ExistingOpen {
 /// handle keeps `status == opened` but its `fd` holds -1, so consumers check `fd.valid()`.
 struct ExistingHandle {
     ExistingOpen status = ExistingOpen::absent;
-    /// Valid only for opened (O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC). For an update, keep
-    /// it open until publish_replacing returns: `identity` is only meaningful while it is (V5).
+    /// Valid only for opened (O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC). For an
+    /// update, keep it open until publish_replacing returns: `identity` is only meaningful while
+    /// it is (V5).
     UniqueFd fd{};
     FileIdentity identity{}; ///< for opened: from fstat on `fd`
     int error = 0;           ///< the errno that decided unreadable, or not_regular when the
@@ -186,6 +191,13 @@ public:
     /// discarded). Replaces the name only while it still has the identity `expected`; publishes
     /// without clobbering when it vanished; leaves it alone otherwise. Then a best-effort fsync
     /// of the directory.
+    ///
+    /// The new file gets the permission bits of the inspected one, `expected.mode & 0777`, set
+    /// with fchmod before the file is synced, so the umask does not apply (on `replaced` and on
+    /// `written` alike). Set-user-ID, set-group-ID and sticky are never carried over, and owner,
+    /// group, ACLs and extended attributes are not preserved: the new file is created by this
+    /// process like any other. A failed fchmod is Errc::failure; the temporary is discarded
+    /// and the existing file is left untouched.
     ///
     /// `expected` is meaningful only while the ExistingHandle descriptor it came from is still
     /// open: a filesystem may reuse a freed inode number at once (ext4 does), so the caller keeps

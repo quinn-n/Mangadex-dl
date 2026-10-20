@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Private testing seam for src/core/fs/output_dir.cpp (download plan T8, skip-existing plan T6).
+// Private testing seam for src/core/fs/output_dir.cpp (download plan T8, skip-existing plan T6,
+// IoStage::chmod from the mode-preserving replace).
 // Not part of the public interface: only output_dir.cpp and the unit tests include it. Each switch
 // is a process-wide fault injection that forces one of the paths a normal Linux test machine never
 // takes (a filesystem without O_TMPFILE or RENAME_NOREPLACE, a system without /proc, a name that
@@ -38,6 +39,7 @@ enum class IoStage {
     fsync, ///< fsync(2) of the temporary in sync_and_close()
     close, ///< close(2) of a named fallback temporary in sync_and_close() (O_TMPFILE never closes
            ///< there: its descriptor is needed for the publishing linkat)
+    chmod, ///< fchmod(2) of the temporary in publish_replacing() (keeping the old file's mode)
 };
 
 /// While `err` is nonzero, every TempFile call of `stage` fails with errno `err` (ENOSPC, EIO,

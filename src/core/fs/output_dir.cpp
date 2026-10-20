@@ -19,6 +19,8 @@
 // FileIdentity. publish_replacing stages the new file under a `.part-` name (an O_TMPFILE inode is
 // linked to one first), re-checks the name with fstatat and renames over it only while the
 // identity still matches; a vanished name gets a no-clobber publish, anything else is `changed`.
+// Before the staging, the new file gets the inspected file's permission bits (fchmod on the
+// temporary, before its fsync), so a rebuilt file keeps a `chmod 600`.
 #include "mangadex_dl/fs/output_dir.hpp"
 
 #include "fs/errno_text.hpp"
@@ -62,6 +64,7 @@ struct FaultSwitches {
     std::atomic<int> write_errno{0};
     std::atomic<int> fsync_errno{0};
     std::atomic<int> close_errno{0};
+    std::atomic<int> chmod_errno{0};
 };
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables): test-only fault switches
 constinit FaultSwitches g_faults{};
@@ -73,6 +76,13 @@ inline constexpr std::size_t random_suffix_bytes = 6; // 12 hex digits
 inline constexpr int max_name_attempts = 16;
 inline constexpr mode_t file_mode = 0644;
 inline constexpr mode_t dir_mode = 0755;
+/// The bits publish_replacing carries over from the replaced file: read, write and execute for
+/// owner, group and others. Set-user-ID, set-group-ID and sticky are dropped, as `cp` without
+/// `-p` and a write by a non-owner drop them: a new file is never made set-ID on the say-so of
+/// whatever was under its name.
+inline constexpr mode_t preserved_mode_bits = 0777;
+/// The mode bits FileIdentity records: permissions plus set-ID and sticky, no file type.
+inline constexpr mode_t identity_mode_bits = 07777;
 
 /// "<what> '<name>': <strerror>".
 [[nodiscard]] Error fs_error(std::string_view what, std::string_view name, int err) {
@@ -157,6 +167,17 @@ inline constexpr mode_t dir_mode = 0755;
     }
     const int fault = g_faults.close_errno.load(std::memory_order_relaxed);
     return fault != 0 ? fault : err;
+}
+
+/// fchmod(2) of a TempFile, honouring the test fault switch. 0 or an errno.
+[[nodiscard]] int temp_fchmod(int fd, mode_t mode) noexcept {
+    if (const int fault = g_faults.chmod_errno.load(std::memory_order_relaxed); fault != 0) {
+        return fault;
+    }
+    if (::fchmod(fd, mode) != 0) {
+        return errno;
+    }
+    return 0;
 }
 
 /// 12 lowercase hex digits from getrandom(2).
@@ -455,7 +476,8 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
                         .mtime_sec = st.st_mtim.tv_sec,
                         .mtime_nsec = st.st_mtim.tv_nsec,
                         .ctime_sec = st.st_ctim.tv_sec,
-                        .ctime_nsec = st.st_ctim.tv_nsec};
+                        .ctime_nsec = st.st_ctim.tv_nsec,
+                        .mode = st.st_mode & identity_mode_bits};
 }
 
 } // namespace
@@ -488,6 +510,9 @@ void force_io_error(IoStage stage, int err) noexcept {
         return;
     case IoStage::close:
         g_faults.close_errno.store(err, std::memory_order_relaxed);
+        return;
+    case IoStage::chmod:
+        g_faults.chmod_errno.store(err, std::memory_order_relaxed);
         return;
     }
 }
@@ -530,6 +555,48 @@ struct TempFile::State {
         if (err != 0) {
             failed = true;
             return std::unexpected(fs_error("cannot write", final_name, err));
+        }
+        return {};
+    }
+
+    /// Gives the temporary the permission bits `mode` with fchmod (the umask does not apply).
+    /// Called before sync_and_close, the open descriptor is used and the fsync there makes the
+    /// mode durable. A no-op on a failed temporary: sync_and_close reports that failure.
+    ///
+    /// A named temporary the caller already synced is closed by then. It is reopened by name
+    /// through the private directory descriptor and fsynced again after the fchmod. O_NOFOLLOW
+    /// refuses a symlink planted under the `.part-` name, and only a regular file with a single
+    /// link is changed, so a hard link to another file of ours is refused too (fchmod itself
+    /// needs ownership, which rules out anything else).
+    [[nodiscard]] Result<void> set_mode(mode_t mode) {
+        if (failed) {
+            return {};
+        }
+        UniqueFd reopened{};
+        int target = fd.get();
+        if (!fd.valid()) {
+            reopened.reset(open_at(dir.get(), temp_name.c_str(),
+                                   O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC));
+            if (!reopened.valid()) {
+                return std::unexpected(fs_error("cannot set the mode of", final_name, errno));
+            }
+            struct stat st{};
+            if (::fstat(reopened.get(), &st) != 0) {
+                return std::unexpected(fs_error("cannot set the mode of", final_name, errno));
+            }
+            if (!S_ISREG(st.st_mode) || st.st_nlink != 1) {
+                return std::unexpected(plain_error(std::format(
+                    "cannot set the mode of '{}': its temporary file was replaced", final_name)));
+            }
+            target = reopened.get();
+        }
+        if (const int err = temp_fchmod(target, mode); err != 0) {
+            return std::unexpected(fs_error("cannot set the mode of", final_name, err));
+        }
+        if (synced) {
+            if (const int err = temp_fsync(target); err != 0) {
+                return std::unexpected(fs_error("cannot sync", final_name, err));
+            }
         }
         return {};
     }
@@ -766,8 +833,9 @@ Result<ExistingHandle> OutputDir::open_existing(std::string_view name) const {
 
     // 2. Open. The name may have changed since the pre-check: O_NOFOLLOW refuses a symlink and
     // O_NONBLOCK keeps a FIFO from blocking (it has no effect on a regular file).
-    UniqueFd fd{
-        open_at(fd_.get(), component.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)};
+    // O_NOCTTY: a terminal device swapped in here never becomes the controlling terminal.
+    UniqueFd fd{open_at(fd_.get(), component.c_str(),
+                        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)};
     if (!fd.valid()) {
         const int err = errno;
         if (err == ENOENT) {
@@ -809,10 +877,16 @@ Result<ReplaceOutcome> OutputDir::publish_replacing(TempFile&& temp, std::string
     if (!is_component(final_name)) {
         return std::unexpected(invalid_name(final_name));
     }
+    TempFile::State& s = *local.state_;
+    // Keep the inspected file's permission bits (a user's `chmod 600` must survive a rebuild),
+    // before the sync so that its fsync covers the mode. On error `local` discards the new
+    // content and the existing file is untouched.
+    if (Result<void> moded = s.set_mode(expected.mode & preserved_mode_bits); !moded) {
+        return std::unexpected(std::move(moded).error());
+    }
     if (Result<void> synced = local.sync_and_close(); !synced) {
         return std::unexpected(std::move(synced).error());
     }
-    TempFile::State& s = *local.state_;
     const std::string name{final_name};
 
     // Stage the new content under a name of its own before the check, so that the replacement

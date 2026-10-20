@@ -9,6 +9,10 @@
 // temporary paths (O_TMPFILE and the forced named fallback) and keeps the inspection descriptor
 // open until publish_replacing returns, as the V5 contract requires. A driverless char device
 // (ENXIO, fact-check V11) needs mknod privileges and is not created here; overlayfs is untested.
+// open_existing's O_NOCTTY is not observable afterwards (the kernel drops it from the F_GETFL
+// flags) and only matters for a terminal opened by a process without a controlling terminal,
+// so it is not asserted. publish_replacing keeping the old permission bits is asserted on both
+// temporary paths, for a temporary the caller synced first, and for a failed fchmod.
 
 #include "fs/output_dir_testing.hpp" // core-private seam (src/core is on the test include path)
 #include "mangadex_dl/error.hpp"
@@ -259,6 +263,34 @@ open_existing_unprivileged(const OutputDir& out, std::string_view name) {
     return std::ranges::any_of(names, [](const std::string& n) { return n.contains(".part-"); });
 }
 
+/// The one `.part-` name in `dir` (a named fallback temporary), required to exist.
+[[nodiscard]] std::string the_part_name(const fs::path& dir) {
+    const std::vector<std::string> names = list_dir(dir);
+    const auto found =
+        std::ranges::find_if(names, [](const std::string& n) { return n.contains(".part-"); });
+    REQUIRE(found != names.end());
+    REQUIRE(std::ranges::count_if(names,
+                                  [](const std::string& n) { return n.contains(".part-"); }) == 1);
+    return *found;
+}
+
+/// The mode bits of `path` that FileIdentity records (no file type), from lstat.
+[[nodiscard]] mode_t mode_of(const fs::path& path) { return lstat_of(path).st_mode & 07777U; }
+
+/// Sets the process umask for the lifetime of the object, then restores the previous one.
+class ScopedUmask {
+public:
+    explicit ScopedUmask(mode_t mask) noexcept : previous_(::umask(mask)) {}
+    ScopedUmask(const ScopedUmask&) = delete;
+    ScopedUmask& operator=(const ScopedUmask&) = delete;
+    ScopedUmask(ScopedUmask&&) = delete;
+    ScopedUmask& operator=(ScopedUmask&&) = delete;
+    ~ScopedUmask() { static_cast<void>(::umask(previous_)); }
+
+private:
+    mode_t previous_ = 0;
+};
+
 } // namespace
 
 // CHECK(!x) rather than CHECK_FALSE(x) throughout: clang-analyzer flags Catch2's Flags | Flags cast
@@ -291,6 +323,7 @@ TEST_CASE("open_existing opens a regular file read-only and records its identity
     CHECK(handle.identity.mtime_nsec == st.st_mtim.tv_nsec);
     CHECK(handle.identity.ctime_sec == st.st_ctim.tv_sec);
     CHECK(handle.identity.ctime_nsec == st.st_ctim.tv_nsec);
+    CHECK(handle.identity.mode == (st.st_mode & 07777U));
 
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl is variadic in C
     const int status_flags = ::fcntl(handle.fd.get(), F_GETFL);
@@ -624,5 +657,127 @@ TEST_CASE("publish_replacing a failed sync discards the temporary and keeps the 
     REQUIRE(!outcome.has_value());
     CHECK(outcome.error().message.contains("No space left on device"));
     CHECK(read_file(dir.path() / "book.epub") == "old content");
+    CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+}
+
+// ---- publish_replacing keeps the permission bits -------------------------------------------
+
+TEST_CASE("publish_replacing gives the new file the inspected file's permission bits",
+          "[output_dir][existing][mode]") {
+    const bool fallback = GENERATE(false, true);
+    const bool vanished = GENERATE(false, true);
+    // 0666 would be 0644 under the umask below, so it proves the umask is not applied; the
+    // set-user-ID bit of 04755 is recorded in the identity but never carried over. 0400 shows the
+    // fchmod, which comes before the last buffered write and the fsync, does not block them.
+    const mode_t old_mode =
+        GENERATE(mode_t{0600}, mode_t{0400}, mode_t{0644}, mode_t{0666}, mode_t{04755});
+    CAPTURE(fallback, vanished, old_mode);
+    const ScopedUmask umask{022};
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), old_mode) == 0);
+    OutputDir out = open_dir(dir.path(), fallback);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+    REQUIRE(inspected.identity.mode == old_mode);
+    if (vanished) {
+        fs::remove(target);
+    }
+
+    const auto outcome = out.publish_replacing(make_temp(out, "book.epub", "new content"),
+                                               "book.epub", inspected.identity);
+    REQUIRE(outcome.has_value());
+    CHECK(*outcome == (vanished ? ReplaceOutcome::written : ReplaceOutcome::replaced));
+    CHECK(read_file(target) == "new content");
+    CHECK(mode_of(target) == (old_mode & 0777U));
+    CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+}
+
+TEST_CASE("publish_replacing keeps the permission bits for a temporary the caller synced first",
+          "[output_dir][existing][mode]") {
+    const bool fallback = GENERATE(false, true);
+    CAPTURE(fallback);
+    const ScopedUmask umask{022};
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), 0600) == 0);
+    OutputDir out = open_dir(dir.path(), fallback);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+
+    // A named temporary is closed by sync_and_close, so publish_replacing reopens it by name.
+    mangadex_dl::TempFile temp = make_temp(out, "book.epub", "new content");
+    REQUIRE(temp.sync_and_close().has_value());
+    const auto outcome = out.publish_replacing(std::move(temp), "book.epub", inspected.identity);
+    REQUIRE(outcome.has_value());
+    CHECK(*outcome == ReplaceOutcome::replaced);
+    CHECK(read_file(target) == "new content");
+    CHECK(mode_of(target) == 0600U);
+    CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
+}
+
+TEST_CASE("publish_replacing never changes the mode of a link planted under a closed temporary",
+          "[output_dir][existing][mode]") {
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    const fs::path victim = dir.path() / "victim";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), 0600) == 0);
+    write_file(victim, "victim content");
+    REQUIRE(::chmod(victim.c_str(), 0640) == 0);
+    OutputDir out = open_dir(dir.path(), true);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+
+    // A symlink is refused by O_NOFOLLOW (ELOOP), a hard link by its second link.
+    const bool hard_link = GENERATE(false, true);
+    CAPTURE(hard_link);
+    mangadex_dl::TempFile temp = make_temp(out, "book.epub", "new content");
+    REQUIRE(temp.sync_and_close().has_value());
+    const fs::path part = dir.path() / the_part_name(dir.path());
+    fs::remove(part);
+    if (hard_link) {
+        fs::create_hard_link(victim, part);
+    } else {
+        fs::create_symlink("victim", part);
+    }
+    const auto outcome = out.publish_replacing(std::move(temp), "book.epub", inspected.identity);
+    REQUIRE(!outcome.has_value());
+    CHECK(outcome.error().code == Errc::failure);
+    CHECK(outcome.error().message.contains("cannot set the mode of 'book.epub': "));
+    CHECK(outcome.error().message.contains(hard_link ? "its temporary file was replaced"
+                                                     : "Too many levels of symbolic links"));
+    CHECK(mode_of(victim) == 0640U);
+    CHECK(read_file(victim) == "victim content");
+    CHECK(read_file(target) == "old content");
+    CHECK(mode_of(target) == 0600U);
+    // The discarded temporary unlinked its name, i.e. the planted link.
+    CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub", "victim"});
+}
+
+TEST_CASE("publish_replacing a failed fchmod discards the temporary and keeps the old file",
+          "[output_dir][existing][mode]") {
+    const bool fallback = GENERATE(false, true);
+    const bool presynced = GENERATE(false, true);
+    CAPTURE(fallback, presynced);
+    const TempDir dir = make_temp_dir();
+    const fs::path target = dir.path() / "book.epub";
+    write_file(target, "old content");
+    REQUIRE(::chmod(target.c_str(), 0600) == 0);
+    OutputDir out = open_dir(dir.path(), fallback);
+    const ExistingHandle inspected = open_regular(out, "book.epub");
+
+    mangadex_dl::TempFile temp = make_temp(out, "book.epub", "new content");
+    if (presynced) {
+        REQUIRE(temp.sync_and_close().has_value());
+    }
+    const testing::ScopedIoError fault{testing::IoStage::chmod, EPERM};
+    const auto outcome = out.publish_replacing(std::move(temp), "book.epub", inspected.identity);
+    REQUIRE(!outcome.has_value());
+    CHECK(outcome.error().code == Errc::failure);
+    CHECK(outcome.error().message.contains("cannot set the mode of 'book.epub'"));
+    CHECK(outcome.error().message.contains("Operation not permitted"));
+    CHECK(read_file(target) == "old content");
+    CHECK(mode_of(target) == 0600U);
+    CHECK(lstat_of(target).st_ino == inspected.identity.inode);
     CHECK(list_dir(dir.path()) == std::vector<std::string>{"book.epub"});
 }

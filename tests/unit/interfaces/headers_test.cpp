@@ -198,6 +198,7 @@ static_assert(std::is_same_v<decltype(md::FileIdentity::inode), ino_t>);
 static_assert(std::is_same_v<decltype(md::FileIdentity::size), off_t>);
 static_assert(std::is_same_v<decltype(md::FileIdentity::mtime_sec), time_t>);
 static_assert(std::is_same_v<decltype(md::FileIdentity::ctime_sec), time_t>);
+static_assert(std::is_same_v<decltype(md::FileIdentity::mode), mode_t>);
 // Indices, never iterators, into the decision's inputs.
 static_assert(std::is_same_v<decltype(md::FinalChapter::held), std::optional<std::size_t>>);
 static_assert(std::is_same_v<decltype(md::FinalChapter::planned), std::size_t>);
@@ -454,7 +455,8 @@ TEST_CASE("FileIdentity compares every field", "[interfaces][fs]") {
                                 .mtime_sec = 4,
                                 .mtime_nsec = 5,
                                 .ctime_sec = 6,
-                                .ctime_nsec = 7};
+                                .ctime_nsec = 7,
+                                .mode = 0600};
     CHECK(base == base);
     CHECK(base != md::FileIdentity{});
     // A ctime-only difference (chmod, link count, an mtime restored after a rewrite) is a change.
@@ -463,6 +465,10 @@ TEST_CASE("FileIdentity compares every field", "[interfaces][fs]") {
     CHECK(touched != base);
     touched = base;
     touched.inode = 9;
+    CHECK(touched != base);
+    // The mode is part of it (a chmod also moves the ctime, so this adds no new "changed").
+    touched = base;
+    touched.mode = 0644;
     CHECK(touched != base);
 }
 
