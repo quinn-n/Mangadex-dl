@@ -30,7 +30,13 @@ struct Io {
     EnvSnapshot env{};
 };
 
-/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot.
+/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot. On the first call it
+/// also installs a RecordingStdioBuf (recording_stdio_buf.hpp) over `stdout` as std::cout's buffer,
+/// for finish_stdout(). That buffer is a function-local static, so it is destroyed only during
+/// static destruction, and its owner puts std::cout's original buffer back first. libstdc++'s final
+/// flush of std::cout (its ios_base::Init, constructed earlier and therefore destroyed later) never
+/// reaches a destroyed buffer, and std::cerr's tie points at the std::cout object, which is never
+/// destroyed.
 [[nodiscard]] Io process_io();
 
 /// SIGPIPE policy A: default disposition and unblocked, even if the parent ignored or blocked it,
@@ -42,8 +48,13 @@ void restore_default_sigpipe() noexcept;
 void last_resort(const char* message) noexcept;
 
 /// Flush stdout and check it on every exit path (gnulib close_stdout analog). On a write error,
-/// prints "mangadex-dl: write error: <reason>" and turns rc 0 into 1. The reason is best-effort
-/// (strerror_r, or "output error" when it is unknown). Never closes stdout or stderr.
+/// prints exactly one "mangadex-dl: write error: <reason>" line and turns rc 0 into 1 (a nonzero rc
+/// passes through). The reason is the strerror_r text of the FIRST failed stdout write or flush,
+/// wherever it happened: a flush forced by a write to the tied std::cerr, an overflow of the stdio
+/// buffer in the middle of the run, or this final flush. With std::cout's buffer from process_io()
+/// that errno is the one RecordingStdioBuf recorded; without it, only this flush's errno is known.
+/// "output error" is the fallback when no errno was ever observed. Never closes stdout or stderr,
+/// never allocates.
 [[nodiscard]] int finish_stdout(int rc) noexcept;
 
 enum class ColorMode {
