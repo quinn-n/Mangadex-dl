@@ -576,10 +576,34 @@ TEST_CASE("parse_untrusted with ParseLimits applies each limit and the error cla
         CHECK(defaults.max_separators == 0);
         CHECK(defaults.code == md::Errc::network);
     }
-    SECTION("nlohmann skips a leading BOM and stops at a raw NUL; parse_manifest checks both") {
-        // Pinned so a change in nlohmann's behaviour is noticed; the API path keeps it as is.
-        CHECK(ju::parse_untrusted("\xEF\xBB\xBF{}", "doc").has_value());
-        CHECK(ju::parse_untrusted(std::string_view{"{}\0junk", 7}, "doc").has_value());
+    SECTION("a leading BOM and a raw NUL are malformed for every caller, with the caller's class") {
+        // nlohmann would skip the BOM and stop at the NUL (accepting `{}` and dropping "junk").
+        constexpr std::string_view bom_doc = "\xEF\xBB\xBF{}";
+        constexpr std::string_view nul_doc{"{}\0junk", 7};
+
+        const auto api_bom = ju::parse_untrusted(bom_doc, "doc");
+        REQUIRE_FALSE(api_bom.has_value());
+        CHECK(api_bom.error() ==
+              md::Error{.code = md::Errc::network,
+                        .message = "malformed MangaDex API response (doc): starts with a UTF-8 "
+                                   "byte order mark"});
+        const auto api_nul = ju::parse_untrusted(nul_doc, "doc");
+        REQUIRE_FALSE(api_nul.has_value());
+        CHECK(api_nul.error() ==
+              md::Error{.code = md::Errc::network,
+                        .message = "malformed MangaDex API response (doc): contains a raw NUL "
+                                   "byte"});
+
+        const ju::ParseLimits failure{.code = md::Errc::failure};
+        const auto doc_bom = ju::parse_untrusted(bom_doc, "doc", failure);
+        REQUIRE_FALSE(doc_bom.has_value());
+        CHECK(doc_bom.error() ==
+              md::Error{.code = md::Errc::failure,
+                        .message = "malformed doc: starts with a UTF-8 byte order mark"});
+        const auto doc_nul = ju::parse_untrusted(nul_doc, "doc", failure);
+        REQUIRE_FALSE(doc_nul.has_value());
+        CHECK(doc_nul.error() == md::Error{.code = md::Errc::failure,
+                                           .message = "malformed doc: contains a raw NUL byte"});
     }
 }
 
