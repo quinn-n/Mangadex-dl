@@ -55,8 +55,6 @@ inline constexpr std::string_view manifest_what = "book manifest";
 //   it), which the plan accepts (D12).
 // The bound test in tests/unit/book_manifest/book_manifest_test.cpp checks this arithmetic.
 
-inline constexpr std::string_view utf8_bom = "\xEF\xBB\xBF";
-
 [[nodiscard]] std::string_view quality_name(ImageQuality quality) noexcept {
     switch (quality) {
     case ImageQuality::data:
@@ -359,14 +357,8 @@ std::string manifest_to_json(const BookManifest& manifest) {
 }
 
 std::expected<BookManifest, ManifestFault> parse_manifest(std::string_view json) {
-    // Two inputs nlohmann accepts that the writer never produces, rejected before the parse (the
-    // byte cap comes first, so the NUL scan is bounded too):
-    // - a leading UTF-8 BOM, which nlohmann skips;
-    // - a raw NUL byte, which nlohmann's lexer takes as the end of input, so `doc\0junk` would
-    //   parse as `doc`. Valid JSON never holds a raw NUL (strings must escape it).
-    if (json.size() > max_manifest_bytes || json.starts_with(utf8_bom) || json.contains('\0')) {
-        return std::unexpected(ManifestFault::malformed);
-    }
+    // parse_untrusted applies the byte cap and rejects a leading BOM and raw NULs for every caller;
+    // all of those come back as malformed here.
     const Result<Json> doc =
         json_util::parse_untrusted(json, manifest_what,
                                    json_util::ParseLimits{
