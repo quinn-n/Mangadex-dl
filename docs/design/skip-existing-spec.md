@@ -7,6 +7,8 @@ Status: APPROVED at the design gate (2026-10-19), with amendment 5. Produced by 
 2. Page reuse now. Held chapters are copied from the old EPUB, and only new ones are downloaded.
 3. No legacy class. The user has no prior files, so a file without a manifest is `foreign`.
 4. Diverged and foreign files give exit 0 plus a warning. The OPF-CRC "changed by another program" guard stays.
+
+**Amendment (user, 2026-10-20): `--overwrite` onto a directory.** A file never replaces a directory. With `--overwrite`, a directory under a planned file's name now fails that file before anything is downloaded for it (`error: <path>: cannot replace a directory; rename or remove it, or use another DIR`; JSON `failed` / `existing: "foreign"`). The run goes on with the other files and ends with exit 6, and `--dry-run` reports it as `would fail`. Before, the publish error (`EISDIR`) ended the whole run with exit 1. A directory that appears between that check and the publish is handled the same way (`PublishOutcome::directory`).
 5. **Re-pick on `--group` (this amends "keep the held release" below).**
    - **When it applies:** only when `--group` was passed, and only to a held release H matched by **number** (not by id) to a planned release P.
    - **The rule:** P replaces H only when P ranks **strictly better** than H under the `--group` priority list.

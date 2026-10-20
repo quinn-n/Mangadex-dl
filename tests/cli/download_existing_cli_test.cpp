@@ -595,17 +595,36 @@ TEST_CASE("download existing cli: a foreign file is left untouched with its reas
     INFO(overwritten.err);
     CHECK(snapshot(scratch) == scratch_before);
     if (which == Foreign::directory) {
-        // A file cannot be renamed over a directory: the publish error ends the run (exit 1, no
-        // document), and the directory stays as it was. Its warning's remedy is "rename or
-        // remove it", not --overwrite.
-        CHECK(overwritten.exit_code == 1);
-        CHECK(overwritten.out.empty());
-        CHECK(overwritten.err == std::format("mangadex-dl: error: cannot publish '{}': Is a "
-                                             "directory\n",
-                                             vol1_name));
+        // A file can never replace a directory: that file fails before anything is downloaded
+        // for it (exit 6), the directory stays as it was, and the run goes on with Vol. 02.
+        const std::string failed_line =
+            std::format("mangadex-dl: error: {}: cannot replace a directory; rename or remove "
+                        "it, or use another DIR\n",
+                        (out / vol1_name).string());
+        CHECK(overwritten.exit_code == 6);
+        CHECK(overwritten.err == failed_line + "mangadex-dl: error: 1 of 2 files failed; run the "
+                                               "same command again to retry them\n");
+        const Json doc_over = document_of(overwritten);
+        const Json failed = epub_for(doc_over, out / vol1_name);
+        CHECK(failed.at("status") == "failed");
+        CHECK(failed.at("existing") == "foreign");
+        CHECK(failed.at("replaced") == false);
+        CHECK(failed.at("error") ==
+              "cannot replace a directory; rename or remove it, or use another DIR");
+        const Json vol2 = epub_for(doc_over, out / vol2_name);
+        CHECK(vol2.at("status") == "written");
+        CHECK(vol2.at("existing") == "unchecked");
+        CHECK(doc_over.at("summary") == summary(1, 0, 1));
         CHECK(node_state(out / vol1_name) == before);
         CHECK(read_file(out / vol2_name) == clean_vol2);
         CHECK(list_dir(out) == both_volumes());
+
+        // --dry-run says the same, and nothing is touched.
+        const Captured dry = run_args(tree.download(out, {"--overwrite", "--dry-run"}));
+        CHECK(dry.exit_code == 6);
+        CHECK(dry.out == (out / vol2_name).string() + "\n");
+        CHECK(dry.err == failed_line + "mangadex-dl: error: 1 of 2 files would fail\n");
+        CHECK(node_state(out / vol1_name) == before);
         return;
     }
     const Json replaced = epub_for(document_of(overwritten), out / vol1_name);

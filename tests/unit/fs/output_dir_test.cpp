@@ -168,13 +168,15 @@ TEST_CASE("output_dir overwrite replaces the content atomically", "[output_dir]"
         CHECK(*outcome == PublishOutcome::written);
         CHECK(read_file(dir.path() / "book.epub") == "new");
     }
-    SECTION("a directory cannot be replaced") {
+    SECTION("a directory is never replaced: PublishOutcome::directory, not an error") {
         fs::create_directory(dir.path() / "book.epub");
+        write_file(dir.path() / "book.epub" / "inside", "kept");
         const auto outcome = write_and_publish(out, "book.epub", "new", true);
-        REQUIRE_FALSE(outcome.has_value());
-        CHECK(outcome.error().code == Errc::failure);
-        CHECK(outcome.error().message.contains("book.epub"));
-        CHECK(fs::is_directory(dir.path() / "book.epub"));
+        REQUIRE(outcome.has_value());
+        CHECK(*outcome == PublishOutcome::directory);
+        CHECK(fs::is_directory(fs::symlink_status(dir.path() / "book.epub")));
+        CHECK(list_dir(dir.path() / "book.epub") == std::vector<std::string>{"inside"});
+        CHECK(read_file(dir.path() / "book.epub" / "inside") == "kept");
     }
     const std::vector<std::string> names = list_dir(dir.path());
     CHECK(std::ranges::none_of(names, [](const std::string& n) { return n.contains(".part-"); }));
@@ -352,6 +354,32 @@ TEST_CASE("output_dir rejects a read-only directory", "[output_dir]") {
     REQUIRE_FALSE(if_exists.has_value());
     CHECK(if_exists.error().message.contains("not writable"));
     CHECK_FALSE(fs::exists(ro / "sub"));
+}
+
+TEST_CASE("output_dir entry_kind tells a directory apart without following symlinks",
+          "[output_dir]") {
+    const TempDir dir = make_temp_dir();
+    OutputDir out = open_dir(dir.path(), false);
+    fs::create_directory(dir.path() / "dir.epub");
+    write_file(dir.path() / "file.epub", "x");
+    fs::create_directory_symlink("dir.epub", dir.path() / "link-to-dir.epub");
+    fs::create_symlink("missing", dir.path() / "dangling.epub");
+
+    const auto kind_of = [&out](std::string_view name) {
+        const auto kind = out.entry_kind(name);
+        REQUIRE(kind.has_value());
+        return *kind;
+    };
+    CHECK(kind_of("missing.epub") == mangadex_dl::EntryKind::absent);
+    CHECK(kind_of("dir.epub") == mangadex_dl::EntryKind::directory);
+    CHECK(kind_of("file.epub") == mangadex_dl::EntryKind::other);
+    // A symlink is replaced, never followed: even one that points at a directory.
+    CHECK(kind_of("link-to-dir.epub") == mangadex_dl::EntryKind::other);
+    CHECK(kind_of("dangling.epub") == mangadex_dl::EntryKind::other);
+
+    const auto bad = out.entry_kind("a/b");
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error().code == Errc::failure);
 }
 
 TEST_CASE("output_dir validates names as single path components", "[output_dir]") {

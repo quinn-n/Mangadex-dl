@@ -344,7 +344,11 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
     UnlinkGuard temp_name{dir, std::move(*linked)};
     const bool existed = name_exists(dir, final_name);
     if (::renameat(dir, temp_name.name().c_str(), dir, final_name.c_str()) != 0) {
-        return std::unexpected(fs_error("cannot publish", final_name, errno));
+        const int err = errno;
+        if (err == EISDIR) {
+            return PublishOutcome::directory; // `temp_name` unlinks the temporary name
+        }
+        return std::unexpected(fs_error("cannot publish", final_name, err));
     }
     temp_name.dismiss();
     return existed ? PublishOutcome::replaced : PublishOutcome::written;
@@ -357,7 +361,11 @@ publish_tmpfile(int tmp_fd, int dir, const std::string& final_name, bool overwri
     if (overwrite) {
         const bool existed = name_exists(dir, final_name);
         if (::renameat(temp_dir, temp_name.c_str(), dir, final_name.c_str()) != 0) {
-            return std::unexpected(fs_error("cannot publish", final_name, errno));
+            const int err = errno;
+            if (err == EISDIR) {
+                return PublishOutcome::directory; // the discard unlinks `temp_name`
+            }
+            return std::unexpected(fs_error("cannot publish", final_name, err));
         }
         temp_name.clear();
         return existed ? PublishOutcome::replaced : PublishOutcome::written;
@@ -726,6 +734,22 @@ Result<bool> OutputDir::exists(std::string_view name) const {
     return std::unexpected(fs_error("cannot check", component, err));
 }
 
+Result<EntryKind> OutputDir::entry_kind(std::string_view name) const {
+    if (!is_component(name)) {
+        return std::unexpected(invalid_name(name));
+    }
+    const std::string component{name};
+    struct stat st{};
+    if (::fstatat(fd_.get(), component.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        return S_ISDIR(st.st_mode) ? EntryKind::directory : EntryKind::other;
+    }
+    const int err = errno;
+    if (err == ENOENT) {
+        return EntryKind::absent;
+    }
+    return std::unexpected(fs_error("cannot check", component, err));
+}
+
 Result<TempFile> OutputDir::create_temp(std::string_view final_name) {
     if (!is_component(final_name)) {
         return std::unexpected(invalid_name(final_name));
@@ -799,7 +823,7 @@ Result<PublishOutcome> OutputDir::publish(TempFile&& temp, std::string_view fina
     Result<PublishOutcome> outcome =
         s.named ? publish_named(s.dir.get(), s.temp_name, fd_.get(), name, overwrite)
                 : publish_tmpfile(s.fd.get(), fd_.get(), name, overwrite);
-    if (outcome && *outcome != PublishOutcome::exists) {
+    if (outcome && (*outcome == PublishOutcome::written || *outcome == PublishOutcome::replaced)) {
         // Best effort: make the new directory entry durable. Some filesystems refuse a directory
         // fsync (EINVAL); the file itself is already synced.
         static_cast<void>(fsync_retry(fd_.get()));

@@ -76,6 +76,19 @@ inline constexpr std::string_view epoch_modified = "1970-01-01T00:00:00Z";
     return Error{.code = Errc::incomplete, .message = std::move(message)};
 }
 
+/// The error of a file whose name is taken by a directory under --overwrite: a file never
+/// replaces a directory, so that file fails and the run goes on.
+inline constexpr std::string_view directory_in_the_way =
+    "cannot replace a directory; rename or remove it, or use another DIR";
+
+/// Marks `outcome` as failed because a directory has its name (--overwrite).
+void fail_for_directory(EpubOutcome& outcome) {
+    outcome.status = EpubStatus::failed;
+    outcome.existing = ExistingKind::foreign;
+    outcome.replaced = false;
+    outcome.error = std::string{directory_in_the_way};
+}
+
 /// Errors that end the whole run rather than one file: a local problem or a stop.
 [[nodiscard]] bool aborts_run(const Error& error) noexcept {
     return error.code == Errc::failure || error.code == Errc::io || error.code == Errc::interrupted;
@@ -708,6 +721,9 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     case PublishOutcome::exists: // created by someone else since the assessment
         outcome.status = EpubStatus::exists;
         return result;
+    case PublishOutcome::directory: // --overwrite, and a directory took the name meanwhile
+        fail_for_directory(outcome);
+        return result;
     }
     // Only reachable through an out-of-range enum value.
     return std::unexpected(internal_error("unknown publish outcome"));
@@ -815,11 +831,16 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         .kept = {},
     };
     if (options.overwrite) {
-        const Result<bool> exists = dir.exists(epub.file_name);
-        if (!exists) {
-            return std::unexpected(exists.error());
+        const Result<EntryKind> found = dir.entry_kind(epub.file_name);
+        if (!found) {
+            return std::unexpected(found.error());
         }
-        result.outcome.existing = *exists ? ExistingKind::unchecked : ExistingKind::none;
+        if (*found == EntryKind::directory) {
+            fail_for_directory(result.outcome); // before anything is downloaded for it
+            return result;
+        }
+        result.outcome.existing =
+            *found == EntryKind::absent ? ExistingKind::none : ExistingKind::unchecked;
         return produce_fresh(ctx, planned, dir, index, std::move(result));
     }
 
@@ -867,12 +888,16 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     EpubOutcome& outcome = result.outcome;
     bool replaces = false;
     if (dir != nullptr && options.overwrite) {
-        const Result<bool> found = dir->exists(epub.file_name);
+        const Result<EntryKind> found = dir->entry_kind(epub.file_name);
         if (!found) {
             return std::unexpected(found.error());
         }
-        replaces = *found;
-        outcome.existing = *found ? ExistingKind::unchecked : ExistingKind::none;
+        if (*found == EntryKind::directory) {
+            fail_for_directory(outcome);
+            return result;
+        }
+        replaces = *found != EntryKind::absent;
+        outcome.existing = replaces ? ExistingKind::unchecked : ExistingKind::none;
     } else if (dir != nullptr) {
         const Result<Assessment> assessed =
             assess(*dir, epub, options.groups, options.quality, /*real_run=*/false);
