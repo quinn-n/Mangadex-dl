@@ -831,6 +831,33 @@ TEST_CASE("batch: a re-run rebuilds grown files and counts only the up-to-date o
     CHECK(fs_util::read_file(out / "a" / clean_vol1) == old_vol1);
 }
 
+TEST_CASE("batch --json: a re-run still counts the up-to-date files in the note",
+          "[cli][batch][update][json]") {
+    const Tree tree{mdx::clean_fixture()};
+    const Tree reuse_only{mdx::clean_grown_reuse_only_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path list = tree.csv("rows.csv", std::format("manga,dir\n{0},a\n{0},b\n", clean_id));
+    REQUIRE(run_command(tree.args(list, out)).exit_code == 0);
+
+    // With --json each row's report is moved into the document: the note must be counted first.
+    md::RawBatchArgs again_args = tree.args(list, out);
+    again_args.defaults.api_base = reuse_only.api_base();
+    const Captured r = run_command(again_args, Context{.globals = {.json = true}});
+    CHECK(r.exit_code == 0);
+    CHECK(r.err == "mangadex-dl: 2 files are already up to date; pass --overwrite to download "
+                   "them again\n");
+    const Json doc = parse_document(r.out);
+    REQUIRE(!doc.is_discarded());
+    for (const Json& title : doc.at("titles")) {
+        const Json& epubs = title.at("report").at("epubs");
+        REQUIRE(epubs.size() == 2);
+        CHECK(epubs.at(0).at("status") == "exists");
+        CHECK(epubs.at(0).at("existing") == "complete");
+        CHECK(epubs.at(1).at("status") == "written");
+        CHECK(epubs.at(1).at("existing") == "incomplete");
+    }
+}
+
 TEST_CASE("batch: row lines carry '<file>:<line>: '; -q keeps errors and the closing line",
           "[cli][batch]") {
     const Tree tree{mdx::nochapters_fixture()};

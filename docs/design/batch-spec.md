@@ -6,6 +6,17 @@ rev1 (fact-check) 2026-10-18: every [VERIFY] item CONFIRMED (plan clusters A–D
 **behaviour change for the plan gate**: a row-scoped `dir` failure fails only that row, and the batch continues.
 rev2 (board polish) 2026-10-19: message and help wording only, approved after the feature board; marked
 **rev2 (board polish)** inline and summarised at the end. No exit code, flag or JSON field changes.
+**Re-runs (2026-10-20, merge with skip-existing):** a batch row now re-runs exactly as `download`
+does under [`skip-existing-spec.md`](skip-existing-spec.md): files that hold every chapter are
+skipped, grown files are rebuilt with page reuse, diverged or foreign files are left alone with a
+warning. This supersedes the help footer's re-run paragraph (line "Running the same command
+again ..."), the `--overwrite` help (now "Re-download files even if up to date", shared with
+`download`), and the aggregated "N files already exist" warning of "Input & output" and AC13: the
+end-of-batch line is now `download`'s note `N files are already up to date; pass --overwrite to
+download them again` (no `warning:`, never colored, not with `-q`), counting only files left alone
+as up to date (`existing == complete`). JSON per-row reports gain `existing`, `new_chapters` and
+`reused_chapters` (additive, `format_version` 1); `files.exists` counts every file left alone,
+diverged and foreign ones included. No exit code or flag changes.
 
 **Intent:** run the existing `download` engine once for each title listed in a CSV file (or on
 stdin), in file order. The CSV can override a few per-title options on each row. The run ends with

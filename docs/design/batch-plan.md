@@ -2,6 +2,8 @@
 
 Status: APPROVED 2026-10-18 at the ⏸ plan gate (rev1 incl. row-scoped dir failure → continue).
 
+Superseded in part (2026-10-20): `exists_notice()` and the `Σ files.exists` end-of-batch warning were replaced, when skip-existing was merged, by `up_to_date_notice()` (in `report.hpp`) and an uncolored note counting only up-to-date files; see the "Re-runs" amendment in `batch-spec.md`.
+
 Design: `docs/design/batch-spec.md` (APPROVED 2026-10-18). Its gate decisions are binding: Q1 `batch` subcommand; Q2 a `download --help` footer line pointing to `batch`; Q3 a uniform code when every failure is alike, else 7; Q4 stop after 3 consecutive network-failed titles; Q5 one JSON document at the end; Q6 no `--check`; Q7 `group` separator `|`, ignored `note` column; Q8 empty list = exit 0 plus a warning.
 
 ## rev1 (fact-check), 2026-10-18
