@@ -12,6 +12,8 @@
 #   dev     every other package in the env (the build toolchain and its deps); grype -c
 #           audit/grype-dev.yaml (pinned, reasoned ignores), fails on >= high by default
 # --scope picks one half (default: all = both); --fail-on overrides both thresholds.
+# Before grype runs, audit/cpe-overrides.json gives binary-half packages whose conda names map to no
+# NVD product real CPEs (the static libstdc++/libgcc are matched as gnu:gcc).
 # Always prints a coverage statement per scope. Exit: nonzero on findings at/above a threshold (or
 # a tool error); 0 with a stated no-op when syft/grype/jq are absent. Never installs anything.
 set -uo pipefail
@@ -169,7 +171,7 @@ for s in binary dev; do
 done
 
 # Give the binary half real CPEs where the conda name maps to none (audit/cpe-overrides.json says
-# why each one is, or is not, mapped). Every override must hit exactly one binary-scope package, so
+# why each one is, or is not, mapped). Every override must name a conda package in the binary scope, so
 # a renamed or dropped package cannot silently fall back to the unmatchable syft-generated CPEs.
 unhit=$(jq -r --slurpfile o "$cpe_overrides" '
   ($o[0].overrides | keys) - [.artifacts[] | select(.type == "conda") | .name] | .[]' "$out_dir/sbom-binary.json") || {

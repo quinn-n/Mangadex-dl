@@ -10,6 +10,8 @@
 # (audit/cpe-overrides.json). Per its NVD record it is a -fstack-protector gap only in GCC toolchains
 # that TARGET AArch64 (CPE target_hw arm64), and it is DISPUTED (the GCC project calls it a missed
 # hardening bug). This project builds for linux-64 only (pixi.toml platforms), so it does not apply.
+# Independently, grype's constraint for it is a date ("< 2023-09-12"), which it cannot order against
+# a version like 16.2.0, and the fix landed years before gcc 16.
 ignore:
   - vulnerability: CVE-2023-4039 # Medium
     package: { name: libgcc-devel_linux-64, version: "16.2.0", type: conda }

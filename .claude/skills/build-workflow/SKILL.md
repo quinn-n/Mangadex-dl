@@ -43,7 +43,7 @@ Supporting files (read by `/setup`, not standalone skills): `scaffold.md` (CMake
 | `bless <regex>` | re-bless E2E goldens (human-approved; `cpp-testing`) |
 | `cov` | report-only clang coverage (`cov` preset) |
 | `binary-packages` (`--update`) | conda packages compiled/linked into the release binary (ninja header deps + the `MANGADEX_DL_LINK_DEPFILE` linker depfile), checked against `audit/binary-packages.txt`; a stated skip in the gcc env |
-| `audit` | syft + grype over the installed env, split by `audit/binary-packages.txt` into a binary and a dev scope, with a coverage statement per scope |
+| `audit` | syft + grype over the installed env, split by `audit/binary-packages.txt` into a binary and a dev scope (the binary half gets `audit/cpe-overrides.json` CPEs before grype), with a coverage statement per scope |
 | `package` | `cpack --preset release` after `release-test` (default env only) |
 | optional `tsan`, `fuzz`, `man` | commented in `pixi.example.toml`; enable when needed |
 
