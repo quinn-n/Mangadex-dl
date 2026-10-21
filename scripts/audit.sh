@@ -25,6 +25,7 @@ done
 case "$fail_on" in negligible | low | medium | high | critical) ;; *) echo "audit: bad severity '$fail_on'" >&2; exit 2 ;; esac
 
 target=".pixi/envs/default"
+config="audit/grype.yaml" # pinned, reasoned ignores; explicit -c also stops ./.grype.yaml / ~/.grype.yaml discovery
 out_dir=".platform-runs/audit"
 sbom="$out_dir/sbom.json"
 
@@ -49,6 +50,10 @@ if [[ $have_syft -eq 0 || $have_grype -eq 0 ]]; then
   echo "audit: NO-OP -- ${missing[*]} not on PATH; nothing was scanned. Install them yourself (they are not installed by this task) or rely on the scheduled CI audit job."
   exit 0
 fi
+if [[ ! -f $config ]]; then
+  echo "audit: $config is missing" >&2
+  exit 1
+fi
 if [[ ! -d $target ]]; then
   echo "audit: $target does not exist -- run 'pixi install' first" >&2
   exit 1
@@ -68,11 +73,11 @@ syft "$target" --select-catalogers=+conda-meta-cataloger --output "syft-json=$sb
 # Capture first: under pipefail, `grype --help | grep -q` can report grype's SIGPIPE when grep exits early.
 grype_help=$(grype --help 2>&1 || true)
 if grep -q -- '--fail-on' <<<"$grype_help"; then
-  grype "$sbom" --fail-on "$fail_on"
+  grype -c "$config" "$sbom" --fail-on "$fail_on"
   status=$?
 else
   echo "audit: WARNING: this grype has no --fail-on; findings are listed but cannot fail the task" >&2
-  grype "$sbom"
+  grype -c "$config" "$sbom"
   status=$?
 fi
 echo "audit: SBOM kept at $sbom"
