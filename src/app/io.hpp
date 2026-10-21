@@ -28,9 +28,10 @@ struct Io {
     bool stdout_tty = false;
     bool stderr_tty = false;
     EnvSnapshot env{};
+    int stdin_fd = -1; ///< fd to read stdin from; borrowed, never closed; -1 = closed (the default)
 };
 
-/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot.
+/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0.
 [[nodiscard]] Io process_io();
 
 /// SIGPIPE policy A: default disposition and unblocked, even if the parent ignored or blocked it,
@@ -45,6 +46,12 @@ void last_resort(const char* message) noexcept;
 /// prints "mangadex-dl: write error: <reason>" and turns rc 0 into 1. The reason is best-effort
 /// (strerror_r, or "output error" when it is unknown). Never closes stdout or stderr.
 [[nodiscard]] int finish_stdout(int rc) noexcept;
+
+/// Records the errno of a failed mid-run flush of stdout (io.out) for finish_stdout. After a
+/// failed write the buffered bytes are dropped, so the flush at exit succeeds and the reason would
+/// otherwise be lost. The first nonzero value wins; 0 is ignored; finish_stdout uses it only when
+/// its own flush reports no errno, and clears it.
+void note_stdout_errno(int err) noexcept;
 
 enum class ColorMode {
     automatic,

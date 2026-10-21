@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Private testing seam for src/core/fs/output_dir.cpp (download plan T8). Not part of the public
-// interface: only output_dir.cpp and the unit tests include it. Each switch is a process-wide
-// fault injection that forces one of the fallback paths a normal Linux test machine never takes
-// (a filesystem without O_TMPFILE or RENAME_NOREPLACE, a system without /proc).
+// Private testing seam for src/core/fs/output_dir.cpp (download plan T8, skip-existing plan T6,
+// IoStage::chmod from the mode-preserving replace).
+// Not part of the public interface: only output_dir.cpp and the unit tests include it. Each switch
+// is a process-wide fault injection that forces one of the paths a normal Linux test machine never
+// takes (a filesystem without O_TMPFILE or RENAME_NOREPLACE, a system without /proc, a name that
+// changes type between two system calls).
 //
 // The switches are atomics, so flipping one is never a data race, but they are global: set them
 // only from single-threaded test code, and restore them (ScopedOutputDirFault) before the test
@@ -26,12 +28,19 @@ void force_renameat2_unsupported(bool on) noexcept;
 /// temporary fails with Errc::failure.
 void force_proc_unavailable(bool on) noexcept;
 
+/// While on, OutputDir::open_existing skips its fstatat pre-check and goes straight to openat
+/// (skip-existing plan T6), so tests reach the openat errno mapping (ELOOP for a symlink, ENXIO for
+/// a socket) and the post-open fstat re-check (a directory or FIFO opens, then is closed again).
+void force_skip_existing_precheck(bool on) noexcept;
+
 /// The TempFile system calls force_io_error can fail.
 enum class IoStage {
     write, ///< write(2) of buffered or direct data
-    fsync, ///< fsync(2) of the temporary in sync_and_close()
+    fsync, ///< fsync(2) of the temporary in sync_and_close(), and the re-sync after the fchmod of
+           ///< a temporary the caller already synced, in publish_replacing()
     close, ///< close(2) of a named fallback temporary in sync_and_close() (O_TMPFILE never closes
            ///< there: its descriptor is needed for the publishing linkat)
+    chmod, ///< fchmod(2) of the temporary in publish_replacing() (keeping the old file's mode)
 };
 
 /// While `err` is nonzero, every TempFile call of `stage` fails with errno `err` (ENOSPC, EIO,

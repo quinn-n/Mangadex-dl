@@ -5,6 +5,7 @@
 #pragma once
 
 #include "mangadex_dl/attributes.hpp"
+#include "mangadex_dl/book_manifest.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/image.hpp"
 #include "mangadex_dl/model.hpp"
@@ -19,6 +20,26 @@
 #include <vector>
 
 namespace mangadex_dl {
+
+/// The package document's zip entry name.
+inline constexpr std::string_view opf_entry_name = "OEBPS/content.opf";
+
+/// The zip entry name of the page image at 0-based `index`: `OEBPS/images/p00001.<ext>` for 0.
+/// The single naming source for the writer and the manifest.
+[[nodiscard]] std::string page_image_entry(std::size_t index, MediaType type);
+
+/// The zip entry name of the cover image: `OEBPS/images/cover.<ext>`.
+[[nodiscard]] std::string cover_image_entry(MediaType type);
+
+/// One chapter of a book being finished with a manifest: its record (images left empty; finish
+/// fills them) and the pages it covers, [first_page, first_page + page_count) in add_page order.
+struct EpubBookChapter {
+    ManifestChapter record{};
+    std::size_t first_page = 0;
+    std::size_t page_count = 0;
+
+    friend bool operator==(const EpubBookChapter&, const EpubBookChapter&) = default;
+};
 
 /// One table-of-contents entry (a chapter).
 struct EpubNavEntry {
@@ -74,8 +95,17 @@ public:
     /// Records a navigation entry; written out by finish().
     void add_nav_entry(EpubNavEntry entry);
 
-    /// Writes content.opf, nav.xhtml and toc.ncx. Does not finish the ZipWriter.
+    /// Writes content.opf, nav.xhtml and toc.ncx. Does not finish the ZipWriter. Writes no
+    /// manifest (tests and callers that do not need one).
     [[nodiscard]] Result<void> finish();
+
+    /// Like finish(), then writes the manifest (manifest_entry_name) as the last entry: the
+    /// identifier, the CRC-32 of the exact content.opf bytes, the cover (only when a cover was
+    /// added and `cover_file_name` is set; else null) and `chapters` with their image entry names
+    /// filled from the pages added. The page ranges must tile every added page exactly, in order;
+    /// otherwise Errc::failure before anything is written.
+    [[nodiscard]] Result<void> finish(std::optional<std::string> cover_file_name,
+                                      std::vector<EpubBookChapter> chapters);
 
 private:
     struct State;

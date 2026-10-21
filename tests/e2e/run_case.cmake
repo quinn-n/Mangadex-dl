@@ -23,6 +23,11 @@
 #   {{WORK}} and run right after the tool exits, before the driver writes any file of its own there.
 #   EXPECT_EPUB is byte-level here; extraction runs in a child `cmake -P epub_extract_check.cmake`,
 #   because file(ARCHIVE_EXTRACT) on a corrupt archive is a fatal error that would abort this script.
+# - PRE_RUN runs `<tool> <args>` once before the main command: same hermetic env (ENV overrides
+#   included), same {{WORK}}, stdin /dev/null, output kept in variables only. It must exit 0 with no
+#   sanitizer marker on stderr, and every EXPECT_UNCHANGED file must then be a regular file; otherwise
+#   the case fails at once ("pre-run failed ...") and the main command never runs.
+# - EXPECT_UNCHANGED compares file(SHA256) after the pre-run with file(SHA256) after the main run.
 
 cmake_minimum_required(VERSION 3.31...4.4)
 
@@ -95,6 +100,23 @@ foreach(_item IN LISTS CASE_ENV)
   endif()
 endforeach()
 
+# Why an exit code is suspicious: shared by the pre-run and the main-run reports.
+function(_explain_exit out code)
+  set(_why "")
+  if(code STREQUAL "86")
+    set(_why " (86 = the reserved sanitizer exit code: a sanitizer finding)")
+  elseif(code STREQUAL "70")
+    set(_why " (70 = internal error: an exception reached main)")
+  elseif(code MATCHES "^(134|139)$" OR code MATCHES "Segmentation fault|Subprocess aborted|SIG")
+    set(_why " (a crash or signal death)")
+  elseif(code MATCHES "timeout")
+    set(_why " (the case exceeded TIMEOUT ${CASE_TIMEOUT}s)")
+  elseif(code MATCHES "^(10[0-9]|11[0-4])$")
+    set(_why " (100-114: a raw CLI11 parse code leaked; map ParseError to 2)")
+  endif()
+  set(${out} "${_why}" PARENT_SCOPE)
+endfunction()
+
 # ---- 2. the command ------------------------------------------------------------------------------
 set(_argv "${_tool}")
 foreach(_a IN LISTS CASE_ARGS)
@@ -131,12 +153,7 @@ if(NOT _wrap_pre STREQUAL "" OR NOT _wrap_post STREQUAL "")
   set(_cmd sh -c "${_wrap_pre}exec \"$0\" \"$@\"${_wrap_post}" ${_argv})
 endif()
 
-set(_out "")
-set(_err "")
-set(_rc "")
-set(_head_rc "0")
-# The tool runs in {{WORK}}; make sure it exists right before every WORKING_DIRECTORY use below.
-file(MAKE_DIRECTORY "${CASE_WORK_DIR}")
+# A TTY case without a usable util-linux script(1) is skipped (77) before anything runs, pre-run included.
 if(CASE_TTY)
   find_program(_script NAMES script)
   set(_script_ok FALSE)
@@ -150,6 +167,70 @@ if(CASE_TTY)
     message(STATUS "${CASE_TEST}: SKIPPED: util-linux script(1) not found; the pseudo-TTY case cannot run here")
     cmake_language(EXIT 77)
   endif()
+endif()
+
+# ---- 2a. the pre-run (PRE_RUN): one earlier run that prepares {{WORK}} ------------------------------
+list(LENGTH CASE_PRE_RUN _pre_run_count)
+set(_pre_shown "")
+set(_pre_rc "")
+set(_unchanged_before "")   # one SHA-256 per EXPECT_UNCHANGED item, in order
+if(CASE_EXPECT_UNCHANGED AND _pre_run_count EQUAL 0)
+  message(FATAL_ERROR "${CASE_TEST}: EXPECT_UNCHANGED needs PRE_RUN (cli_e2e_case() rejects this spec)")
+endif()
+if(_pre_run_count GREATER 0)
+  set(_pre_argv "${_tool}")
+  foreach(_a IN LISTS CASE_PRE_RUN)
+    _expand(_a "${_a}")
+    list(APPEND _pre_argv "${_a}")
+  endforeach()
+  list(JOIN _pre_argv "' '" _pre_shown)
+  set(_pre_out "")
+  set(_pre_err "")
+  file(MAKE_DIRECTORY "${CASE_WORK_DIR}")
+  execute_process(COMMAND ${_pre_argv}
+                  WORKING_DIRECTORY "${CASE_WORK_DIR}"
+                  INPUT_FILE /dev/null
+                  OUTPUT_VARIABLE _pre_out ERROR_VARIABLE _pre_err RESULT_VARIABLE _pre_rc
+                  TIMEOUT ${CASE_TIMEOUT})
+  set(_pre_fail "")
+  if(NOT "${_pre_rc}" STREQUAL "0")
+    _explain_exit(_why "${_pre_rc}")
+    string(APPEND _pre_fail "\n  - pre-run failed (exit ${_pre_rc}${_why}): a PRE_RUN must exit 0")
+  endif()
+  if(_pre_err MATCHES "${_marker_re}")
+    string(APPEND _pre_fail "\n  - pre-run failed (exit ${_pre_rc}): sanitizer marker on its stderr ('${CMAKE_MATCH_0}')")
+  endif()
+  if(_pre_fail STREQUAL "")
+    foreach(_rel IN LISTS CASE_EXPECT_UNCHANGED)
+      set(_p "${CASE_WORK_DIR}/${_rel}")
+      if(IS_SYMLINK "${_p}" OR NOT EXISTS "${_p}" OR IS_DIRECTORY "${_p}")
+        string(APPEND _pre_fail "\n  - pre-run failed (exit 0): EXPECT_UNCHANGED '${_rel}' is not a regular file under {{WORK}} after it")
+      else()
+        file(SHA256 "${_p}" _sum)
+        list(APPEND _unchanged_before "${_sum}")
+      endif()
+    endforeach()
+  endif()
+  if(NOT _pre_fail STREQUAL "")
+    string(SUBSTRING "${_pre_out}" 0 4000 _pre_out_head)
+    string(SUBSTRING "${_pre_err}" 0 4000 _pre_err_head)
+    message(FATAL_ERROR "${CASE_TEST} FAILED${_pre_fail}\n"
+                        "pre-run command: '${_pre_shown}'\n"
+                        "pre-run exit: ${_pre_rc}\n"
+                        "--- pre-run stdout (first 4000 bytes) ---\n${_pre_out_head}\n"
+                        "--- pre-run stderr (first 4000 bytes) ---\n${_pre_err_head}\n"
+                        "(the main command was not run)\n")
+  endif()
+endif()
+
+# ---- 2b. the main command -------------------------------------------------------------------------
+set(_out "")
+set(_err "")
+set(_rc "")
+set(_head_rc "0")
+# The tool runs in {{WORK}}; make sure it exists right before every WORKING_DIRECTORY use below.
+file(MAKE_DIRECTORY "${CASE_WORK_DIR}")
+if(CASE_TTY)
   # Build a shell-quoted command line for `script -c`.
   set(_line "")
   foreach(_a IN LISTS _cmd)
@@ -192,22 +273,6 @@ macro(_fail_with msg)
   string(APPEND _fail "\n  - ${msg}")
 endmacro()
 
-function(_explain_exit out code)
-  set(_why "")
-  if(code STREQUAL "86")
-    set(_why " (86 = the reserved sanitizer exit code: a sanitizer finding)")
-  elseif(code STREQUAL "70")
-    set(_why " (70 = internal error: an exception reached main)")
-  elseif(code MATCHES "^(134|139)$" OR code MATCHES "Segmentation fault|Subprocess aborted|SIG")
-    set(_why " (a crash or signal death)")
-  elseif(code MATCHES "timeout")
-    set(_why " (the case exceeded TIMEOUT ${CASE_TIMEOUT}s)")
-  elseif(code MATCHES "^(10[0-9]|11[0-4])$")
-    set(_why " (100-114: a raw CLI11 parse code leaked; map ParseError to 2)")
-  endif()
-  set(${out} "${_why}" PARENT_SCOPE)
-endfunction()
-
 # ---- 3a. files under {{WORK}} (first: nothing below has written into {{WORK}} yet) -------------------
 foreach(_rel IN LISTS CASE_EXPECT_FILES)
   set(_p "${CASE_WORK_DIR}/${_rel}")
@@ -237,6 +302,22 @@ else()
     endif()
   endforeach()
 endif()
+
+# EXPECT_UNCHANGED: same bytes as right after the pre-run (2a hashed each one, in order).
+set(_unchanged_index 0)
+foreach(_rel IN LISTS CASE_EXPECT_UNCHANGED)
+  list(GET _unchanged_before ${_unchanged_index} _before)
+  math(EXPR _unchanged_index "${_unchanged_index} + 1")
+  set(_p "${CASE_WORK_DIR}/${_rel}")
+  if(IS_SYMLINK "${_p}" OR NOT EXISTS "${_p}" OR IS_DIRECTORY "${_p}")
+    _fail_with("EXPECT_UNCHANGED: '${_rel}' is no longer a regular file under {{WORK}}")
+    continue()
+  endif()
+  file(SHA256 "${_p}" _after)
+  if(NOT _after STREQUAL _before)
+    _fail_with("EXPECT_UNCHANGED: '${_rel}' changed (SHA-256 ${_before} after the pre-run, ${_after} now)")
+  endif()
+endforeach()
 
 # EXPECT_EPUB: byte-level OCF checks, then extraction in a child process.
 string(HEX "application/epub+zip" _mimetype_hex)
@@ -464,7 +545,12 @@ if(NOT _fail STREQUAL "")
   string(SUBSTRING "${_out}" 0 4000 _out_head)
   string(SUBSTRING "${_err}" 0 4000 _err_head)
   list(JOIN _cmd "' '" _shown)
+  set(_pre_line "")
+  if(_pre_run_count GREATER 0)
+    set(_pre_line "pre-run: '${_pre_shown}' (exit ${_pre_rc}, ok)\n")
+  endif()
   message(FATAL_ERROR "${CASE_TEST} FAILED${_fail}\n"
+                      "${_pre_line}"
                       "command: '${_shown}'\n"
                       "exit: ${_rc}\n"
                       "--- stdout (first 4000 bytes) ---\n${_out_head}\n"

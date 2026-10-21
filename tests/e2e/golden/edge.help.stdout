@@ -15,6 +15,7 @@ OPTIONS:
 
 SUBCOMMANDS:
   download                          Download a MangaDex title as EPUB files
+  batch                             Download every title listed in a CSV file
 
 Exit status:
   0   success
@@ -24,4 +25,5 @@ Exit status:
   4   title not found on MangaDex
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
+  7   batch: titles failed in more than one way (see the per-title results)
   70  internal error (a bug: please report it)

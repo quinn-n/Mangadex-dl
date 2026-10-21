@@ -163,9 +163,9 @@ The contract `audit.sh` must keep:
 1. **Probe first.** If `syft`, `grype` or `jq` is missing, print what is missing, print the coverage statement saying nothing was scanned, and **exit 0 as a stated no-op**. **Never install anything.**
 2. **Always print a coverage statement** per scope, whatever the result, and quote it in reviews verbatim. It must say:
    - the tool names and versions (read at run time);
-   - what was scanned: the conda packages of that scope in the `default` env, which is the one the release artifact is built from;
-   - that matching is **CPE-heuristic**: Syft emits CPEs, not PURLs, for conda packages, so expect false positives and misses;
-   - what is **NOT covered**: host/system libraries such as the target machine's glibc, vendored or FetchContent code, and `pixi.lock` itself. **Dependabot doesn't update `pixi.lock`, and GitHub's dependency graph doesn't read it.**
+   - what was scanned: the conda packages of that scope in the `default` env, which is the one the release artifact is built from (for `dev`: that they are build toolchain only and never ship);
+   - that matching is **CPE-heuristic**: Syft emits CPEs, not PURLs, for conda packages, so expect false positives and misses. Say plainly that the statically linked toolchain runtime (libstdc++/libgcc/sysroot packages) is effectively not matched, because their conda names map to no NVD product;
+   - what is **NOT covered**: host/system libraries such as the target machine's glibc and the user's own libcurl (dlopen()ed at run time), vendored or FetchContent code, and `pixi.lock` itself. **Dependabot doesn't update `pixi.lock`, and GitHub's dependency graph doesn't read it.**
 3. **Exit nonzero on findings** at or above the configured threshold. A tool error is nonzero too.
 4. Keep the SBOM under `.platform-runs/audit/`, which is never committed.
 

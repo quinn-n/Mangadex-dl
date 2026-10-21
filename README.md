@@ -4,6 +4,7 @@ Downloads volumes and chapters from MangaDex and converts them into .epub or .pd
 
 `mangadex-dl download` takes a MangaDex title and writes fixed-layout EPUB 3 files: by default
 one `.epub` per volume, plus one per chapter that has no volume ("loose" chapters).
+`mangadex-dl batch` does the same for every title listed in a CSV file.
 
 > **Status:** EPUB output only. PDF output is planned but not available yet.
 
@@ -13,6 +14,8 @@ one `.epub` per volume, plus one per chapter that has no volume ("loose" chapter
 - [Building](#building)
 - [Usage](#usage)
 - [Examples](#examples)
+- [Running again](#running-again)
+- [Many titles: `batch`](#many-titles-batch)
 - [Output](#output)
 - [Exit status](#exit-status)
 - [Network behaviour](#network-behaviour)
@@ -66,7 +69,7 @@ mangadex-dl download <MANGA> [DIR] [OPTIONS]
 | `--data-saver` | off | Download MangaDex's compressed images instead of the originals. |
 | `--direction WORD` | `auto` | Page progression: `auto` (right-to-left for Japanese originals, left-to-right otherwise), `rtl` or `ltr`. |
 | `--title TEXT` | from MangaDex | Title used in file names and EPUB metadata. |
-| `--overwrite` | off | Replace existing files instead of skipping them. |
+| `--overwrite` | off | Re-download files even if up to date (see [Running again](#running-again)). |
 | `-n, --dry-run` | off | Show what would be written; download and write nothing. |
 | `-j, --jobs N` | `4` | Parallel image downloads, 1 to 8. |
 | `--no-report` | off | Don't send image-server reliability reports to MangaDex@Home (see [below](#mangadexhome-reports)). |
@@ -142,17 +145,307 @@ mangadex-dl download <uuid> --layout chapters --lang pt-br --group "Some Scans"
 mangadex-dl download <uuid> --dry-run --json
 ```
 
-Running the same command again skips the files that already exist (exit 0), so an interrupted
-run can simply be restarted.
+Running the same command again skips files that already hold every chapter and rebuilds a file
+when MangaDex has added chapters to it, downloading only the new ones, so an interrupted run can
+be restarted and a series kept up to date. See [Running again](#running-again).
+
+## Running again
+
+Before it writes a file, `mangadex-dl` looks at the file of that name already in `DIR`, if any:
+
+| Existing file | What happens | JSON `status` / `existing` |
+|---|---|---|
+| none | written | `written` / `null` |
+| made by `mangadex-dl`, holds every chapter this run would put in it (and maybe more) | skipped ("up to date") | `exists` / `"complete"` |
+| made by `mangadex-dl`, only lacks some chapters | rebuilt and replaced: the chapters it holds are copied from it, only the missing ones are downloaded | `written`, `replaced: true` / `"incomplete"` |
+| made by `mangadex-dl`, lacks chapters **and** holds chapters MangaDex no longer lists | left alone, with a warning | `exists` / `"diverged"` |
+| anything else (see [Files left alone](#files-left-alone)) | left alone, with a warning | `exists` / `"foreign"` |
+
+With **`--overwrite`** none of this applies: every existing file is downloaded again in full
+and replaced, without being looked at (`existing: "unchecked"`).
+
+The run still exits 0 when files are skipped or left alone. Files that are up to date are
+counted in one closing note on stderr (not shown with `-q`, never colored):
+
+```
+mangadex-dl: 3 files are already up to date; pass --overwrite to download them again
+```
+
+With exactly one file the note reads
+`mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`.
+
+Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
+
+### How chapters are matched
+
+- A chapter counts as held when the file has the same MangaDex chapter (the same id), or else a
+  chapter with the same volume and chapter number (`7`, `07` and `7.0` are the same number). A
+  chapter without a number is matched by its id only. A chapter that had no volume and was
+  later given one still counts as held.
+- **The release in the file is kept.** When the file holds a chapter in another release than
+  the one this run picks (for example, because another group's release now comes first), the
+  release in the file is kept and nothing held is downloaded again. `epubs[].chapters` in
+  `--json` lists the release the file holds, and `skipped_chapters` names it as the `kept`
+  release. `-v` prints
+  `<path>: Vol. 1 Ch. 1: kept the release already in the file (<held id>) instead of <plan id>`.
+- **`--group` re-picks a chapter** only when you pass `--group`, and only when the release this
+  run picks ranks **strictly better** under the `--group` list than the release in the file. A
+  release ranks by the first `--group` entry that matches one of its groups; a release that
+  matches none ranks last. Equal ranks, including two releases that match no `--group`, keep the
+  release in the file, so a file never flips between two equally ranked releases. A re-picked
+  chapter counts as missing: the file is rebuilt, the other chapters are reused and the new
+  release is downloaded. `-v` prints
+  `<path>: Vol. 1 Ch. 1: replacing the release in the file (<group>) with the release by <group> (--group)`.
+- **Image quality is not compared.** A rebuilt file can mix original (`data`) and `--data-saver`
+  chapters; each chapter's quality is recorded in the file. Switching `--data-saver` on or off
+  does not rebuild anything by itself; use `--overwrite` for that.
+- Only the chapter list is compared. The pages of a file that is up to date are not checked, and
+  a chapter whose pages changed on MangaDex under the same id or number is not downloaded again.
+- Files are found by name. A different `--title` gives different names, so the files are
+  downloaded afresh and the old ones stay in `DIR`; `mangadex-dl` does not clean up the old
+  ones.
+
+### Rebuilding a file
+
+- A rebuilt file is byte for byte the file a fresh download of the same chapter releases and
+  image quality into an empty `DIR` would give, whatever `--jobs` is. It replaces the old file
+  atomically (see [Interruption and file safety](#interruption-and-file-safety)).
+- Before the rebuild, every page to be reused is read and checked (its CRC-32 and its image
+  header). A chapter with a damaged page is downloaded again instead, with
+  `mangadex-dl: warning: <path>: Ch. 3 in the existing file is damaged; downloading it again`.
+- The cover is copied from the old file when MangaDex still lists the same cover image;
+  otherwise it is downloaded (a failure to do so is only a warning, as for new files).
+- If the update fails (a new chapter cannot be downloaded, or the old file changes or cannot be
+  read while it is being copied), the file counts as failed (exit 6), the old file is kept
+  unchanged, and the error ends with ` (the existing file was kept)`, for example
+  `mangadex-dl: error: <path>: the existing file changed or could not be read during the update (the existing file was kept)`.
+  Ctrl-C and `SIGTERM` during an update also leave the old file unchanged.
+- With `-v`, each file gets one line: `<path>: up to date (N chapters)` (`(1 chapter)` for one), or
+  `updating <path>: downloading 1 chapter (Ch. 4), reusing 2`. The labels name the chapters to
+  download: at most five, then `and K more`.
+- With `--dry-run`, existing files are looked at the same way, but only the zip directory and
+  the manifest are read, never the pages, so the real run may still find a damaged chapter. A file
+  that would be updated is listed on stdout, with `-v` as
+  `would update <path> (download 1 chapter: Ch. 4; reuse 2)`, and in `--json` as `planned` with
+  `replaced: true`, where `reused_chapters` lists the chapters that matched.
+
+### Files left alone
+
+A file that is left alone is never modified. Its warning names the reason and what to do:
+
+```
+mangadex-dl: warning: <path>: left alone: <reason>; <remedy>
+```
+
+| Reason | Remedy |
+|---|---|
+| `not a regular file` (a directory, a symbolic link, a FIFO, …; never followed) | `rename or remove it, or use another DIR` |
+| `cannot be read (<system error>)` | `rename or remove it, or use another DIR` |
+| `not an EPUB made by mangadex-dl` (including a file without the [manifest](#the-manifest)) | `use another DIR or --title` |
+| `holds a different book` (for example the same title in another `--lang`) | `use another DIR or --title` |
+| `changed by another program` (its `OEBPS/content.opf` was edited) | `pass --overwrite to replace it` |
+| `made by a newer mangadex-dl` | `pass --overwrite to replace it` |
+| `changed while it was being updated` | `pass --overwrite to replace it` |
+
+Nothing read from the file itself is ever printed. A file that holds chapters MangaDex no longer
+lists, while also lacking some, is left alone too, because merging would keep the same content
+twice when MangaDex re-uploads or renumbers a chapter:
+
+```
+mangadex-dl: warning: <path>: MangaDex lists N chapters this file lacks (Ch. 4, …), but the file holds M chapters MangaDex no longer lists (Ch. 3, …); left it alone (pass --overwrite to rebuild it without them)
+```
+
+Each list names at most five chapters, then `and K more`. With one chapter on a side the warning
+says `1 chapter`, and with one chapter MangaDex no longer lists it ends `without it)`.
+
+### The manifest
+
+Every EPUB that `mangadex-dl` writes ends with one extra zip entry, `META-INF/mangadex-dl.json`
+(stored uncompressed). It is a compact JSON record of what the file holds:
+
+| Key | Contents |
+|---|---|
+| `format` | `1` |
+| `generator` | `"mangadex-dl"` |
+| `identifier` | the book's `dc:identifier`, `urn:mangadex:<title id>:<lang>:<unit>` |
+| `opf_crc32` | the CRC-32 of `OEBPS/content.opf`, as 8 lowercase hex digits |
+| `cover` | `null`, or `{ "file_name", "entry" }`: the MangaDex cover file name and its image in the file |
+| `chapters` | in reading order: `{ "id", "volume", "chapter", "title", "groups": [ { "id", "name" } ], "publish_at", "updated_at", "quality", "images" }`, where `quality` is `"data"` or `"data-saver"` and `images` names the chapter's page images in order |
+
+It holds no clock time and no version string. A re-run reads it to decide whether the file is up
+to date; nothing else is kept between runs. Editing the book with another program (for example
+changing its metadata in an EPUB editor) changes `content.opf` or drops the record, so the file
+is then left alone. A changed `content.opf` gives `changed by another program` with the remedy
+`pass --overwrite to replace it`; a dropped record gives `not an EPUB made by mangadex-dl` with
+the remedy `use another DIR or --title`. EPUB 3.3 reserves `META-INF` for
+configuration files without forbidding additional ones, and the record is not listed in the
+book's package manifest, as EPUB requires for `META-INF` files.
+
+## Many titles: `batch`
+
+```
+mangadex-dl batch FILE [DIR] [OPTIONS]
+```
+
+`batch` runs `download` once for each title listed in `FILE`, one title after another in file
+order, into `DIR` (default `.`). `FILE` is a CSV file, or `-` to read the list from stdin.
+
+| Argument / option | Meaning |
+|---|---|
+| `FILE` | The CSV list (see below), or `-` for stdin. Required. |
+| `DIR` | Output directory, as in `download`. A row's `dir` column puts that title in a subdirectory of it. |
+| `--volumes`, `--loose-chapters`, `--layout`, `-l, --lang`, `--group`, `--direction` | As in `download`: the value for every row whose CSV cell is empty. |
+| `--data-saver`, `--overwrite`, `-n, --dry-run`, `-j, --jobs`, `--no-report` | As in `download`, for every row. These have no CSV column, so a list from someone else can never replace your files or change the load. |
+| `--fail-fast` | Stop at the first title that fails. |
+
+There is no `--title` option: one title for every row would make the file names collide. Use the
+`title` column instead (`batch FILE --title X` exits 2 with
+`batch has no --title option; give each row a 'title' column instead`). The global options (`--json`, `-q`, `-v`, `--color`) work before or after
+`batch`, also after `FILE` and `DIR`. `mangadex-dl batch --help` describes the format with
+examples.
+
+### The CSV file
+
+- UTF-8 (a leading byte-order mark is skipped), comma-separated, LF or CRLF line endings.
+  Fields that contain a comma, a quote or a line break go in `"double quotes"`, with `""` for a
+  literal quote. Spaces and tabs around a field are trimmed.
+- Blank lines and lines starting with `#` are ignored.
+- **Without a header row**, each line is one title: a UUID or a title URL, as `MANGA` in
+  `download`.
+- **With a header row** (any first line that is not a title), these columns are recognised, in
+  any order and case-insensitively:
+
+  | Column | Meaning |
+  |---|---|
+  | `manga` | The title, as `MANGA` in `download`. Required. |
+  | `title` | `--title` for this row. |
+  | `dir` | A subdirectory of `DIR` for this row, e.g. `series/one`: relative, no `.` or `..` parts, no `\`. |
+  | `volumes`, `loose-chapters`, `layout`, `lang`, `direction` | As the options. |
+  | `group` | Preferred groups in priority order, separated by `\|`: `Group A\|Group B`. Replaces `--group` for this row. |
+  | `note` | Ignored: free text for yourself. |
+
+  Unknown column names are an error. A first line holding one word that is neither a title nor
+  a column name (a chapter URL instead of a title URL, say) is reported as both:
+  `titles.csv:1: '<word>' is not a MangaDex title UUID or https://mangadex.org/title/<uuid> URL,
+  nor a known column (manga, title, ...)`. Rows may be shorter than the header (missing cells are
+  empty).
+- **Precedence, per field:** a non-empty CSV cell, then the command-line option, then the
+  built-in default. An empty cell means "use the command-line value". Command-line values are
+  checked even when every row overrides them.
+- A row whose effective options are the same as an earlier row's is skipped with a warning
+  (`titles.csv:7: same as line 3; skipped`).
+- **Limits:** the file may be at most 1 MiB and list at most 10 000 titles; a field may be at
+  most 4 KiB (a `title` 1024 bytes).
+
+The whole list is read and checked before anything is downloaded. Any problem in it is a usage
+error (exit 2) that names the line, for example `titles.csv:4: layout: ...`; up to 20 problems are
+listed, nothing is downloaded and no directory is created.
+
+```csv
+# my list
+manga,title,dir,lang,note
+https://mangadex.org/title/<uuid>,,,,
+<uuid>,My Title,series/my-title,fr,read later
+```
+
+### Examples
+
+```sh
+# Everything in the list, into ~/Manga
+mangadex-dl batch titles.csv ~/Manga
+
+# Show what would be written, without downloading anything
+mangadex-dl batch titles.csv ~/Manga --dry-run
+
+# A list from another command
+grep -v '^#done' titles.csv | mangadex-dl batch - ~/Manga
+
+# One JSON document for the whole batch, stopping at the first title that fails
+mangadex-dl batch titles.csv ~/Manga --json --fail-fast
+```
+
+### What a batch prints and when it stops
+
+- **stdout** is exactly what `download` would print, title after title: one path per file.
+  With `--json`, one document at the end instead (below).
+- **stderr:** every warning and error about a row starts with the list's name and the line,
+  e.g. `mangadex-dl: error: titles.csv:4: title <uuid> not found on MangaDex (HTTP 404); ...`. With `-v`, each title
+  begins with `titles.csv:4: <uuid>`. When stderr is a terminal, the progress line gains the
+  title's position: `(2/15) [1/2] Vol. 1: 3/5 pages`. The "N files are already up to date" note
+  is printed once, at the end. Two rows that would write the same file get a warning naming both
+  lines.
+- A full success prints nothing on stderr. Otherwise the batch ends with one closing line, even
+  with `-q` or `--json`, for example
+  `mangadex-dl: error: 2 of 15 titles did not complete (lines 4, 9); run the same command again to retry them`
+  when a retry can help (a title failed with a network error or is incomplete), or
+  `...; see the errors above` when it cannot (not found, nothing to download, a local error), or
+  `stopped at line 9: ...; 6 titles not run` when it stopped early.
+- **A failed title doesn't stop the batch:** the next one starts. It stops early only
+  - with `--fail-fast`, at the first title that fails;
+  - after 3 titles in a row failed with network errors (exit 3);
+  - on a local problem that affects all of `DIR`: `DIR` itself unusable, disk full, a read-only
+    file system, an I/O error (exit 1; `stopped at line 9: the error above affects every title`),
+    or a failed write to stdout (exit 1).
+
+  A row whose own `dir` can't be used (it runs into a regular file, permission denied below
+  `DIR`) fails alone, and the batch continues with the next row. A title that ends with exit 4 or
+  5 leaves no directory behind.
+- **Restarting:** running the same command again treats each title as a `download` re-run does
+  (see [Running again](#running-again)): files that already hold every chapter are skipped and
+  files MangaDex has added chapters to are rebuilt, so an interrupted or incomplete batch can be
+  restarted and a list of series kept up to date.
+- **Ctrl-C / `SIGTERM`** stop the batch as they stop `download`: the current file is cleaned up,
+  no further title starts, and nothing more is printed (no closing line, no JSON).
+- An empty list (only comments or blank lines) prints the warning `titles.csv: lists no titles`
+  and exits 0.
+- **stdin:** with `-`, the list is read up to the end of input. When both stdin and stderr are a
+  terminal, `batch` first prints `reading titles from the terminal; end with Ctrl-D`. `batch`
+  never prompts.
+
+**`--json`** prints one document when the titles ran and were not interrupted (also on exits 1
+and 3 to 7, never on exit 2):
+
+```
+{ "format_version": 1, "dry_run", "source",
+  "titles": [ { "line", "manga_id", "dir",
+                "status": "ok" | "not_found" | "no_chapters" | "incomplete" | "network"
+                          | "failed" | "duplicate" | "not_run",
+                "exit_code", "error", "duplicate_of",
+                "report" } ],
+  "summary": { "titles": { "total", "ok", "not_found", "no_chapters", "incomplete", "network",
+                           "failed", "duplicate", "not_run" },
+               "files":  { "planned", "written", "exists", "failed" } } }
+```
+
+`exit_code` is what `download` would have returned for that title (`null` for `duplicate` and
+`not_run`), and `report` is that title's `download --json` document (`null` when there is none).
+
+**Exit status of a batch:** 0 when every title succeeded (or was a skipped duplicate), and for an
+empty list. When titles failed and they all failed the same way, the batch exits with that code
+(3, 4, 5 or 6, or 1 for rows whose own `dir` failed); when they failed in more than one way, 7,
+and the per-title results (on stderr, or in `--json`) say which. A one-row list exits exactly as
+`download` would.
+
+### Things to know before running a long list
+
+- **Symlinks inside `DIR` are followed.** A row's `dir` can't leave `DIR` by itself (no `..`, no
+  absolute paths), but a symlink that already exists inside `DIR` is followed. Don't point `DIR`
+  at a directory that others can write to.
+- **A long list is a long, request-heavy run.** Each title costs several API requests (the title,
+  its chapter list, covers, one image-server lookup per chapter), and the rate limits below apply
+  to each title in turn. Running a list of thousands of titles is your responsibility towards
+  MangaDex: split long lists, and stop if you see rate-limit errors (`HTTP 429` or `403`).
 
 ## Output
 
-- **stdout is data:** the path of each file as it is written, one per line. With `--dry-run`,
-  the files that would be written. Files that already exist are left out.
-- **stderr is diagnostics:** errors and warnings prefixed `mangadex-dl:`, the
-  "N files already exist; pass --overwrite to replace them" notice, and, when stderr is a
-  terminal, a single progress line such as `[3/12] Vol. 03: 45/180 pages`. There is no progress
-  line with `-q`, with `--json`, or when `TERM=dumb`. `-q` hides everything but errors.
+- **stdout is data:** the path of each file as it is written or updated, one per line. With
+  `--dry-run`, the files that would be written or updated. Files that are up to date or left
+  alone are left out.
+- **stderr is diagnostics:** errors and warnings prefixed `mangadex-dl:`, the closing
+  "N files are already up to date; pass --overwrite to download them again" note (see
+  [Running again](#running-again)), and, when stderr is a terminal, a single progress line such
+  as `[3/12] Vol. 03: 45/180 pages`. There is no progress line with `-q`, with `--json`, or when
+  `TERM=dumb`. `-q` hides everything but errors.
 - **`--json`** replaces the path list with one JSON document printed at the end (never colored):
 
   ```
@@ -160,7 +453,11 @@ run can simply be restarted.
     "manga":   { "id", "title", "url", "language", "direction" },
     "epubs":   [ { "path", "kind", "volume", "chapter",
                    "status": "planned" | "written" | "exists" | "failed",
-                   "replaced", "pages", "bytes", "error",
+                   "replaced",
+                   "existing": null | "complete" | "incomplete" | "diverged"
+                             | "foreign" | "unchecked",
+                   "new_chapters", "reused_chapters",
+                   "pages", "bytes", "error",
                    "chapters": [ { "id", "volume", "chapter", "title",
                                    "groups": [ { "id", "name" } ], "pages" } ] } ],
     "skipped_chapters": [ { "id", "volume", "chapter",
@@ -168,6 +465,23 @@ run can simply be restarted.
                             "kept" } ],
     "summary": { "planned", "written", "exists", "failed" } }
   ```
+
+  - `status: "exists"` means the file was **left alone**: up to date (`existing: "complete"`),
+    or skipped with a warning (`"diverged"`, `"foreign"`). `summary.exists` counts them all.
+  - `replaced: true` means an existing file is (or, with `--dry-run`, would be) replaced: with
+    `--overwrite` (`existing: "unchecked"`), or, without it, by an update
+    (`existing: "incomplete"`).
+  - `existing` is `null` when there was no file of that name. `new_chapters` and
+    `reused_chapters` list chapter ids, and are non-empty only for `"incomplete"`: the chapters
+    to download and the chapters copied from the old file. In a real run `reused_chapters`
+    leaves out chapters that were downloaded again because they were damaged.
+  - `chapters` lists what the file holds, with the releases kept from an existing file in place
+    of the ones this run picked, and `pages` counts the pages it holds. For a file left alone
+    that is the old file's content (`complete`, `diverged`); for a `foreign` file it is the
+    planned chapters, with `pages` 0.
+  - `skipped_chapters` agrees with the files: when a file keeps its own release of a chapter,
+    the release this run would have picked is listed as a `duplicate`, and `kept` always names a
+    release a file holds.
 
   On exit 5 the document has an empty `epubs` list; on exit 6 it includes the failed entries.
   On exits 1 to 4 nothing is printed on stdout.
@@ -180,22 +494,23 @@ run can simply be restarted.
   `mangadex-dl: error: 2 of 12 files failed; run the same command again to retry them`.
 - **Exit 3** errors end with `; check your network connection or proxy (https_proxy) and try again`.
 - **Usage errors** (exit 2) read `mangadex-dl: error: <what is wrong>`, followed by
-  `Run 'mangadex-dl download --help' for more information.` (or `mangadex-dl --help` before a
-  command is given).
+  `Run 'mangadex-dl download --help' for more information.` (or `mangadex-dl batch --help`, or
+  `mangadex-dl --help` before a command is given).
 
-`mangadex-dl` never reads stdin and never prompts.
+`mangadex-dl` never prompts. Only `batch -` reads stdin.
 
 ## Exit status
 
 | Code | Meaning |
 |---|---|
-| 0 | Success: every selected file was written, already existed, or (with `--dry-run`) is planned. |
-| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. |
-| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. |
+| 0 | Success: every selected file was written or updated, was already up to date, was left alone with a warning, or (with `--dry-run`) is planned. |
+| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. |
+| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. |
 | 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. |
 | 4 | The title does not exist on MangaDex. |
 | 5 | The title exists, but nothing downloadable matched the language and selection. |
-| 6 | Incomplete: at least one file failed; the others may have been written. |
+| 6 | Incomplete: at least one file failed, either a new file or the update of an existing one (which is then kept unchanged); the others may have been written. |
+| 7 | `batch` only: the titles that did not complete failed in more than one way (for example one not found and one with no matching chapters); the per-title results say which. See [Exit status of a batch](#what-a-batch-prints-and-when-it-stops). |
 | 70 | Internal error (a bug; please report it). |
 
 A run stopped by Ctrl-C or `SIGTERM` ends by that signal (the shell reports 130 or 143). When
@@ -298,31 +613,54 @@ for its behaviour; everything is set on the command line. The only exceptions:
 - The dynamic loader's search path (`LD_LIBRARY_PATH`, `/etc/ld.so.conf`) decides which libcurl
   is loaded; see [Security notes](#security-notes).
 
-No cache, config or state directories are used, and `TMPDIR` is ignored.
+No cache, config or state directories are used, and `TMPDIR` is ignored. What a file holds is
+recorded inside the file itself (see [The manifest](#the-manifest)).
 
 ## Interruption and file safety
 
-- Only `DIR/<name>.epub` files (mode 0644) and their temporary files are ever written.
+- Only `DIR/<name>.epub` files (mode 0644 subject to your umask, or an updated file's previous
+  permissions) and their temporary files are ever written (with `batch`, also
+  `DIR/<dir>/<name>.epub` for a row with a `dir`). Existing `.epub` files are read, never
+  modified in place.
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
-- Existing files are never overwritten unless you pass `--overwrite`, including a file that
-  appears while the download is running.
+- An existing file is replaced only with `--overwrite`, or when it is a file made by
+  `mangadex-dl` that only lacks chapters (see [Running again](#running-again)). Any other
+  existing file is left alone, including a file that appears while the download is running,
+  which gets its own warning:
+  `mangadex-dl: warning: <path>: left alone: another file took this name while ours was being written, so ours was discarded; run the same command again to check it`.
+- An update replaces the old file only if it is still the file that was inspected (the same
+  inode, size, modification time and change time). If it changed in the meantime, the new
+  version is discarded and the file is left alone with `changed while it was being updated`.
+  Changing only the file's permissions (`chmod`) or its number of hard links during an update
+  also counts as a change. A window of microseconds remains between that last check and the
+  replacement; a program that replaces the file within it loses its version (the last rename
+  wins). This is accepted because `DIR` is yours.
+- A replaced file is a new file, so its owner, group, ACLs, extended attributes and hard links are
+  not kept. An updated file keeps the old file's permission bits (read/write/execute for owner,
+  group and others, whatever your umask is; never set-user-ID, set-group-ID or sticky), so a file
+  you `chmod 600`'d stays 600. If they cannot be set, the update fails and the old file is kept.
+  A file replaced with `--overwrite` gets mode 0644 subject to your umask, like a new one.
 - **Ctrl-C / `SIGINT` and `SIGTERM`:** the download stops, the temporary file is removed, files
-  already finished are kept, and no partial `.epub` is left behind. Run the same command again
+  already finished are kept, a file that was being updated is left as it was, and no partial
+  `.epub` is left behind. `DIR` (or a row's `dir`) may be left empty. Run the same command again
   to continue; finished files are skipped.
 - **`SIGKILL`, and death by `SIGPIPE`:** on file systems that support `O_TMPFILE` (for example
   tmpfs and ext4), and where `/proc/self/fd` is usable, the temporary file is anonymous and
   nothing is left behind. Otherwise a hidden temporary file named
-  `.<name>.part-<12 hex digits>` may remain in `DIR`. With `--overwrite`, even an anonymous
-  temporary file is briefly linked under such a hidden `.part-` name before it replaces the
-  final file, so a `SIGKILL` in that short window can leave one even on tmpfs or ext4. Either
-  way it is safe to delete; `mangadex-dl` does not clean up stale ones.
+  `.<name>.part-<12 hex digits>` may remain in `DIR`. With `--overwrite`, and whenever an
+  existing file is updated, even an anonymous temporary file is briefly linked under such a
+  hidden `.part-` name before it replaces the final file, so a `SIGKILL` in that short window
+  can leave one even on tmpfs or ext4.
+  Either way it is safe to delete; `mangadex-dl` does not clean up stale ones.
 - With `--dry-run` nothing is written and `DIR` is not created.
 
 ## Limits
 
-- One title and one language per run.
-- No resuming inside a file: an interrupted file is downloaded again from the start.
+- One title and one language per `download` run; `batch` runs a list of titles one after
+  another (never in parallel).
+- No resuming inside a file: an interrupted file is downloaded again from the start. (An
+  interrupted update starts again from the old file, so its chapters are still reused.)
 - API responses over 16 MiB, images over 32 MiB, chapters over 5000 pages and images wider or
   taller than 65535 pixels are rejected. Memory use is roughly `--jobs` × 32 MiB at worst.
 - No ZIP64: an EPUB that would exceed 65533 entries or 4 GiB fails (split it with `--layout`
@@ -344,6 +682,11 @@ No cache, config or state directories are used, and `TMPDIR` is ignored.
   printed on stderr, and image-server addresses and image names from the API are validated
   (HTTPS only, plain names) before use. Your `MANGA` and `--title` values are never echoed in
   error messages.
+- Existing files in `DIR` are treated as untrusted input. They are opened without following
+  symbolic links, read with bounded sizes, and checked (zip structure, manifest, CRC-32 of every
+  reused page and its image header) before anything is copied from them. A file that fails a
+  check is left alone with a warning or has the affected chapter downloaded again, and nothing
+  read from it is printed.
 
 ### Test-only fixture mode
 

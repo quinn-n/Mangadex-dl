@@ -2,6 +2,10 @@
 
 Status: APPROVED at the design gate, 2026-10-17. Produced by `cli-designer`.
 
+**Amended 2026-10-19 by [`skip-existing-spec.md`](skip-existing-spec.md)** (re-runs skip
+up-to-date files and rebuild incomplete ones with page reuse). That spec wins wherever the two
+differ; the sections below marked *(amended)* summarise it. See also the errata at the end.
+
 **Gate decisions (user):**
 - Remove the `hello` scaffold subcommand (code, tests, E2E case, golden) and re-point the edge knobs to `download`.
 - **Keep** ".epub or .pdf" in the app description — PDF output will be added later; design core so an output-format seam is easy to add (no PDF code now).
@@ -28,7 +32,7 @@ Status: APPROVED at the design gate, 2026-10-17. Produced by `cli-designer`.
 | `--data-saver` | flag | Compressed images |
 | `--direction WORD` | `auto` | `auto` (rtl for `ja`/`ja-ro` originals, else ltr), `rtl`, `ltr` |
 | `--title TEXT` | — | Override title for file names and metadata |
-| `--overwrite` | flag | Replace existing files instead of skipping |
+| `--overwrite` | flag | *(amended)* help: "Re-download files even if up to date". Replaces every existing file without inspecting it (`existing: "unchecked"`) |
 | `-n,--dry-run` | flag | List files that would be written; download nothing, write nothing |
 | `-j,--jobs N` | `4`, range 1–8 | Parallel image downloads |
 | `--api-base URL` | hidden | `https://…`, `http://` loopback only, or `file://<abs dir>` (fixture mode). Non-default disables at-home reporting. |
@@ -43,16 +47,19 @@ Global flags (`--json`, `-q`, `-v`/`-vv`, `--color`) via `fallthrough()`. No pro
 
 - **Precedence:** command line > default only. No config file, no env vars, no `envname()`. Library-read env (proxy, `SSL_CERT_FILE`) documented `[VERIFY]`.
 - **stdin:** never read.
-- **stdout:** one path per written file, streamed (dry-run: files that would be written; existing skipped files omitted). `--json`: one document at the end:
+- **stdout:** one path per written file, streamed, *(amended)* including updated files (dry-run: files that would be written or updated; files that are up to date or left alone are omitted). `--json`: one document at the end:
   ```
   format_version:1, dry_run, layout, manga{id,title,url,language,direction},
-  epubs[{path,kind,volume,chapter,status(planned|written|exists|failed),replaced,pages,bytes,error,
-         chapters[{id,volume,chapter,title,groups[{id,name}],pages}]}],
+  epubs[{path,kind,volume,chapter,status(planned|written|exists|failed),replaced,
+         existing(null|complete|incomplete|diverged|foreign|unchecked),new_chapters,reused_chapters,
+         pages,bytes,error,chapters[{id,volume,chapter,title,groups[{id,name}],pages}]}],
   skipped_chapters[{id,volume,chapter,reason(external|no_pages|unavailable|duplicate),kept}],
   summary{planned,written,exists,failed}
   ```
   Dumped with `error_handler_t::replace`, never ANSI. Exits 2/3/4 print no stdout; exit 5 prints `epubs: []`; exit 6 prints failed entries.
-- **stderr:** `mangadex-dl: …`; warnings `warning:` (skipped chapters, WebP, "N files already exist"); `-q` errors only; `-v` per-file + dedupe choices; `-vv` per-request.
+
+  *(Amended, additive within `format_version` 1.)* `existing`, `new_chapters` and `reused_chapters` follow `replaced`. `exists` now means "left alone" (`complete`, `diverged` or `foreign`); `replaced: true` also marks an update without `--overwrite` (`existing: "incomplete"`); `new_chapters`/`reused_chapters` are non-empty only for `incomplete`; `chapters` lists what the file holds, with held releases substituted, and `pages` is the held count for `exists` with `existing` `complete` or `diverged` (it was 0), while a `foreign` file lists the planned chapters with `pages` 0; `skipped_chapters` is reconciled so `kept` always names a release a file holds.
+- **stderr:** `mangadex-dl: …`; warnings `warning:` (skipped chapters, WebP); `-q` errors only; `-v` per-file + dedupe choices; `-vv` per-request. *(Amended.)* The "N files already exist" warning is replaced by a note without `warning:` and never coloured, `mangadex-dl: N files are already up to date; pass --overwrite to download them again` (counts `complete` files only); new warnings for files left alone, diverged files and damaged held chapters; a failed update ends with ` (the existing file was kept)`.
 - **Progress:** stderr TTY only, not with `-q`/`--json`; one `\r`-rewritten line `[3/12] Vol. 03: 45/180 pages`, no cursor escapes; cleared before warnings.
 - **Color:** stdout never; stderr `warning:` yellow / `error:` red via `resolve_color`.
 - **Locale:** no `L` specs; `from_chars`/`to_chars`; ASCII case folding.
@@ -70,7 +77,7 @@ Global flags (`--json`, `-q`, `-v`/`-vv`, `--color`) via `fallthrough()`. No pro
 | 6 | incomplete | At least one file failed; others may be written |
 | 70 | internal | — |
 
-Priority: 1 aborts immediately; else 6 if any failed, 5 if plan empty, else 0. "All already exist" = 0, empty stdout.
+Priority: 1 aborts immediately; else 6 if any failed, 5 if plan empty, else 0. *(Amended.)* "All up to date or left alone" = 0, empty stdout. 6 also covers a failed update, with the old file kept.
 
 ## Behaviour (all API/EPUB claims `[VERIFY]`)
 
@@ -83,17 +90,17 @@ Priority: 1 aborts immediately; else 6 if any failed, 5 if plan empty, else 0. "
 - **At-home:** `GET /at-home/server/{chapterId}` right before the chapter; `{baseUrl}/{data|data-saver}/{hash}/{file}`; refresh ≤3× on repeated failure. Validate `baseUrl` https, no userinfo/query/fragment; hash/filenames `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
 - **Rate limits:** shared API limiter ≤4 req/s; separate at-home limiter (≈40/min). 429 honours `Retry-After`/`X-RateLimit-Retry-After`, cap 60 s. 5xx/timeouts: 4 attempts, 1/2/4 s + jitter. Connect timeout 15 s, stall abort 30 s.
 - **User-Agent** `mangadex-dl/<version>`. **MD@H report** best-effort, fire-and-forget POST to `https://api.mangadex.network/report` for non-mangadex.org nodes; failures are ignored. Reports never delay a download (2026-10-18 fix): a page fetch only queues the report and returns; one background thread sends them in order with a 3 s connect and 3 s stall timeout, never retried. The queue holds 64 reports; a full queue drops new ones (first drop traced at `-vv`). After 3 consecutive failures (transport error or non-2xx) reports stop for the rest of the run (`-vv`: `MangaDex@Home reports disabled: endpoint not responding`). At the end of the run the reporter is stopped at once: the POST in flight is cancelled and queued reports are discarded. TLS always verified.
-- **EPUB:** `mimetype` first STORED no extra field; `META-INF/container.xml` → `OEBPS/content.opf` (3.0); `nav.xhtml`; `toc.ncx`; one XHTML per page with viewport W×H from image header. Metadata: stable `dc:identifier` `urn:mangadex:<id>:<lang>:<unit>`, title `<T> Vol. 3`/`Ch. 12`, language, creators, contributors (groups), source, `dcterms:modified` = latest chapter `updatedAt`, `belongs-to-collection` series + position. `rendition:layout=pre-paginated`, `spread=landscape`, `orientation=auto`; spine `page-progression-direction`. Media type from magic bytes (JPEG/PNG/GIF/WebP; WebP warns); other → chapter fails. Cover item `cover-image` + first spine page (fallback to first page). Nav: chapter entries; `single` nests chapters under volumes. XML escaping drops illegal chars. No ZIP64: >65535 entries fails at plan time; >4 GiB fails. Fixed timestamps; byte-identical output for any `--jobs`.
+- **EPUB:** `mimetype` first STORED no extra field; `META-INF/container.xml` → `OEBPS/content.opf` (3.0); `nav.xhtml`; `toc.ncx`; one XHTML per page with viewport W×H from image header. Metadata: stable `dc:identifier` `urn:mangadex:<id>:<lang>:<unit>`, title `<T> Vol. 3`/`Ch. 12`, language, creators, contributors (groups), source, `dcterms:modified` = latest chapter `updatedAt`, `belongs-to-collection` series + position. `rendition:layout=pre-paginated`, `spread=landscape`, `orientation=auto`; spine `page-progression-direction`. Media type from magic bytes (JPEG/PNG/GIF/WebP; WebP warns); other → chapter fails. Cover item `cover-image` + first spine page (fallback to first page). Nav: chapter entries; `single` nests chapters under volumes. XML escaping drops illegal chars. *(Amended.)* The last zip entry is the STORED book manifest `META-INF/mangadex-dl.json` (identifier, OPF CRC-32, cover, per-chapter records with image entry names and quality), not listed in the OPF manifest; a re-run reads it. No ZIP64: >65535 entries fails at plan time; >4 GiB fails. Fixed timestamps; byte-identical output for any `--jobs`.
 - **Filenames:** `<T> - Vol. 03.epub`, `<T> - Ch. 012.epub` (`012.5`), chapters layout `<T> - Vol. 03 Ch. 021.epub`, `<T> - Oneshot [<8 hex>].epub`, single `<T>.epub`. Sanitise: controls/DEL/`/\<>:"|?*`→`_`, drop bidi + U+2028/9, collapse whitespace, trim spaces/dots/leading `-`, ≤150 bytes on UTF-8 boundary, empty/`.`/`..` → UUID; component ≤255 bytes; joined via DIR fd.
 - **Failures:** pre-plan network → 3; unknown title → 4; per-file failure → continue, exit 6; local FS failure → remove temp, abort 1.
 - **Interruption:** SIGINT/SIGTERM → never a partial final `.epub`, no temp left (prefer `O_TMPFILE` + `linkat`, fallback `mkostemp(".<final>.part-XXXXXX")`); flag-only handler, main thread cleans, restores `SIG_DFL`, re-raises. SIGPIPE/SIGKILL may leave `.part-` on fallback FS (documented).
-- **No-clobber:** pre-download `fstatat(AT_SYMLINK_NOFOLLOW)`; publish via `linkat`/`renameat2(RENAME_NOREPLACE)`, EEXIST → `exists`.
+- **No-clobber (amended):** without `--overwrite`, every existing target is inspected (`openat` with `O_NOFOLLOW`, then the zip directory and the manifest). An up-to-date file is skipped (`exists`, `complete`). Our own file that only lacks chapters is rebuilt, copying held pages, and replaced only if its identity (device, inode, size, mtime, ctime) is unchanged at publish (`written`, `replaced: true`). A diverged or foreign file is left alone with a warning (`exists`). A new name is still published via `linkat`/`renameat2(RENAME_NOREPLACE)`, EEXIST → `exists`. Details: `skip-existing-spec.md`.
 - **Limits:** API JSON ≤16 MiB, image ≤32 MiB, ≤5000 pages/chapter, image sides ≤65535; JSON parsed non-throwing, malformed → 3. Memory ≈ jobs × image cap.
 - **Fixture mode** (`--api-base file:///abs`): `<root>/api/<path>[/offset-<n>].json`, `<root>/uploads/covers/<id>/<file>`, `<root>/at-home/<data|data-saver>/<hash>/<file>`; `openat`+`O_NOFOLLOW`; missing = 404; no sleeps, no reporting.
 
 ## Data & state
 
-Writes only `DIR/<name>.epub` (0644) and its temp. No config/cache/XDG/TMPDIR. Atomic publish: write → fsync → close-check → link/rename → optional dir fsync. Worker pool of `--jobs` threads; library global init once before threads; `tsan` covers the downloader.
+Writes only `DIR/<name>.epub` (0644) and its temp; *(amended)* reads existing `DIR/<name>.epub` files read-only, and a replaced file is a new inode (mode, owner and hard links are not kept). No config/cache/XDG/TMPDIR. Atomic publish: write → fsync → close-check → link/rename → optional dir fsync. Worker pool of `--jobs` threads; library global init once before threads; `tsan` covers the downloader.
 
 Dependencies (planner decides, conda-forge, `find_package CONFIG`): HTTPS client (libcurl? CA-bundle discovery for static release binary is the biggest packaging risk), zip writer (in-house STORED-only recommended), nlohmann_json.
 
@@ -109,7 +116,7 @@ Dependencies (planner decides, conda-forge, `find_package CONFIG`): HTTPS client
 8. `[unit]` Retry/rate limiting with fake clock.
 9. `[unit]` At-home URL/hash/filename validation.
 10. `[cli]` Fixture-mode run writes expected files; zip structure verified; stdout = written paths; exit 0.
-11. `[cli]` Re-run skips (exit 0, empty stdout, notice); `--overwrite` byte-identical; `-j1` vs `-j8` byte-identical.
+11. `[cli]` *(Amended.)* Re-run skips up-to-date files (exit 0, empty stdout, stderr exactly the "already up to date" note, JSON `existing: "complete"`); an incomplete file is rebuilt with page reuse (criteria 7–16 of `skip-existing-spec.md`); `--overwrite` byte-identical; `-j1` vs `-j8` byte-identical.
 12. `[cli]` `--json` schema for success, dry-run, exit 5, exit 6; no ANSI with `--color=always`.
 13. `[cli]` Semantic usage errors → 2, empty stdout, hint.
 14. `[e2e]` Installed-binary fixture success; `--dry-run` writes nothing.
@@ -130,3 +137,4 @@ PDF; multiple manga; search, chapter URLs, login; chapter filter inside volumes;
 ## Errata (accepted during implementation)
 - MANGA and `--title` values are **never echoed** in diagnostics (closes terminal-escape injection); the MANGA error is the fixed text `MANGA must be a MangaDex title UUID or a https://mangadex.org/title/<uuid> URL`. Selection items are echoed only sanitised (non-printable → `?`, ≤ 32 bytes + `...`). (T4 review, 2026-10-17.)
 - Extra usage error: empty `DIR` → exit 2 `DIR must not be empty`.
+- **Re-runs (2026-10-19):** the no-clobber behaviour, the "already exist" notice, the `--overwrite` help, the help footer's re-run paragraph and the meaning of `exists`/`replaced` are superseded by [`skip-existing-spec.md`](skip-existing-spec.md) (approved with gate decisions 1–5, including the `--group` re-pick). No flags, subcommands or exit codes change; the JSON additions stay within `format_version` 1. EPUBs now carry `META-INF/mangadex-dl.json`.
