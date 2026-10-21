@@ -66,7 +66,7 @@ Run every tool through a pixi task so it uses the project's pinned toolchain. **
 | **`check`** | **the gate:** `fmt-check` → `test` → `lint` → `release` → `binary-packages`, fail-fast |
 | `cxx-probe` | compile and run one probe from `.claude/skills/platform-testing/probes/` or `.platform-runs/` with the dev preset's exact flags |
 | `bless` | re-bless E2E goldens matching a regex (**human-approved**; in `ask`) |
-| `cov` / `audit` / `package` | report-only coverage / syft + grype over the env, split into `--scope binary` (the `binary-packages` list, fails ≥ medium) and `--scope dev` (the rest, fails ≥ high, pinned ignores in `audit/grype-dev.yaml`) / CPack tarball from the release build |
+| `cov` / `audit` / `package` | report-only coverage / syft + grype over the env, split into `--scope binary` (the `binary-packages` list plus `audit/cpe-overrides.json` CPEs for the static libstdc++/libgcc; fails ≥ medium; pinned ignores in `audit/grype-binary.yaml`) and `--scope dev` (the rest, fails ≥ high, pinned ignores in `audit/grype-dev.yaml`) / CPack tarball from the release build |
 | optional: `tsan`, `fuzz`, `man` | commented in `pixi.example.toml`; enable per Project specifics |
 
 - **Two environments, same chain:** `nice pixi run check` (Clang) and `nice pixi run -e gcc check` (GCC). CI runs both on every PR. Run the gcc one locally when a change touches CMake, presets, warning flags or `pixi.toml`, or is compiler-sensitive.

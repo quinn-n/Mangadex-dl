@@ -12,6 +12,8 @@
 #   dev     every other package in the env (the build toolchain and its deps); grype -c
 #           audit/grype-dev.yaml (pinned, reasoned ignores), fails on >= high by default
 # --scope picks one half (default: all = both); --fail-on overrides both thresholds.
+# Before grype runs, audit/cpe-overrides.json gives binary-half packages whose conda names map to no
+# NVD product real CPEs (the static libstdc++/libgcc are matched as gnu:gcc).
 # Always prints a coverage statement per scope. Exit: nonzero on findings at/above a threshold (or
 # a tool error); 0 with a stated no-op when syft/grype/jq are absent. Never installs anything.
 set -uo pipefail
@@ -44,6 +46,7 @@ scopes=(binary dev)
 
 target=".pixi/envs/default"
 list="audit/binary-packages.txt"
+cpe_overrides="audit/cpe-overrides.json"
 out_dir=".platform-runs/audit"
 sbom="$out_dir/sbom.json"
 
@@ -64,11 +67,12 @@ coverage() { # $1 = scope, $2 = tool line
     echo "  scanned:      the conda packages in $target whose files are compiled or linked into the shipped"
     echo "                binary, as listed in $list (derived from the release build's header deps and"
     echo "                linker depfile; config audit/grype-binary.yaml)"
-    echo "  matching:     CPE-heuristic for conda packages (false positives and misses are possible); the"
-    echo "                statically linked toolchain runtime (libstdc++.a, libgcc.a, libc_nonshared.a and the"
-    echo "                crt objects, from libstdcxx-devel/libgcc-devel/sysroot) is LISTED but effectively NOT"
-    echo "                MATCHED: syft derives CPEs from the conda package names (e.g. sysroot_linux-64), which"
-    echo "                name no NVD product; today only cli11, nlohmann_json and libcurl can produce findings"
+    echo "  matching:     CPE-heuristic for conda packages (false positives and misses are possible). syft's"
+    echo "                CPEs come from conda package names, which mostly name no NVD product, so"
+    echo "                $cpe_overrides adds real ones: the static libstdc++.a / libgcc.a are matched as"
+    echo "                gnu:gcc at their version. Still effectively NOT MATCHED: glibc's crt objects and"
+    echo "                libc_nonshared.a (sysroot; libc.so itself is the user's), clang's builtin headers and"
+    echo "                the kernel UAPI headers"
     echo "  NOT covered:  host/system libraries the binary uses at run time -- glibc, and the user's own"
     echo "                libcurl.so.4 and its TLS/ssh/krb5 deps (libcurl is only headers here; it is"
     echo "                dlopen()ed on the user's machine) -- vendored or FetchContent code, and pixi.lock"
@@ -94,6 +98,10 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 if [[ ! -d $target ]]; then
   echo "audit: $target does not exist -- run 'pixi install' first" >&2
+  exit 1
+fi
+if [[ ! -f $cpe_overrides ]]; then
+  echo "audit: $cpe_overrides is missing" >&2
   exit 1
 fi
 if [[ ! -f $list ]]; then
@@ -161,6 +169,31 @@ for s in binary dev; do
     exit 1
   }
 done
+
+# Give the binary half real CPEs where the conda name maps to none (audit/cpe-overrides.json says
+# why each one is, or is not, mapped). Every override must name a conda package in the binary scope, so
+# a renamed or dropped package cannot silently fall back to the unmatchable syft-generated CPEs.
+unhit=$(jq -r --slurpfile o "$cpe_overrides" '
+  ($o[0].overrides | keys) - [.artifacts[] | select(.type == "conda") | .name] | .[]' "$out_dir/sbom-binary.json") || {
+  echo "audit: could not read $cpe_overrides" >&2
+  exit 1
+}
+if [[ -n $unhit ]]; then
+  echo "audit: $cpe_overrides maps packages that are not conda packages in the binary scope ($list):" >&2
+  sed 's/^/  /' <<<"$unhit" >&2
+  exit 1
+fi
+jq --slurpfile o "$cpe_overrides" '
+  $o[0].overrides as $map
+  | .artifacts |= map(. as $a
+      | if $a.type == "conda" and $map[$a.name] != null
+        then .cpes = ((.cpes // []) + [{cpe: ($map[$a.name] | gsub("\\{version\\}"; $a.version)), source: "declared"}])
+        else . end)' \
+  "$out_dir/sbom-binary.json" >"$out_dir/sbom-binary.json.tmp" &&
+  mv -f "$out_dir/sbom-binary.json.tmp" "$out_dir/sbom-binary.json" || {
+  echo "audit: could not apply $cpe_overrides" >&2
+  exit 1
+}
 
 # --fail-on makes grype exit nonzero on findings; without it grype exits 0 regardless.
 # Verify the flag against the installed grype (`grype --help`) -- it is checked here too.
