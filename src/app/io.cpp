@@ -3,15 +3,18 @@
 
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/version.hpp"
+#include "recording_stdio_buf.hpp"
 
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <iostream>
 #include <optional>
+#include <streambuf>
 #include <string>
 #include <string_view>
 
@@ -69,11 +72,59 @@ void write_stderr(std::string_view text) noexcept {
     return status == 0 ? buffer : nullptr;
 }
 
-/// The errno note_stdout_errno recorded (0 = none). Atomic so a note from any thread is safe,
-/// though today only the main thread writes stdout.
-[[nodiscard]] std::atomic<int>& noted_stdout_errno() noexcept {
-    static std::atomic<int> noted{0};
-    return noted;
+/// Clears errno before one stdio call and returns its previous value, so a failure reports its own
+/// errno and never a stale one (glibc's first write to a stream probes isatty and leaves ENOTTY).
+[[nodiscard]] int clear_errno() noexcept {
+    const int saved = errno;
+    errno = 0;
+    return saved;
+}
+
+/// After that call: a failure is recorded (errno stays as the call set it); a success restores the
+/// caller's errno, so the buffer is as transparent to errno as stdio_sync_filebuf.
+void settle_errno(RecordingStdioBuf& buffer, bool succeeded, int saved) noexcept {
+    if (succeeded) {
+        errno = saved;
+    } else {
+        buffer.record(errno);
+    }
+}
+
+/// Owns std::cout's RecordingStdioBuf: installs it on construction and, if std::cout still uses it,
+/// puts the original buffer back before the RecordingStdioBuf is destroyed. Only ever a
+/// function-local static (stdout_recorder()).
+class StdoutRecorder {
+public:
+    // basic_ios::rdbuf(sb) never throws here: it clears the state to goodbit (sb is not null), and
+    // a cleared state never raises ios_base::failure.
+    StdoutRecorder() noexcept : original_{std::cout.rdbuf(&buffer_)} {}
+    ~StdoutRecorder() {
+        if (std::cout.rdbuf() == &buffer_) {
+            std::cout.rdbuf(original_);
+        }
+    }
+    StdoutRecorder(const StdoutRecorder&) = delete;
+    StdoutRecorder& operator=(const StdoutRecorder&) = delete;
+    StdoutRecorder(StdoutRecorder&&) = delete;
+    StdoutRecorder& operator=(StdoutRecorder&&) = delete;
+
+private:
+    RecordingStdioBuf buffer_{stdout};   ///< declared first: original_'s initializer installs it
+    std::streambuf* original_ = nullptr; ///< borrowed: libstdc++'s stdio_sync_filebuf for stdout
+};
+
+/// Installs std::cout's RecordingStdioBuf on the first call (startup, from process_io()).
+///
+/// Lifetime: the static is constructed during main(), so it is destroyed during static destruction
+/// (after main returns, or by std::exit, which the program never calls), and before libstdc++'s
+/// ios_base::Init, which was constructed earlier and flushes std::cout and std::cerr when it is
+/// destroyed. ~StdoutRecorder puts the original buffer back first, so that flush never reaches a
+/// destroyed buffer. Exits that run no static destructors (abort, a signal death, _exit) leave
+/// std::cout on a buffer that is still alive. std::cerr's tie points at the std::cout object, which
+/// the library never destroys, so it cannot dangle.
+StdoutRecorder& stdout_recorder() noexcept {
+    static StdoutRecorder recorder{};
+    return recorder;
 }
 
 [[nodiscard]] constexpr int sgr_code(Style style) noexcept {
@@ -94,7 +145,46 @@ void write_stderr(std::string_view text) noexcept {
 
 } // namespace
 
+void RecordingStdioBuf::record(int error) noexcept {
+    if (error == 0) {
+        return;
+    }
+    int none = 0;
+    static_cast<void>(first_errno_.compare_exchange_strong(none, error, std::memory_order_relaxed));
+}
+
+RecordingStdioBuf::int_type RecordingStdioBuf::overflow(int_type ch) {
+    const int saved = clear_errno();
+    if (traits_type::eq_int_type(ch, traits_type::eof())) {
+        const bool flushed = std::fflush(file_) == 0;
+        settle_errno(*this, flushed, saved);
+        return flushed ? traits_type::not_eof(ch) : traits_type::eof();
+    }
+    const int_type put = std::putc(ch, file_); // EOF (== traits_type::eof()) on failure
+    settle_errno(*this, put != EOF, saved);
+    return put;
+}
+
+std::streamsize RecordingStdioBuf::xsputn(const char_type* text, std::streamsize count) {
+    if (count <= 0) {
+        return 0;
+    }
+    const auto size = static_cast<std::size_t>(count);
+    const int saved = clear_errno();
+    const std::size_t written = std::fwrite(text, 1, size, file_);
+    settle_errno(*this, written == size, saved);
+    return static_cast<std::streamsize>(written); // written <= size, which came from a streamsize
+}
+
+int RecordingStdioBuf::sync() {
+    const int saved = clear_errno();
+    const int result = std::fflush(file_);
+    settle_errno(*this, result == 0, saved);
+    return result;
+}
+
 Io process_io() {
+    static_cast<void>(stdout_recorder());
     return Io{
         .out = std::cout,
         .err = std::cerr,
@@ -127,23 +217,31 @@ void last_resort(const char* message) noexcept {
 }
 
 int finish_stdout(int rc) noexcept {
-    // The errno a mid-run flush recorded before the buffer was dropped (0 = none); consumed here.
-    const int noted = noted_stdout_errno().exchange(0);
+    // Installed by process_io(); null when std::cout still has the library's buffer (no
+    // process_io() call), and then only this flush's errno is known.
+    auto* const recorder = dynamic_cast<RecordingStdioBuf*>(std::cout.rdbuf());
     errno = 0; // isatty() and friends leave stale values (ENOTTY); only report what the flush sets
     bool failed = false;
     try {
-        std::cout.flush();
+        std::cout.flush(); // through the recorder, which records this flush's errno if it fails
     } catch (...) {
         failed = true; // only if someone enabled exceptions on std::cout
     }
     failed = std::cout.bad() || failed;
-    failed = (std::fflush(stdout) != 0) || failed;
+    if (std::fflush(stdout) != 0) {
+        failed = true;
+        if (recorder != nullptr) {
+            recorder->record(errno); // ignored when an earlier failure is already recorded
+        }
+    }
     failed = (std::ferror(stdout) != 0) || failed;
     if (!failed) {
         return rc;
     }
-    const int flush_errno = errno;
-    const int saved_errno = flush_errno != 0 ? flush_errno : noted; // this flush's reason first
+    // The first failure's errno, wherever it happened. glibc drops stdout's buffer after a failed
+    // write, so when the first failure came earlier (a flush forced by the tied std::cerr, or a
+    // buffer overflow mid-run), the flushes above had nothing to write and set no errno.
+    const int saved_errno = recorder != nullptr ? recorder->first_errno() : errno;
     const char* reason = nullptr;
     std::array<char, 256> buffer{}; // stack only: this noexcept path must not allocate
     if (saved_errno != 0) {
@@ -159,14 +257,6 @@ int finish_stdout(int rc) noexcept {
     }
     write_stderr("\n");
     return rc == exit_code::success ? exit_code::failure : rc;
-}
-
-void note_stdout_errno(int err) noexcept {
-    if (err == 0) {
-        return;
-    }
-    int none = 0;
-    static_cast<void>(noted_stdout_errno().compare_exchange_strong(none, err));
 }
 
 bool resolve_color(ColorMode mode, const EnvSnapshot& env, bool is_tty) noexcept {

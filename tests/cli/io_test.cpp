@@ -1,10 +1,21 @@
 // tests/cli/io_test.cpp: tier-2 tests for the process-I/O helpers in app/io.cpp that the
 // installed-binary edge suite cannot reach. The E2E driver can hand the tool an *ignored* SIGPIPE
 // (sigpipe-parent-ignores), but no portable shell can hand it a *blocked* one, so the unblock half
-// of SIGPIPE policy A is exercised here, in-process.
+// of SIGPIPE policy A is exercised here, in-process. RecordingStdioBuf is driven over its own FILE*
+// (never the real std::cout), one path per test; the installed binary covers finish_stdout itself
+// (e2e.edge.dev-full-update, e2e.edge.dev-full-bulk).
 #include "app/io.hpp"
+#include "app/recording_stdio_buf.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <cerrno>
+#include <cstddef>
+#include <cstdio>
+#include <memory>
+#include <ostream>
+#include <sstream>
+#include <string>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers): sigaction and pthread_sigmask are POSIX <signal.h>
 #include <signal.h>
@@ -34,7 +45,98 @@ private:
     struct sigaction action_{};
 };
 
+struct FileCloser {
+    void operator()(std::FILE* file) const noexcept { static_cast<void>(std::fclose(file)); }
+};
+using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
+
+/// A fresh write stream on `path`. /dev/full and /dev/null are not terminals, so stdio buffers the
+/// stream fully, as it does stdout redirected to them.
+[[nodiscard]] FilePtr open_for_write(const char* path) {
+    FilePtr file{std::fopen(path, "w")};
+    REQUIRE(file != nullptr);
+    return file;
+}
+
+/// Well over any stdio buffer (st_blksize of /dev/full is 4 KiB).
+inline constexpr std::size_t past_the_buffer = 64UL * 1024UL;
+
 } // namespace
+
+TEST_CASE("RecordingStdioBuf keeps the errno of a flush forced by a tied stream",
+          "[io][write-error]") {
+    const FilePtr file = open_for_write("/dev/full");
+    mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
+    std::ostream out{&buffer};
+    std::ostringstream err;
+    err.tie(&out); // as std::cerr is tied to std::cout
+
+    out << "data\n"; // fits in the stdio buffer: nothing is written yet
+    CHECK(out.good());
+    CHECK(buffer.first_errno() == 0);
+
+    err << "note\n"; // the sentry flushes `out` first, and that write fails
+    CHECK(out.bad());
+    CHECK(buffer.first_errno() == ENOSPC);
+    CHECK(err.str() == "note\n");
+}
+
+TEST_CASE("RecordingStdioBuf keeps the errno of a write that overflows the stdio buffer",
+          "[io][write-error]") {
+    const FilePtr file = open_for_write("/dev/full");
+    mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
+    std::ostream out{&buffer};
+
+    const std::string bulk(past_the_buffer, 'x');
+    out << bulk; // xsputn -> fwrite: the buffer fills, the write fails, fwrite comes up short
+    CHECK(out.bad());
+    CHECK(buffer.first_errno() == ENOSPC);
+}
+
+TEST_CASE("RecordingStdioBuf keeps the errno of a failed single-character put",
+          "[io][write-error]") {
+    const FilePtr file = open_for_write("/dev/full");
+    mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
+    std::ostream out{&buffer};
+
+    // No put area of its own, so every put() reaches overflow() -> putc; one of them fills the
+    // stdio buffer and fails. put() does nothing once badbit is set.
+    for (std::size_t i = 0; i < past_the_buffer; ++i) {
+        out.put('x');
+    }
+    CHECK(out.bad());
+    CHECK(buffer.first_errno() == ENOSPC);
+}
+
+TEST_CASE("RecordingStdioBuf reports the first error only", "[io][write-error]") {
+    const FilePtr file = open_for_write("/dev/full");
+    mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
+    std::ostream out{&buffer};
+
+    buffer.record(0); // never an error
+    CHECK(buffer.first_errno() == 0);
+    buffer.record(EIO);
+    out << "data" << std::flush; // fails with ENOSPC, after the first error
+    CHECK(out.bad());
+    CHECK(buffer.first_errno() == EIO);
+}
+
+TEST_CASE("RecordingStdioBuf passes output through and leaves errno alone on success",
+          "[io][write-error]") {
+    const FilePtr file = open_for_write("/dev/null");
+    mangadex_dl::app::RecordingStdioBuf buffer{file.get()};
+    std::ostream out{&buffer};
+
+    const std::string bulk(past_the_buffer, 'x');
+    errno = EINTR; // after the allocation: a caller's errno must survive successful writes/flushes
+    out << "line\n" << bulk;
+    out.put('x');
+    out.flush();
+    CHECK(out.good());
+    CHECK(errno == EINTR);
+    CHECK(buffer.first_errno() == 0);
+    CHECK(std::ferror(file.get()) == 0);
+}
 
 TEST_CASE("restore_default_sigpipe unblocks a blocked, ignored SIGPIPE and resets it to default",
           "[io][sigpipe]") {

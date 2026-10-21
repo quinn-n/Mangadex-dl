@@ -19,7 +19,6 @@
 
 #include <CLI/CLI.hpp>
 
-#include <cerrno>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -227,18 +226,10 @@ public:
     [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
 
     [[nodiscard]] bool output_failed() override {
-        if (!io_->out) {
-            return true; // an earlier write failed; its errno is long gone
-        }
-        errno = 0; // only report what this flush sets
+        // finish_stdout reports the reason: std::cout's RecordingStdioBuf keeps the errno of the
+        // first failed write or flush, this one included.
         io_->out.flush();
-        if (io_->out) {
-            return false;
-        }
-        // The stream drops what it could not write, so finish_stdout's own flush at exit succeeds
-        // and could only say "output error": hand it this flush's reason instead.
-        note_stdout_errno(errno);
-        return true;
+        return !io_->out;
     }
 
 private:

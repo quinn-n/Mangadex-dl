@@ -57,6 +57,12 @@ cli_e2e_case(NAME dev-full-help ARGS --help STDOUT_FILE /dev/full
 # keeps the text English.
 cli_e2e_case(NAME dev-full-reason ARGS --version STDOUT_FILE /dev/full
              EXPECT_EXIT 1 EXPECT_STDERR_REGEX "^mangadex-dl: write error: No space left on device\n$")
+# The same reason when the failure happens mid-run: the bulk output (about 450 KiB) overflows stdout's
+# 4 KiB stdio buffer long before exit, that write fails, glibc drops the buffer, and later output is
+# discarded, so the final flush has nothing to write. The errno comes from the first failed write.
+cli_e2e_case(NAME dev-full-bulk ARGS ${EDGE_BULK_ARGS} STDOUT_FILE /dev/full
+             EXPECT_EXIT 1 EXPECT_STDERR_REGEX "^mangadex-dl: write error: No space left on device\n$"
+             EXPECT_ABSENT out)
 
 # ---- SIGPIPE policy A: `tool | head -n 1` -> the writer dies by SIGPIPE, silently -------------------
 cli_e2e_case(NAME sigpipe ARGS ${EDGE_BULK_ARGS} PIPE_HEAD 1
@@ -121,14 +127,16 @@ set(_edge_note_one_re
 
 # stdout on a full device during an update: exit 1 with the `write error` diagnostic (never a silent 0),
 # and the update itself still lands: Vol. 2 is a sound EPUB, Vol. 1 is untouched, no temp file is left.
-# The reason after "write error: " is not pinned: the note on stderr is written first, and std::cerr is
-# tied to std::cout, so that write already flushes stdout, fails, and consumes the errno.
+# The reason is pinned to the FIRST failure's errno. std::cerr is tied to std::cout, so writing the note
+# flushes stdout first: that flush is the one that fails (ENOSPC), and glibc drops stdout's buffer, so
+# the final flush in finish_stdout has nothing to write and sets no errno. std::cout's recording buffer
+# (app/io.cpp, RecordingStdioBuf) keeps the errno from that first failed flush for finish_stdout.
 cli_e2e_case(NAME dev-full-update
              PRE_RUN ${_edge_update_pre_args}
              ARGS ${_edge_update_args}
              STDOUT_FILE /dev/full
              EXPECT_EXIT 1
-             EXPECT_STDERR_REGEX "^${_edge_note_one_re}mangadex-dl: write error: [^\n]+\n$"
+             EXPECT_STDERR_REGEX "^${_edge_note_one_re}mangadex-dl: write error: No space left on device\n$"
              EXPECT_EPUB "${_edge_vol2}"
              EXPECT_UNCHANGED "${_edge_vol1}"
              EXPECT_NO_GLOB "out/.*.part-*")
