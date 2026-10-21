@@ -1,8 +1,19 @@
 # grype config for the BINARY audit (scripts/audit.sh --scope binary): the conda packages listed
 # in audit/binary-packages.txt, i.e. code compiled or linked into the shipped mangadex-dl.
-# A finding here can reach users, so this list stays empty by default. Every entry needs:
+# A finding here can reach users, so add an entry only with evidence. Every entry needs:
 #   - vulnerability + package { name, version, type }, so a new version or a new CVE re-alerts;
 #   - a reason saying why the shipped binary is not affected (not merely "low EPSS"),
 #     with the date it was reviewed.
 # Passed with an explicit -c, which also stops grype from picking up ./.grype.yaml or ~/.grype.yaml.
-ignore: []
+#
+# 2026-10-21: CVE-2023-4039 matches libstdc++.a / libgcc.a once they are matched as gnu:gcc
+# (audit/cpe-overrides.json). Per its NVD record it is a -fstack-protector gap only in GCC toolchains
+# that TARGET AArch64 (CPE target_hw arm64), and it is DISPUTED (the GCC project calls it a missed
+# hardening bug). This project builds for linux-64 only (pixi.toml platforms), so it does not apply.
+ignore:
+  - vulnerability: CVE-2023-4039 # Medium
+    package: { name: libgcc-devel_linux-64, version: "16.2.0", type: conda }
+    reason: "AArch64-target-only stack-protector gap; the binary targets x86_64 only; reviewed 2026-10-21"
+  - vulnerability: CVE-2023-4039 # Medium
+    package: { name: libstdcxx-devel_linux-64, version: "16.2.0", type: conda }
+    reason: "AArch64-target-only stack-protector gap; the binary targets x86_64 only; reviewed 2026-10-21"

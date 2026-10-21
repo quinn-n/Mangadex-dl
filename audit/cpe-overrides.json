@@ -1,0 +1,16 @@
+{
+  "$comment": [
+    "CPEs that scripts/audit.sh adds to binary-scope conda artifacts before grype runs.",
+    "syft derives CPEs from conda package names (e.g. cpe:2.3:a:libstdcxx-devel_linux-64:...), which",
+    "name no NVD product, so the statically linked libstdc++.a / libgcc.a would never match a CVE.",
+    "These two packages ARE gcc's runtime libraries at gcc's version, so they are matched as gnu:gcc.",
+    "{version} is replaced with the artifact's version. Every key must be in audit/binary-packages.txt.",
+    "Deliberately NOT mapped: sysroot_linux-64 -> glibc (the binary links only glibc's crt objects and",
+    "libc_nonshared.a; libc.so itself comes from the user's host, so glibc 2.28's CVEs would be noise),",
+    "clang-23 / compiler-rt23 (builtin headers only), kernel-headers_linux-64 (UAPI headers only)."
+  ],
+  "overrides": {
+    "libgcc-devel_linux-64": "cpe:2.3:a:gnu:gcc:{version}:*:*:*:*:*:*:*",
+    "libstdcxx-devel_linux-64": "cpe:2.3:a:gnu:gcc:{version}:*:*:*:*:*:*:*"
+  }
+}
