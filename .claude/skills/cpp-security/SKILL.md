@@ -159,8 +159,9 @@ The contract `audit.sh` must keep:
 2. **Always print a coverage statement**, whatever the result, and quote it in reviews verbatim. It must say:
    - the tool names and versions (read at run time);
    - what was scanned: the conda packages installed in the `default` env, which is the one the release artifact is built from;
-   - that matching is **CPE-heuristic**: Syft emits CPEs, not PURLs, for conda packages, so expect false positives and misses;
-   - what is **NOT covered**: host/system libraries such as the target machine's glibc, vendored or FetchContent code, and `pixi.lock` itself. **Dependabot doesn't update `pixi.lock`, and GitHub's dependency graph doesn't read it.**
+   - that most scanned packages are build toolchain only and never ship, and which kinds are compiled or linked into the binary;
+   - that matching is **CPE-heuristic**: Syft emits CPEs, not PURLs, for conda packages, so expect false positives and misses. Say plainly that the statically linked toolchain runtime (libstdc++/libgcc/sysroot packages) is effectively not matched, because their conda names map to no NVD product;
+   - what is **NOT covered**: host/system libraries such as the target machine's glibc and the user's own libcurl (dlopen()ed at run time), vendored or FetchContent code, and `pixi.lock` itself. **Dependabot doesn't update `pixi.lock`, and GitHub's dependency graph doesn't read it.**
 3. **Exit nonzero on findings** at or above the configured threshold. A tool error is nonzero too.
 4. Keep the SBOM under `.platform-runs/audit/`, which is never committed.
 
