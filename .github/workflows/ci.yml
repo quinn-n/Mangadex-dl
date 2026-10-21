@@ -46,7 +46,7 @@ jobs:
           environments: ${{ matrix.env }}
           cache: true
 
-      - name: Quality gate (fmt-check, sanitized tests, lint, release build)
+      - name: Quality gate (fmt-check, sanitized tests, lint, release build, binary-packages list)
         run: pixi run -e ${{ matrix.env }} check
 
       - name: Release tests (unit + E2E + release-check on the release install)
@@ -76,11 +76,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Two disjoint halves of one SBOM, split by audit/binary-packages.txt (which `check` keeps in
+  # sync with the release build), so each finding alerts once and the job name says who is exposed:
+  #   binary = compiled/linked into the shipped binary (fails >= medium)
+  #   dev    = build toolchain only, never shipped (fails >= high; pinned ignores in audit/grype-dev.yaml)
   audit:
-    name: dependency audit
+    name: dependency audit (${{ matrix.scope }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: [binary, dev]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,8 +101,12 @@ jobs:
           cache: true
       # syft + grype in a throwaway env. Verify at /setup that both are on conda-forge
       # (`pixi search syft`, `pixi search grype`); otherwise use the SHA-pinned Anchore actions.
+      # syft/grype/jq resolve to the latest conda-forge builds here (outside pixi.lock): fine for a
+      # read-only scan job with contents: read.
       - name: syft (conda-meta cataloger) -> grype, with coverage statement
-        run: pixi exec --spec syft --spec grype -- bash scripts/audit.sh
+        env:
+          SCOPE: ${{ matrix.scope }}
+        run: pixi exec --spec syft --spec grype --spec jq -- bash scripts/audit.sh --scope "$SCOPE"
 
   # Optional: macOS / Windows. The only way to license those platform tiers. Needs
   # osx-arm64 / win-64 in pixi.toml `platforms`, matching compiler features, and presets that

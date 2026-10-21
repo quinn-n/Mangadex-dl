@@ -1,11 +1,9 @@
-# grype config for scripts/audit.sh, passed with an explicit -c (which also stops grype from
-# picking up ./.grype.yaml or ~/.grype.yaml).
-#
-# Every ignore entry must:
-#   - pin vulnerability + package { name, version, type }, so a rebuilt or upgraded package, or a
-#     new CVE, alerts again (a package-name-only rule would silence every future CVE: never write one);
-#   - carry a reason saying why the shipped binary is not affected, with the date it was reviewed.
-# Remove entries once conda-forge ships a fixed build and the lock moves.
+# grype config for the DEV audit (scripts/audit.sh --scope dev): every conda package in the
+# default env that is NOT in audit/binary-packages.txt -- the build toolchain (cmake, clang, ...),
+# its transitive deps, and libraries the binary never links. Nothing here ships to users.
+# Each entry pins vulnerability + package { name, version, type }: a rebuilt or upgraded package,
+# or a new CVE, alerts again. Remove entries once conda-forge ships a fixed build and the lock moves.
+# Passed with an explicit -c, which also stops grype from picking up ./.grype.yaml or ~/.grype.yaml.
 #
 # 2026-10-19 (first scheduled audit, run 39240423507): libssh2 1.11.1 and krb5 1.22.2 are in the env
 # only as deps of the conda libcurl package (pixi tree -i), which cmake needs and which this project

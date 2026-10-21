@@ -62,10 +62,11 @@ Run every tool through a pixi task so it uses the project's pinned toolchain. **
 | `configure` / `build` / `test` | sanitized `dev` preset (ASan+UBSan, `-O1 -g`, `-Werror`): configure → build → ctest (unit, in-process CLI, installed-binary E2E, edge suite, sanitizer positive controls). `test -R/-L/-E` filter |
 | `lint` / `lint-fix` / `lint-changed` | `run-clang-tidy` over own TUs (asserts a nonzero file count; a stated skip in the `gcc` env) / fix-its + `fmt` / changed lines vs the merge-base |
 | `release` / `release-test` | optimized, hardened, static-libstdc++ `release` build with `-Werror` / + tests + `release-check` on the release install |
-| **`check`** | **the gate:** `fmt-check` → `test` → `lint` → `release`, fail-fast |
+| `binary-packages` | the conda packages compiled/linked into the release binary (header deps + linker depfile), checked against `audit/binary-packages.txt`; `--update` rewrites it; a stated skip in the `gcc` env |
+| **`check`** | **the gate:** `fmt-check` → `test` → `lint` → `release` → `binary-packages`, fail-fast |
 | `cxx-probe` | compile and run one probe from `.claude/skills/platform-testing/probes/` or `.platform-runs/` with the dev preset's exact flags |
 | `bless` | re-bless E2E goldens matching a regex (**human-approved**; in `ask`) |
-| `cov` / `audit` / `package` | report-only coverage / syft + grype over the env / CPack tarball from the release build |
+| `cov` / `audit` / `package` | report-only coverage / syft + grype over the env, split into `--scope binary` (the `binary-packages` list, fails ≥ medium) and `--scope dev` (the rest, fails ≥ high, pinned ignores in `audit/grype-dev.yaml`) / CPack tarball from the release build |
 | optional: `tsan`, `fuzz`, `man` | commented in `pixi.example.toml`; enable per Project specifics |
 
 - **Two environments, same chain:** `nice pixi run check` (Clang) and `nice pixi run -e gcc check` (GCC). CI runs both on every PR. Run the gcc one locally when a change touches CMake, presets, warning flags or `pixi.toml`, or is compiler-sensitive.

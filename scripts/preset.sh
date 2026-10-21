@@ -103,7 +103,7 @@ fi
 bindir="build/$env_name/$base"
 PROG=preset.sh
 
-# ---- build-dir lock: this block is identical in scripts/preset.sh and scripts/lint.sh ----
+# ---- build-dir lock: this block is identical in scripts/preset.sh, scripts/lint.sh and scripts/binary-packages.sh ----
 # <binaryDir>.lock.d/ is taken with an atomic mkdir. <lock>/owner records the holder, one key per line:
 #   pid=<pid>  host=<uname -n>  pstart=<field 22 of /proc/<pid>/stat>  started=<UTC ISO-8601>  cmd=<label>
 # A waiter takes over a lock whose owner is gone (no such PID on this host, or the PID was reused,

@@ -48,6 +48,7 @@ nlohmann_json = "3.*"           # header-only; nlohmann_json::nlohmann_json (+ j
 catch2 = "3.*"                  # conda-forge Catch2 is shared-only (libCatch2.so): fine under ctest
 clang-format = "23.*"           # SAME major as clang/clang-tools; pinned here so the gcc env formats identically
 libcurl = ">=8.23.0,<9"         # headers only at build time (curl/curl.h); the binary dlopen()s libcurl.so.4 at runtime
+jq = ">=1.8.2,<2"              # scripts/binary-packages.sh and scripts/audit.sh (conda-meta / SBOM JSON)
 
 # ---- Compiler features ----
 [feature.clang.dependencies]
@@ -87,9 +88,15 @@ _release-configure = { cmd = "bash scripts/preset.sh configure release", env = {
 release = { cmd = "bash scripts/preset.sh build release", depends-on = ["_release-configure"] }
 release-test = { cmd = "bash scripts/preset.sh test release", depends-on = ["release"] }
 
+# Which conda packages are compiled/linked into the shipped binary, derived from the release
+# build (header deps + linker depfile) and checked against audit/binary-packages.txt; the audit
+# splits its scan with that list. `pixi run binary-packages --update` rewrites it. Default env
+# only (a stated skip elsewhere).
+binary-packages = { cmd = "bash scripts/binary-packages.sh", depends-on = ["release"] }
+
 # The quality gate. Fail-fast, in this order. Run both: `nice pixi run check` and
 # `nice pixi run -e gcc check`.
-check = { depends-on = ["fmt-check", "test", "lint", "release"] }
+check = { depends-on = ["fmt-check", "test", "lint", "release", "binary-packages"] }
 
 # Compile + run one probe (.claude/skills/platform-testing/probes/ or .platform-runs/ only)
 # with the dev preset's exact sanitizer flags and runtime options.
