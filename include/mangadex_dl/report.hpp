@@ -20,7 +20,8 @@ enum class EpubStatus {
     written, ///< published to DIR
     exists,  ///< a file of that name already existed and was left alone (up to date, diverged or
              ///< foreign); --overwrite was not given
-    failed,  ///< a network or media failure; nothing was published (an existing file is kept)
+    failed,  ///< a network or media failure, or (--overwrite) a directory under its name; nothing
+             ///< was published (an existing file or directory is kept)
 };
 
 /// What was found under the file's name before the run decided what to do with it.
@@ -29,7 +30,8 @@ enum class ExistingKind {
     complete,   ///< ours and up to date: left alone
     incomplete, ///< ours with chapters missing: rebuilt with page reuse (dry run: would be)
     diverged,   ///< ours with chapters missing and extra ones held: left alone, with a warning
-    foreign,    ///< not ours, not a regular file, unreadable or changed: left alone, warned
+    foreign,    ///< not ours, not a regular file, unreadable or changed: left alone, warned; with
+                ///< --overwrite only a directory, which fails the file (never replaced)
     unchecked,  ///< --overwrite: replaced without inspecting it
 };
 

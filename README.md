@@ -162,7 +162,12 @@ Before it writes a file, `mangadex-dl` looks at the file of that name already in
 | anything else (see [Files left alone](#files-left-alone)) | left alone, with a warning | `exists` / `"foreign"` |
 
 With **`--overwrite`** none of this applies: every existing file is downloaded again in full
-and replaced, without being looked at (`existing: "unchecked"`).
+and replaced, without being looked at (`existing: "unchecked"`). A symlink is replaced, never
+followed. The one exception is a **directory** with the file's name: a file never replaces a
+directory, so that file fails before anything is downloaded for it
+(`mangadex-dl: error: <path>: cannot replace a directory; rename or remove it, or use another DIR`;
+`failed` / `"foreign"`), the directory is left as it was, the other files are still written,
+and the run ends with exit 6. `--dry-run` reports it the same way (`... would fail`).
 
 The run still exits 0 when files are skipped or left alone. Files that are up to date are
 counted in one closing note on stderr (not shown with `-q`, never colored):
@@ -468,6 +473,8 @@ and the per-title results (on stderr, or in `--json`) say which. A one-row list 
 
   - `status: "exists"` means the file was **left alone**: up to date (`existing: "complete"`),
     or skipped with a warning (`"diverged"`, `"foreign"`). `summary.exists` counts them all.
+  - `status: "failed"` with `existing: "foreign"` is a `--overwrite` run that met a directory
+    with the file's name (it is never replaced).
   - `replaced: true` means an existing file is (or, with `--dry-run`, would be) replaced: with
     `--overwrite` (`existing: "unchecked"`), or, without it, by an update
     (`existing: "incomplete"`).
@@ -624,7 +631,8 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   modified in place.
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
-- An existing file is replaced only with `--overwrite`, or when it is a file made by
+- An existing file is replaced only with `--overwrite` (never a directory, which fails that
+  file instead), or when it is a file made by
   `mangadex-dl` that only lacks chapters (see [Running again](#running-again)). Any other
   existing file is left alone, including a file that appears while the download is running,
   which gets its own warning:

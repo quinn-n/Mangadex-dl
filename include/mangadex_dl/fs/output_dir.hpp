@@ -63,9 +63,18 @@ private:
 
 /// How publish() ended.
 enum class PublishOutcome {
-    written,  ///< the name did not exist; the file is now in place
-    replaced, ///< overwrite: an existing file of that name was atomically replaced
-    exists,   ///< no-clobber: the name already existed (file, symlink or directory); untouched
+    written,   ///< the name did not exist; the file is now in place
+    replaced,  ///< overwrite: an existing file of that name was atomically replaced
+    exists,    ///< no-clobber: the name already existed (file, symlink or directory); untouched
+    directory, ///< overwrite: the name is a directory, which a file never replaces; untouched
+};
+
+/// What one name in an OutputDir is, without following symlinks (a symlink, even to a
+/// directory, is replaced by an overwrite, never followed).
+enum class EntryKind {
+    absent,    ///< nothing has that name
+    directory, ///< a directory: an overwrite can never replace it
+    other,     ///< a regular file, symlink, FIFO, socket or device
 };
 
 /// What identifies one existing file between inspection and publish: the inode (device and
@@ -171,13 +180,18 @@ public:
     /// symlink exists.
     [[nodiscard]] Result<bool> exists(std::string_view name) const;
 
+    /// What `name` (one path component) is, without following symlinks.
+    [[nodiscard]] Result<EntryKind> entry_kind(std::string_view name) const;
+
     /// A new temporary for the eventual `final_name` (one path component): O_TMPFILE where the
     /// filesystem supports it, else a named `.<final>.part-<12 hex>` file (O_EXCL, O_NOFOLLOW).
     [[nodiscard]] Result<TempFile> create_temp(std::string_view final_name);
 
     /// Makes `temp` visible as `final_name`, consuming it (on failure it is still discarded).
-    /// No-clobber unless `overwrite`: an existing name gives PublishOutcome::exists. Then a
-    /// best-effort fsync of the directory.
+    /// No-clobber unless `overwrite`: an existing name gives PublishOutcome::exists. With
+    /// `overwrite`, a directory under that name gives PublishOutcome::directory (a file never
+    /// replaces one). Either way the temporary is discarded and nothing changes. After a
+    /// publish, a best-effort fsync of the directory.
     [[nodiscard]] Result<PublishOutcome> publish(TempFile&& temp, std::string_view final_name,
                                                  bool overwrite);
 
