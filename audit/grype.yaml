@@ -1,0 +1,63 @@
+# grype config for scripts/audit.sh, passed with an explicit -c (which also stops grype from
+# picking up ./.grype.yaml or ~/.grype.yaml).
+#
+# Every ignore entry must:
+#   - pin vulnerability + package { name, version, type }, so a rebuilt or upgraded package, or a
+#     new CVE, alerts again (a package-name-only rule would silence every future CVE: never write one);
+#   - carry a reason saying why the shipped binary is not affected, with the date it was reviewed.
+# Remove entries once conda-forge ships a fixed build and the lock moves.
+#
+# 2026-10-19 (first scheduled audit, run 39240423507): libssh2 1.11.1 and krb5 1.22.2 are in the env
+# only as deps of the conda libcurl package (pixi tree -i), which cmake needs and which this project
+# uses for curl/curl.h alone: the binary never links libcurl, it dlopen()s the host's libcurl.so.4,
+# so neither package's code is in the artifact. No fixed conda-forge build existed (pixi search).
+# The two CVE-2007-* krb5 matches are CPE-heuristic matches of 2007 CVEs against krb5 1.22.2.
+ignore:
+  - vulnerability: CVE-2007-3149 # High
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2007-5894 # High
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-107708 # Medium
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-107778 # High
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-40355 # High
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-40356 # High
+    package: { name: krb5, version: "1.22.2", type: binary }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2025-15661 # Medium
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-55199 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-55200 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-58050 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-58051 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-66032 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-66033 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-66034 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-66035 # High
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"
+  - vulnerability: CVE-2026-7598 # Critical
+    package: { name: libssh2, version: "1.11.1", type: conda }
+    reason: "build env only (libcurl dep for cmake + headers), not in the release binary; reviewed 2026-10-19"

@@ -152,6 +152,8 @@ When it runs:
 syft .pixi/envs/default --select-catalogers=+conda-meta-cataloger --output syft-json=.platform-runs/audit/sbom.json
 grype .platform-runs/audit/sbom.json
 ```
+**Ignores** live in `audit/grype.yaml`, which `audit.sh` passes with an explicit `grype -c` (that also stops grype from reading `./.grype.yaml` or `~/.grype.yaml`). Each entry pins `vulnerability` + `package { name, version, type }` and carries a dated `reason` that says why the artifact is not affected, so an upgraded package or a new CVE alerts again. A package-name-only rule would silence every future CVE for that package: never write one.
+
 The contract `audit.sh` must keep:
 1. **Probe first.** If `syft` or `grype` is missing, print what is missing, print the coverage statement saying nothing was scanned, and **exit 0 as a stated no-op**. **Never install anything.**
 2. **Always print a coverage statement**, whatever the result, and quote it in reviews verbatim. It must say:
