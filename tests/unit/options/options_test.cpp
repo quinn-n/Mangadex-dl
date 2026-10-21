@@ -256,7 +256,7 @@ TEST_CASE("validate_download_args maps the defaults", "[options][download_args]"
     CHECK_FALSE(options->title.has_value());
     CHECK_FALSE(options->overwrite);
     CHECK_FALSE(options->dry_run);
-    CHECK(options->jobs == 4U);
+    CHECK(options->jobs == 8U);
     CHECK(options->api_base == md::ApiBase{});
     CHECK(options->report);
 }
@@ -275,7 +275,7 @@ TEST_CASE("validate_download_args maps every option", "[options][download_args]"
         .title = "  My Title ",
         .overwrite = true,
         .dry_run = true,
-        .jobs = 8,
+        .jobs = 3,
         .api_base = "file:///srv/fixtures",
         .no_report = false,
     };
@@ -294,7 +294,7 @@ TEST_CASE("validate_download_args maps every option", "[options][download_args]"
     CHECK(options->title == std::optional<std::string>{"My Title"});
     CHECK(options->overwrite);
     CHECK(options->dry_run);
-    CHECK(options->jobs == 8U);
+    CHECK(options->jobs == 3U);
     CHECK(options->api_base.kind() == md::ApiBase::Kind::fixture);
     CHECK(options->api_base.fixture_root() == std::filesystem::path{"/srv/fixtures"});
     CHECK_FALSE(options->report);

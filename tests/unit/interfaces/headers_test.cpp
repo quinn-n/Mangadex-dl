@@ -436,7 +436,7 @@ TEST_CASE("Option aggregates default to the documented CLI defaults", "[interfac
     CHECK(raw.layout == "volumes");
     CHECK(raw.lang == "en");
     CHECK(raw.direction == "auto");
-    CHECK(raw.jobs == 4);
+    CHECK(raw.jobs == 8);
     CHECK(raw.api_base == md::default_api_base);
     CHECK_FALSE(raw.no_report);
 
@@ -448,7 +448,7 @@ TEST_CASE("Option aggregates default to the documented CLI defaults", "[interfac
     CHECK(options.layout == md::Layout::volumes);
     CHECK(options.quality == md::ImageQuality::data);
     CHECK(options.direction == md::DirectionChoice::automatic);
-    CHECK(options.jobs == 4U);
+    CHECK(options.jobs == 8U);
     CHECK(options.api_base == md::ApiBase{});
     CHECK(options.report);
 
@@ -767,7 +767,7 @@ TEST_CASE("Batch settings and jobs default to download's defaults", "[interfaces
     const md::RawBatchArgs stdin_args{.file = "-", .fail_fast = true};
     CHECK(stdin_args.file == "-");
     CHECK(stdin_args.fail_fast);
-    CHECK(stdin_args.defaults.jobs == 4);
+    CHECK(stdin_args.defaults.jobs == 8);
 
     const md::BatchSettings settings{.label = "<stdin>"};
     CHECK(settings.file.empty());

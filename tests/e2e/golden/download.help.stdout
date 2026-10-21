@@ -20,7 +20,7 @@ OPTIONS:
       --title TEXT                  Title for file names and metadata
       --overwrite                   Re-download files even if up to date
   -n, --dry-run                     List the files to write; download nothing
-  -j, --jobs N [4]                  Parallel image downloads, 1 to 8
+  -j, --jobs N [8]                  Parallel image downloads, 1 to 8
       --no-report                   Skip MangaDex@Home reliability reports
       --version                     Print the version and exit
       --json                        Write machine-readable JSON to stdout

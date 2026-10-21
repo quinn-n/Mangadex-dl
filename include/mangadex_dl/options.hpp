@@ -77,7 +77,7 @@ struct RawDownloadArgs {
     std::optional<std::string> title{};
     bool overwrite = false;
     bool dry_run = false;
-    int jobs = 4;
+    int jobs = 8;
     std::string api_base = std::string{default_api_base};
     bool no_report = false;
 };
@@ -96,7 +96,7 @@ struct DownloadOptions {
     std::optional<std::string> title{};
     bool overwrite = false;
     bool dry_run = false;
-    unsigned jobs = 4;
+    unsigned jobs = 8;
     ApiBase api_base{};
     bool report = true; ///< send MD@H reliability reports (official API only)
 

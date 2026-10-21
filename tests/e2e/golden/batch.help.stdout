@@ -19,7 +19,7 @@ OPTIONS:
       --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
       --overwrite                   Re-download files even if up to date
   -n, --dry-run                     List the files to write; download nothing
-  -j, --jobs N [4]                  Parallel image downloads, 1 to 8
+  -j, --jobs N [8]                  Parallel image downloads, 1 to 8
       --no-report                   Skip MangaDex@Home reliability reports
       --fail-fast                   Stop at the first title that fails
       --version                     Print the version and exit
