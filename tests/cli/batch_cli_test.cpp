@@ -21,6 +21,7 @@
 #include "app/cmd_download_output.hpp"
 #include "app/command.hpp"
 #include "app/io.hpp"
+#include "core/fs/output_dir_testing.hpp" // core-private fault seam (atomics; restored by RAII)
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/batch_csv.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
@@ -36,6 +37,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -829,6 +831,33 @@ TEST_CASE("batch: a re-run rebuilds grown files and counts only the up-to-date o
     CHECK(again.err == "mangadex-dl: 2 files are already up to date; pass --overwrite to download "
                        "them again\n");
     CHECK(fs_util::read_file(out / "a" / clean_vol1) == old_vol1);
+}
+
+TEST_CASE("batch: files a row left up to date count in the note even if the row then failed",
+          "[cli][batch][update]") {
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path list = tree.csv("rows.csv", std::format("manga\n{}\n", clean_id));
+    REQUIRE(run_command(tree.args(list, out)).exit_code == 0);
+    REQUIRE(fs::remove(out / clean_vol2));
+
+    // Vol. 01 is left alone as up to date; then the fsync of Vol. 02's temporary fails, a local
+    // error that ends the row (and the batch) without a report. The note still counts Vol. 01,
+    // as `download`'s would.
+    const md::testing::ScopedIoError eio{md::testing::IoStage::fsync, EIO};
+    const Captured r = run_command(tree.args(list, out));
+    CHECK(r.exit_code == 1);
+    CHECK(r.out.empty());
+    INFO("stderr: " << r.err);
+    // The row's error, then the note (before the closing line, as on a clean run).
+    CHECK(r.err ==
+          std::format("mangadex-dl: error: {}:2: cannot sync '{}': Input/output error\n"
+                      "mangadex-dl: 1 file is already up to date; pass --overwrite to download "
+                      "it again\n"
+                      "mangadex-dl: error: stopped at line 2: the error above affects every "
+                      "title\n",
+                      list.string(), clean_vol2));
+    CHECK(!fs::exists(out / clean_vol2));
 }
 
 TEST_CASE("batch --json: a re-run still counts the up-to-date files in the note",
