@@ -71,7 +71,7 @@ mangadex-dl download <MANGA> [DIR] [OPTIONS]
 | `--title TEXT` | from MangaDex | Title used in file names and EPUB metadata. |
 | `--overwrite` | off | Re-download files even if up to date (see [Running again](#running-again)). |
 | `-n, --dry-run` | off | Show what would be written; download and write nothing. |
-| `-j, --jobs N` | `4` | Parallel image downloads, 1 to 8. |
+| `-j, --jobs N` | `8` | Parallel image downloads, 1 to 8. |
 | `--no-report` | off | Don't send image-server reliability reports to MangaDex@Home (see [below](#mangadexhome-reports)). |
 
 Global options, accepted before or after `download`:
