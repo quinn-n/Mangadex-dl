@@ -148,6 +148,7 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message) {
     case Errc::incomplete:
     case Errc::interrupted:
     case Errc::mixed_failures:
+    case Errc::row_dir: // mdlist --dir-per-title only (batch never produces it): the row fails
         return false;
     }
     return true; // only reachable through an out-of-range enum value

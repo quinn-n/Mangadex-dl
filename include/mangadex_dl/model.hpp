@@ -201,6 +201,8 @@ struct Plan {
     std::vector<PlannedEpub> epubs{};
     std::vector<SkippedChapter> skipped{};
     std::vector<DedupeNote> dedupe{};
+    std::string file_stem{}; ///< sanitize_file_stem(manga.title, manga.id): every
+                             ///< epubs[i].file_name starts with it
 
     friend bool operator==(const Plan&, const Plan&) = default;
 };

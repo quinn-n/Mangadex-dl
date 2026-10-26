@@ -19,15 +19,16 @@ inline constexpr int usage = 2;
 /// download: the plan could not be built because of the network or the API (connection, TLS,
 /// timeout, 5xx or 429 retries exhausted, a malformed or oversized API response).
 inline constexpr int network = 3;
-/// download: the title id does not exist on MangaDex (the API answered 404).
+/// download, mdlist: the title (or, for mdlist, the list) does not exist on MangaDex (the API
+/// answered 404; a private list counts).
 inline constexpr int not_found = 4;
 /// download: the title exists, but nothing downloadable matched the language and selection.
 inline constexpr int no_chapters = 5;
 /// download: at least one output file failed; others may have been written.
 inline constexpr int incomplete = 6;
-/// batch: the titles that did not complete failed in more than one way (more than one distinct
-/// code among 1, 3, 4, 5 and 6; a row-scoped local failure counts as 1); the per-title results
-/// say which.
+/// batch/mdlist: the titles that did not complete failed in more than one way (more than one
+/// distinct code among 1, 3, 4, 5 and 6; a row-scoped local failure counts as 1); the per-title
+/// results say which.
 inline constexpr int mixed_failures = 7;
 
 /// An exception reached main(): a bug. Tests assert it never appears.

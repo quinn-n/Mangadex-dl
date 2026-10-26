@@ -5,7 +5,10 @@
 // checked in unevaluated contexts here (signatures), never called. The skip-existing plan's T1
 // headers (manifest, read source, zip index, existing-EPUB inspection, update decision) are
 // checked the same way; of their functions only group_preference_rank (extracted from the
-// planner) is defined yet, so it is the only one called.
+// planner) is defined yet, so it is the only one called. The list plan's T1 headers (ListId, the
+// title-directory seam, the mdlist document/fetch/settings, and the additive members and
+// overloads in the existing headers) are checked the same way: only their header-inline parts
+// run.
 #include "mangadex_dl/api_client.hpp"
 #include "mangadex_dl/attributes.hpp"
 #include "mangadex_dl/batch.hpp"
@@ -24,8 +27,10 @@
 #include "mangadex_dl/fs/row_dir.hpp"
 #include "mangadex_dl/image.hpp"
 #include "mangadex_dl/interrupt.hpp"
+#include "mangadex_dl/list_id.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/mangadex_api.hpp"
+#include "mangadex_dl/mdlist.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/net/curl_transport.hpp"
 #include "mangadex_dl/net/fixture_transport.hpp"
@@ -36,6 +41,7 @@
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/selection.hpp"
 #include "mangadex_dl/text_safety.hpp"
+#include "mangadex_dl/title_dir.hpp"
 #include "mangadex_dl/update_plan.hpp"
 #include "mangadex_dl/zip.hpp"
 #include "mangadex_dl/zip_index.hpp"
@@ -79,6 +85,9 @@ static_assert(md::exit_code_for(md::Errc::usage) == md::exit_code::usage);
 // batch: titles that failed in more than one way.
 static_assert(md::exit_code::mixed_failures == 7);
 static_assert(md::exit_code_for(md::Errc::mixed_failures) == 7);
+// mdlist --dir-per-title: a title whose own directory is unusable fails with 1; the run goes on.
+static_assert(md::exit_code_for(md::Errc::row_dir) == md::exit_code::failure);
+static_assert(md::exit_code_for(md::Errc::row_dir) == 1);
 
 // ---- limits ----------------------------------------------------------------------------------
 static_assert(md::zip_max_entries == 65534 && md::max_zip_entries_per_epub == 65534);
@@ -219,12 +228,18 @@ static_assert(
                    md::BatchResult (*)(std::span<const md::BatchJob>, md::TitleRunner&, bool)>);
 static_assert(
     std::is_same_v<decltype(&md::batch_exit_code), int (*)(const md::BatchResult&) noexcept>);
-static_assert(std::is_same_v<decltype(&md::batch_closing_message),
-                             std::optional<std::string> (*)(const md::BatchResult&, bool)>);
+// batch_closing_message and batch_to_json are overloaded (list plan T1): the static_cast selects
+// (and so requires) exactly the original overload.
+static_assert(std::is_same_v<
+              decltype(static_cast<std::optional<std::string> (*)(const md::BatchResult&, bool)>(
+                  &md::batch_closing_message)),
+              std::optional<std::string> (*)(const md::BatchResult&, bool)>);
 static_assert(
     std::is_same_v<decltype(&md::up_to_date_notice), std::optional<std::string> (*)(std::size_t)>);
-static_assert(std::is_same_v<decltype(&md::batch_to_json),
-                             std::string (*)(const md::BatchResult&, std::string_view, bool)>);
+static_assert(
+    std::is_same_v<decltype(static_cast<std::string (*)(const md::BatchResult&, std::string_view,
+                                                        bool)>(&md::batch_to_json)),
+                   std::string (*)(const md::BatchResult&, std::string_view, bool)>);
 static_assert(
     std::is_same_v<decltype(&md::OutputRegistry::claim),
                    std::optional<std::size_t> (md::OutputRegistry::*)(std::string, std::size_t)>);
@@ -380,6 +395,101 @@ static_assert(std::is_same_v<decltype(&md::OutputDir::publish_replacing),
 static_assert(
     std::is_same_v<decltype(&md::group_preference_rank),
                    std::size_t (*)(std::span<const md::ScanGroup>, std::span<const std::string>)>);
+
+// ---- list plan T1: limits and names ----------------------------------------------------------
+static_assert(md::max_list_separators == 200000);
+static_assert(md::max_list_name_bytes == 1024 && md::max_list_display_name_bytes == 64);
+static_assert(md::max_list_display_name_bytes < md::max_list_name_bytes);
+static_assert(md::list_row_label == "list");
+
+// ---- list plan T1: value types and ownership shapes -------------------------------------------
+static_assert(std::is_aggregate_v<md::TitleDirChoice> && std::is_aggregate_v<md::TitleDirClaim>);
+static_assert(std::is_aggregate_v<md::ListSummary> && std::is_aggregate_v<md::CustomList>);
+static_assert(std::is_aggregate_v<md::ListFetchError> &&
+              std::is_aggregate_v<md::ListFetchServices>);
+static_assert(std::is_aggregate_v<md::RawMdlistArgs> && std::is_aggregate_v<md::MdlistSettings>);
+static_assert(std::is_same_v<md::ListFetchResult<int>, std::expected<int, md::ListFetchError>>);
+static_assert(is_interface_v<md::TitleDirResolver>);
+// ListId is a value with an invariant: a public nil default, otherwise only parse() makes one.
+static_assert(std::is_default_constructible_v<md::ListId>);
+static_assert(!std::is_constructible_v<md::ListId, std::string>);
+static_assert(std::is_nothrow_move_constructible_v<md::ListId>);
+// The title-directory registry owns its keys and starts empty.
+static_assert(std::is_nothrow_default_constructible_v<md::TitleDirRegistry>);
+// The additive members (last, with DMIs) keep every existing designated initializer valid.
+static_assert(std::is_same_v<decltype(md::DownloadOptions::dir_per_title), bool>);
+static_assert(std::is_same_v<decltype(md::Plan::file_stem), std::string>);
+static_assert(std::is_same_v<decltype(md::DownloadServices::title_dir), md::TitleDirResolver*>);
+static_assert(std::is_same_v<decltype(md::BatchSettings::source), md::BatchSource>);
+static_assert(std::is_same_v<decltype(md::RowOutcome::dir), std::string>);
+
+// ---- list plan T1: frozen signatures (unevaluated: nothing is linked) ------------------------
+static_assert(
+    std::is_same_v<decltype(&md::ListId::parse), md::Result<md::ListId> (*)(std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::looks_like_list_id), bool (*)(std::string_view) noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::ListId::str), std::string_view (md::ListId::*)() const noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::ApiClient::fetch_list_document),
+                   md::Result<std::string> (md::ApiClient::*)(const md::ListId&, std::stop_token)>);
+static_assert(std::is_same_v<decltype(&md::TitleDirResolver::resolve),
+                             md::TitleDirChoice (md::TitleDirResolver::*)(std::string_view,
+                                                                          const md::MangaId&)>);
+static_assert(std::is_same_v<decltype(&md::TitleDirRegistry::claim),
+                             md::TitleDirClaim (md::TitleDirRegistry::*)(
+                                 std::string_view, const md::MangaId&, std::size_t)>);
+static_assert(
+    std::is_same_v<decltype(static_cast<std::optional<std::string> (*)(const md::BatchResult&, bool,
+                                                                       md::BatchSource)>(
+                       &md::batch_closing_message)),
+                   std::optional<std::string> (*)(const md::BatchResult&, bool, md::BatchSource)>);
+static_assert(std::is_same_v<
+              decltype(static_cast<std::string (*)(const md::BatchResult&, std::string_view, bool,
+                                                   const std::optional<md::ListSummary>&)>(
+                  &md::batch_to_json)),
+              std::string (*)(const md::BatchResult&, std::string_view, bool,
+                              const std::optional<md::ListSummary>&)>);
+static_assert(std::is_same_v<decltype(&md::list_request_url),
+                             std::string (*)(std::string_view, const md::ListId&)>);
+static_assert(std::is_same_v<decltype(&md::list_web_url), std::string (*)(const md::ListId&)>);
+static_assert(std::is_same_v<decltype(&md::parse_custom_list),
+                             md::Result<md::CustomList> (*)(std::string_view, const md::ListId&)>);
+static_assert(std::is_same_v<decltype(&md::is_custom_list_error_body), bool (*)(std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::list_name_for_display), std::string (*)(std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::list_summary), md::ListSummary (*)(const md::CustomList&)>);
+static_assert(
+    std::is_same_v<decltype(&md::fetch_custom_list),
+                   md::ListFetchResult<md::CustomList> (*)(const md::ListId&, const md::ApiBase&,
+                                                           const md::ListFetchServices&)>);
+static_assert(std::is_same_v<decltype(&md::validate_mdlist_args),
+                             md::Result<md::MdlistSettings> (*)(const md::RawMdlistArgs&)>);
+static_assert(std::is_same_v<decltype(&md::plan_list),
+                             std::vector<md::BatchJob> (*)(const md::CustomList&,
+                                                           const md::MdlistSettings&)>);
+
+/// A resolver written the way the app writes its own: the seam is implementable and dispatches
+/// through the base, and the choice owns its strings (nothing borrows `stem`).
+class StemResolver final : public md::TitleDirResolver {
+public:
+    StemResolver() = default;
+
+    [[nodiscard]] md::TitleDirChoice resolve(std::string_view stem,
+                                             const md::MangaId& manga) override {
+        ++calls_;
+        if (manga == md::MangaId{}) {
+            return md::TitleDirChoice{.name = std::string{stem}};
+        }
+        return md::TitleDirChoice{.name = std::string{stem} + " [x]", .warning = "moved aside"};
+    }
+
+    [[nodiscard]] int calls() const noexcept { return calls_; }
+
+private:
+    int calls_ = 0;
+};
 
 /// A borrower written the way the headers write theirs: the shim expands to a valid attribute
 /// (Clang) or to nothing (GCC) after the qualifiers.
@@ -818,4 +928,142 @@ TEST_CASE("Batch outcome aggregates default to an unrun, non-fatal row", "[inter
     const md::Utf8Decoded decoded{};
     CHECK(decoded.length == 0);
     CHECK(decoded.code_point == 0);
+}
+
+TEST_CASE("Error and Failure map the mdlist row_dir category to exit code 1",
+          "[interfaces][mdlist]") {
+    CHECK(md::Error{.code = md::Errc::row_dir}.exit_code() == md::exit_code::failure);
+
+    const md::Failure failure{md::Error{.code = md::Errc::row_dir, .message = "out/T: Not a dir"}};
+    CHECK(failure.exit_code() == 1);
+    CHECK(failure.error() == md::Error{.code = md::Errc::row_dir, .message = "out/T: Not a dir"});
+}
+
+TEST_CASE("A default list id is the nil UUID placeholder", "[interfaces][mdlist]") {
+    const md::ListId nil{};
+    CHECK(nil.str() == "00000000-0000-0000-0000-000000000000");
+    CHECK(nil == md::ListId{});
+    CHECK_FALSE(nil < md::ListId{});
+}
+
+TEST_CASE("The additive download members default to today's behaviour", "[interfaces][mdlist]") {
+    const md::DownloadOptions options{};
+    CHECK_FALSE(options.dir_per_title);
+    CHECK(options == md::DownloadOptions{});
+    CHECK(md::DownloadOptions{.dir_per_title = true} != options);
+    CHECK(md::DownloadOptions{.report = false, .dir_per_title = true} ==
+          md::DownloadOptions{.report = false, .dir_per_title = true});
+
+    const md::Plan plan{};
+    CHECK(plan.file_stem.empty());
+    CHECK(md::Plan{.layout = md::Layout::volumes, .file_stem = "Title"} != plan);
+
+    const md::DownloadServices services{};
+    CHECK(services.title_dir == nullptr);
+}
+
+TEST_CASE("The additive batch members default to a CSV batch", "[interfaces][mdlist]") {
+    const md::BatchSettings settings{};
+    CHECK(settings.source == md::BatchSource::csv);
+    const md::BatchSettings list_settings{.label = "list", .source = md::BatchSource::mdlist};
+    CHECK(list_settings.source == md::BatchSource::mdlist);
+    CHECK(list_settings.base == md::DownloadOptions{});
+    CHECK_FALSE(list_settings.fail_fast);
+
+    const md::RowOutcome outcome{};
+    CHECK(outcome.dir.empty());
+    const md::RowOutcome moved{.exit_code = 1, .dir = "out/Title"};
+    CHECK_FALSE(moved.fatal);
+    CHECK(moved.dir == "out/Title");
+    CHECK(moved != outcome);
+
+    const md::ListSummary summary{};
+    CHECK(summary.id.empty());
+    CHECK_FALSE(summary.name.has_value());
+    CHECK(summary.url.empty());
+    const md::ListSummary named{.id = "id", .url = "https://mangadex.org/list/id"};
+    CHECK_FALSE(named.name.has_value());
+    CHECK(named != summary);
+}
+
+TEST_CASE("The title-directory seam dispatches through the base and owns its strings",
+          "[interfaces][mdlist]") {
+    const md::TitleDirChoice choice{};
+    CHECK(choice.name.empty());
+    CHECK_FALSE(choice.warning.has_value());
+    CHECK(md::TitleDirChoice{.name = "T"} == md::TitleDirChoice{.name = "T", .warning = {}});
+
+    const md::TitleDirClaim claim{};
+    CHECK(claim.name.empty());
+    CHECK_FALSE(claim.taken_by.has_value());
+    const md::TitleDirClaim moved{.name = "T [77777777]", .taken_by = 1};
+    CHECK(moved.taken_by == std::optional<std::size_t>{1});
+    CHECK(moved != claim);
+
+    StemResolver concrete{};
+    md::TitleDirResolver& resolver = concrete;
+    md::TitleDirChoice plain{};
+    {
+        const std::string stem{"Clean Title"}; // dies before `plain` is read
+        plain = resolver.resolve(stem, md::MangaId{});
+    }
+    CHECK(plain == md::TitleDirChoice{.name = "Clean Title"});
+    const auto twin = md::MangaId::parse("77777777-0000-4000-8000-000000000001");
+    REQUIRE(twin.has_value());
+    const md::TitleDirChoice aside = resolver.resolve("Clean Title", *twin);
+    CHECK(aside.name == "Clean Title [x]");
+    CHECK(aside.warning == std::optional<std::string>{"moved aside"});
+    CHECK(concrete.calls() == 2);
+}
+
+TEST_CASE("The mdlist aggregates default-construct and take partial designated init",
+          "[interfaces][mdlist]") {
+    const md::CustomList list{};
+    CHECK(list.id == md::ListId{});
+    CHECK_FALSE(list.name.has_value());
+    CHECK(list.titles.empty());
+    const md::CustomList dupes{.titles = {md::MangaId{}, md::MangaId{}}}; // duplicates kept
+    CHECK(dupes.titles.size() == 2);
+    CHECK(dupes != list);
+
+    const md::ListFetchError error{};
+    CHECK(error.kind == md::ListFailureKind::request);
+    CHECK(error.error == md::Error{});
+    const md::ListFetchError content{
+        .kind = md::ListFailureKind::content,
+        .error = {.code = md::Errc::network, .message = "list x: malformed"}};
+    CHECK(content.error.exit_code() == md::exit_code::network);
+    CHECK(content != error);
+
+    const md::ListFetchResult<md::CustomList> failed{std::unexpect, content};
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().kind == md::ListFailureKind::content);
+
+    const md::ListFetchServices services{};
+    CHECK(services.transport == nullptr);
+    CHECK(services.clock == nullptr);
+    CHECK_FALSE(static_cast<bool>(services.jitter));
+    CHECK(services.trace == nullptr);
+
+    const md::RawMdlistArgs raw{};
+    CHECK(raw.list.empty());
+    CHECK(raw.defaults.dir == ".");
+    CHECK(raw.defaults.manga.empty());
+    CHECK_FALSE(raw.defaults.title.has_value());
+    CHECK_FALSE(raw.fail_fast);
+    CHECK_FALSE(raw.dir_per_title);
+    const md::RawMdlistArgs flagged{.list = "L", .dir_per_title = true};
+    CHECK(flagged.defaults.jobs == 8);
+    CHECK_FALSE(flagged.fail_fast);
+
+    const md::MdlistSettings settings{};
+    CHECK(settings.batch.source == md::BatchSource::csv); // validate_mdlist_args sets mdlist
+    CHECK(settings.list == md::ListId{});
+    CHECK_FALSE(settings.dir_per_title);
+    const md::MdlistSettings partial{
+        .batch = {.label = std::string{md::list_row_label}, .source = md::BatchSource::mdlist},
+        .dir_per_title = true};
+    CHECK(partial.batch.label == "list");
+    CHECK(partial.batch.base == md::DownloadOptions{});
+    CHECK(partial.list == md::ListId{});
 }
