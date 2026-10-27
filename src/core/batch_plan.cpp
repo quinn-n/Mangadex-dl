@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // `batch` phase 1 after parsing (batch plan T3a): the CLI-level checks, the per-row merge with
-// column-attributed diagnostics, the lexical containment of the `dir` column and the dedupe.
-// Pure: no I/O, no locale, no printing. Every message is raw bytes; the app sanitizes on print.
+// column-attributed diagnostics, the lexical containment of the `dir` column and the dedupe
+// (detail::mark_duplicates, shared with plan_list: src/core/batch_internal.hpp). Pure: no I/O,
+// no locale, no printing. Every message is raw bytes; the app sanitizes on print.
+#include "batch_internal.hpp"
 #include "mangadex_dl/attributes.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/batch_csv.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/list_id.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/selection.hpp"
@@ -245,8 +248,12 @@ plan_record(const ListRecord& record, const BatchSettings& settings, PlanErrors&
     };
 }
 
-/// Marks each job whose options equal an earlier job's. Jobs are grouped by title, and the
-/// groups hold indices (the vector is not resized here, but indices stay valid regardless).
+} // namespace
+
+namespace detail {
+
+/// Jobs are grouped by title, and the groups hold indices (the vector is not resized here, but
+/// indices stay valid regardless).
 void mark_duplicates(std::vector<BatchJob>& jobs) {
     std::map<MangaId, std::vector<std::size_t>> firsts_by_manga{};
     for (std::size_t i = 0; i < jobs.size(); ++i) {
@@ -261,7 +268,7 @@ void mark_duplicates(std::vector<BatchJob>& jobs) {
     }
 }
 
-} // namespace
+} // namespace detail
 
 Result<BatchSettings> validate_batch_args(const RawBatchArgs& raw) {
     if (raw.file.empty()) {
@@ -270,6 +277,11 @@ Result<BatchSettings> validate_batch_args(const RawBatchArgs& raw) {
     if (looks_like_manga_id(raw.file)) {
         return std::unexpected(usage_error("FILE looks like a MangaDex title; use 'mangadex-dl "
                                            "download <title>' for one title"));
+    }
+    // After the title check: a bare UUID is both, and keeps the title message.
+    if (looks_like_list_id(raw.file)) {
+        return std::unexpected(
+            usage_error("FILE looks like a MangaDex list; use 'mangadex-dl mdlist <list>'"));
     }
     if (raw.defaults.dir.empty()) {
         return std::unexpected(usage_error("DIR must not be empty"));
@@ -369,7 +381,7 @@ ListResult<std::vector<BatchJob>> plan_batch(const TitleList& list, const BatchS
     if (!errors.empty()) {
         return std::unexpected(std::move(errors).take());
     }
-    mark_duplicates(jobs);
+    detail::mark_duplicates(jobs);
     return jobs;
 }
 
