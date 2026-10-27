@@ -12,7 +12,8 @@
 //   best-effort. (Orchestrator decision 2026-10-18, download-plan-rev1.md.)
 // - Retries follow net/retry.hpp exactly; the client sleeps only when decide_retry says so, and a
 //   hard ceiling on attempts keeps the loop bounded whatever the configuration says.
-// - Status mapping happens after the loop: 2xx is success, 404 on the title is Errc::not_found,
+// - Status mapping happens after the loop: 2xx is success, 404 on the title is Errc::not_found
+//   (as is 404 on a list, or a 401/403 whose body names the CustomList: fetch_list_document),
 //   everything else is Errc::network as `<url>: <reason>` (403/400 with a hint, 429 with the UTC
 //   time the limit ends). A stop request is Errc::interrupted, wherever it lands.
 // - MD@H reports are best-effort and never delay a download: fetch_page only queues the report
@@ -30,8 +31,10 @@
 #include "mangadex_dl/api_client.hpp"
 
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/list_id.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/mangadex_api.hpp"
+#include "mangadex_dl/mdlist.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/net/retry.hpp"
 #include "mangadex_dl/net/transport.hpp"
@@ -688,6 +691,34 @@ Result<std::string> ApiClient::fetch_cover(const MangaId& id, std::string_view f
     return s.get_body(GetSpec{.url = cover_image_url(s.config.endpoints.uploads, id, file),
                               .max_body_bytes = max_image_bytes},
                       std::move(stop));
+}
+
+Result<std::string> ApiClient::fetch_list_document(const ListId& id, std::stop_token stop) {
+    State& s = *state_;
+    const std::string url = list_request_url(s.config.endpoints.api, id);
+    // perform, not get_body: a 401/403 is answered once (never retried) and its body decides
+    // whether it is the private-list fallback (fact-check V20); get_body would drop that body.
+    Result<HttpResponse> response =
+        s.perform(GetSpec{.url = url, .max_body_bytes = max_api_json_bytes}, std::move(stop));
+    if (!response) {
+        return std::unexpected(std::move(response.error()));
+    }
+    const int status = response->status;
+    if (status == 404 ||
+        ((status == 401 || status == 403) && is_custom_list_error_body(response->body))) {
+        return std::unexpected(Error{
+            .code = Errc::not_found,
+            // The id is validated and canonical, so echoing it is safe (LIST as typed is not).
+            .message = std::format("list {} not found on MangaDex (HTTP 404): it does not exist "
+                                   "or is private; check the id, make the list public on "
+                                   "MangaDex, or use 'mangadex-dl download' if it is a title",
+                                   id.str()),
+        });
+    }
+    if (!is_success(status)) {
+        return std::unexpected(s.status_error(url, *response));
+    }
+    return std::move(response->body);
 }
 
 } // namespace mangadex_dl

@@ -11,7 +11,7 @@
 // F):
 //   manga entity, feed collection pages ({data, limit, offset, total}), cover collection pages and
 //   the at-home server document. Unknown extra fields are included on purpose: parsers must ignore
-//   them.
+//   them. Custom-list documents follow the live sample in docs/design/list-spec.md (V3/V6).
 // - PNG and GIF pages are real, decodable minimal images (grayscale PNG with stored zlib blocks; a
 //   two-colour GIF89a whose LZW stream re-clears before every pixel). JPEG and WebP pages are
 //   HEADER-ONLY: sniffable (JPEG SOF0 marker, WebP RIFF/VP8X canvas) but not decodable. `garbage`
@@ -105,6 +105,19 @@ struct FixtureCover {
     friend bool operator==(const FixtureCover&, const FixtureCover&) = default;
 };
 
+/// A custom list (MDList) document written into a tree as api/list/<id>.json (list_json). Raw
+/// strings throughout, so a hostile document (a manga id `../x`, a `data.id` that is not the
+/// file's) is expressible; only `id` must be a safe path component.
+struct FixtureList {
+    std::string id{};                     ///< the file name and, unless data_id is set, data.id
+    std::optional<std::string> name{};    ///< attributes.name; nullopt writes null
+    std::vector<std::string> manga_ids{}; ///< the manga relationships, in order (then one user)
+    std::optional<std::string> data_id{}; ///< data.id when it differs from the file's id
+    std::string visibility = "public";
+
+    friend bool operator==(const FixtureList&, const FixtureList&) = default;
+};
+
 struct FixtureManga {
     std::string id{};
     std::string title_en{};
@@ -115,6 +128,8 @@ struct FixtureManga {
     std::vector<FixtureGroup> groups{};
     std::vector<FixtureChapter> chapters{};
     std::vector<FixtureCover> covers{};
+    /// Custom lists served by this tree (api/list/<id>.json); they may name any manga.
+    std::vector<FixtureList> lists{};
 };
 
 inline constexpr std::string_view at_home_base_url = "https://fixture.invalid";
@@ -546,6 +561,36 @@ covers_json(const FixtureManga& manga, std::size_t limit = default_cover_limit) 
             {"chapter", {{"hash", chapter.hash}, {"data", data}, {"dataSaver", data_saver}}}};
 }
 
+/// The fixture lists' ids: `a0000000-0000-4000-8000-<n as 12 hex digits>` (L1 is list_id(1)).
+[[nodiscard]] inline std::string list_id(std::uint64_t n) {
+    return std::format("a0000000-0000-4000-8000-{:012x}", n);
+}
+
+/// The owner of every fixture list: the one `user` relationship, always last (fact-check V3).
+inline constexpr std::string_view list_owner_id = "b0000000-0000-4000-8000-000000000001";
+
+/// `GET /list/{id}` in the live shape (list spec V3/V6): {"result":"ok","response":"entity",
+/// "data":{"id","type":"custom_list","attributes":{"name","visibility","version":1},
+/// "relationships":[{"id","type":"manga"}…,{"id","type":"user"}]}}. Entries are exactly
+/// {id, type}, with exactly one `user`, last.
+[[nodiscard]] inline nlohmann::json list_json(const FixtureList& list) {
+    nlohmann::json relationships = nlohmann::json::array();
+    for (const std::string& manga_id : list.manga_ids) {
+        relationships.push_back({{"id", manga_id}, {"type", "manga"}});
+    }
+    relationships.push_back({{"id", list_owner_id}, {"type", "user"}});
+    return {{"result", "ok"},
+            {"response", "entity"},
+            {"data",
+             {{"id", list.data_id.value_or(list.id)},
+              {"type", "custom_list"},
+              {"attributes",
+               {{"name", detail::optional_string(list.name)},
+                {"visibility", list.visibility},
+                {"version", 1}}},
+              {"relationships", relationships}}}};
+}
+
 // ---- the on-disk tree ---------------------------------------------------------------------------
 
 namespace detail {
@@ -606,6 +651,11 @@ namespace detail {
             return bad("cover file", cover.file);
         }
     }
+    for (const FixtureList& list : manga.lists) {
+        if (!safe_component(list.id)) {
+            return bad("list id", list.id);
+        }
+    }
     return {};
 }
 
@@ -651,6 +701,7 @@ write_chapter_files(const std::filesystem::path& root, const FixtureChapter& cha
 ///   at-home/data/<hash>/<p###.ext>              page images (not for PageImage::missing)
 ///   at-home/data-saver/<hash>/<s###.ext>        the same bytes under the data-saver names
 ///   uploads/covers/<mangaId>/<file>             cover images (served covers only)
+///   api/list/<listId>.json                      list_json, one per FixtureManga::lists entry
 /// An unserved chapter (FixtureChapter::served) gets neither its at-home document nor its images;
 /// an unserved cover gets no image file. Both stay listed in the API documents.
 [[nodiscard]] inline std::expected<void, std::string>
@@ -689,6 +740,12 @@ write_fixture_tree(const std::filesystem::path& root, const FixtureManga& manga)
         }
         if (const auto ok = detail::write_file(root / "uploads" / "covers" / manga.id / cover.file,
                                                image_bytes(cover.image));
+            !ok) {
+            return ok;
+        }
+    }
+    for (const FixtureList& list : manga.lists) {
+        if (const auto ok = detail::write_json(api / "list" / (list.id + ".json"), list_json(list));
             !ok) {
             return ok;
         }
@@ -740,6 +797,51 @@ enum class IdKind : std::uint16_t { chapter = 1, group = 2, author = 3, artist =
 
 } // namespace detail
 
+// ---- custom lists (list spec "E2E fixtures needed") --------------------------------------------
+//
+// Covers are one title per tree (api/cover/offset-*.json is not keyed by manga), so each list
+// mixes its tree's one real title with unknown ids. No tree serves list_id(0xff): that list is a
+// 404 in fixture mode (fact-check V19).
+
+/// A title id that no tree serves (a 404 in fixture mode).
+inline constexpr std::string_view unknown_manga_id = "66666666-6666-4666-8666-666666666666";
+
+/// The id no tree serves a list for.
+inline constexpr std::uint64_t unknown_list_n = 0xff;
+
+/// L1-L6, served by the clean tree:
+///   L1 "Clean List" (clean), L2 "Clean And Unknown" (clean, unknown), L3 "Empty" (no titles),
+///   L4 "Twice" (clean twice), L5 "Bad Id" (a manga id `../x`), L6 (no name; data.id is L1's).
+[[nodiscard]] inline std::vector<FixtureList> clean_lists() {
+    const std::string clean{"11111111-1111-4111-8111-111111111111"};
+    return {
+        {.id = list_id(1), .name = "Clean List", .manga_ids = {clean}},
+        {.id = list_id(2),
+         .name = "Clean And Unknown",
+         .manga_ids = {clean, std::string{unknown_manga_id}}},
+        {.id = list_id(3), .name = "Empty"},
+        {.id = list_id(4), .name = "Twice", .manga_ids = {clean, clean}},
+        {.id = list_id(5), .name = "Bad Id", .manga_ids = {"../x"}},
+        {.id = list_id(6), .manga_ids = {clean}, .data_id = list_id(1)},
+    };
+}
+
+/// L8, served by the nochapters tree: its title (exit 5) and an unknown one (exit 4).
+[[nodiscard]] inline std::vector<FixtureList> nochapters_lists() {
+    return {{.id = list_id(8),
+             .manga_ids = {"55555555-5555-4555-8555-555555555555", std::string{unknown_manga_id}}}};
+}
+
+/// L9, served by the incomplete tree: its title (exit 6).
+[[nodiscard]] inline std::vector<FixtureList> incomplete_lists() {
+    return {{.id = list_id(9), .manga_ids = {"44444444-4444-4444-8444-444444444444"}}};
+}
+
+/// L10, served by the bulk tree: its title (a dry run fills any pipe).
+[[nodiscard]] inline std::vector<FixtureList> bulk_lists() {
+    return {{.id = list_id(10), .manga_ids = {"33333333-3333-4333-8333-333333333333"}}};
+}
+
 /// 11111111-...: "Clean Title" (original ja). Vol 1 = ch 1-2, vol 2 = ch 3, all en, one group,
 /// PNG and GIF pages only, a cover per volume. Nothing is skipped and nothing warns.
 [[nodiscard]] inline FixtureManga clean_fixture() {
@@ -788,6 +890,7 @@ enum class IdKind : std::uint16_t { chapter = 1, group = 2, author = 3, artist =
          .file = "cover-v2.png",
          .locale = "ja"},
     };
+    m.lists = clean_lists();
     return m;
 }
 
@@ -845,6 +948,7 @@ namespace detail {
 [[nodiscard]] inline FixtureManga clean_variant_base() {
     FixtureManga m = clean_fixture();
     m.groups.push_back({.id = bravo_group_id(), .name = std::string{bravo_group_name}});
+    m.lists.clear(); // the clean tree serves L1-L6; the variants serve no list
     return m;
 }
 
@@ -1092,6 +1196,7 @@ inline constexpr std::size_t bulk_chapter_count = 4000;
         m.chapters.push_back(detail::numbered(
             d, i, {.chapter = std::to_string(i), .group_ids = {group}, .pages = 1}));
     }
+    m.lists = bulk_lists();
     return m;
 }
 
@@ -1128,6 +1233,7 @@ inline constexpr std::size_t bulk_chapter_count = 4000;
                  .volume = "1",
                  .file = "cover-v1.png",
                  .locale = "ja"}};
+    m.lists = incomplete_lists();
     return m;
 }
 
@@ -1159,6 +1265,7 @@ inline constexpr std::size_t bulk_chapter_count = 4000;
                           .group_ids = {group},
                           .images = {img(ImageKind::png)}}),
     };
+    m.lists = nochapters_lists();
     return m;
 }
 
