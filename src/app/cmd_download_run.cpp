@@ -12,6 +12,7 @@
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
+#include "mangadex_dl/title_dir.hpp"
 #include "mangadex_dl/version.hpp"
 
 #include <algorithm>
@@ -120,7 +121,7 @@ std::string incomplete_message(const RunSummary& summary, std::size_t total, boo
 
 TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
                    const Backend& backend, const std::string& agent, Io& io,
-                   const OutputPolicy& policy, const RowContext& row) {
+                   const OutputPolicy& policy, const RowContext& row, TitleDirResolver* title_dir) {
     // Lifetime: `backend` (the caller's) owns what `services` borrows; both outlive run_download.
     // Assigned member by member: with designated initializers clang-analyzer 23 loses track
     // of the members' destructors and reports the stop_source and std::function as leaked.
@@ -130,6 +131,7 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
     services.clock = backend.clock;
     services.jitter = make_jitter();
     services.user_agent = agent;
+    services.title_dir = title_dir; // borrowed for run_download only; null = the plain stem
 
     // Borrows `io` (a parameter, so it outlives the observer); owns its copy of `row`.
     ConsoleObserver observer{io, policy, row};

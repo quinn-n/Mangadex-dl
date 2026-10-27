@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Phase 2 of a multi-title run (list plan T3), shared by `batch` and (later) `mdlist`: the
+// Phase 2 of a multi-title run (list plan T3), shared by `batch` and `mdlist`: the
 // ConsoleTitleRunner over one Backend, run_batch, then the up-to-date note, the closing line and
 // the --json document. Also the stderr helpers every multi-title command prints with. Moved
-// verbatim out of cmd_batch.cpp: `batch` prints the same bytes as before.
+// verbatim out of cmd_batch.cpp (T3), then made source-aware (T9): row wording follows
+// BatchSettings::source, and --dir-per-title rows get a directory from one TitleDirRegistry per
+// run. `batch` (source csv, no list) prints the same bytes as before.
 #pragma once
 
 #include "cmd_download_output.hpp"
@@ -11,6 +13,7 @@
 #include "io.hpp"
 #include "mangadex_dl/batch.hpp"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -37,11 +40,26 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 /// pre-flight, then run_title per row), run_batch, then (unless interrupted) the up-to-date note,
 /// the closing line and, with --json, the document. Returns the aggregate exit code.
 ///
+/// Wording follows `settings.source`:
+/// - csv: rows are "<label>:<line>: ", "same as line <k>", "was already written by line <k>; give
+///   one of them a 'title' column", and the closing line says "line"/"lines";
+/// - mdlist: rows are "<label>:<line>: <uuid>: ", "same as item <k>", "was already written by
+///   item <k>; download one of them on its own with 'mangadex-dl download <title> --title ...'",
+///   and the closing line says "item"/"items".
+/// Either way the -v start line is "<label>:<line>: <uuid>".
+///
+/// A job with options.dir_per_title gets its directory below DIR from the run's TitleDirRegistry
+/// (first claim wins, in job order; a later title with the same name is moved aside with a
+/// warning), and its JSON `dir` is DIR/<name> once a name was claimed.
+///
+/// `list` (mdlist only) adds the --json `list` object; nullopt keeps the batch document.
+///
 /// Lifetime: every argument is borrowed for the call and nothing is kept after it returns.
 /// `backend` and `agent` are shared by every row; the caller keeps its interrupt handlers
 /// installed around the call.
 [[nodiscard]] int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
                                  const Backend& backend, const std::string& agent, Io& io,
-                                 const OutputPolicy& policy);
+                                 const OutputPolicy& policy,
+                                 const std::optional<ListSummary>& list = std::nullopt);
 
 } // namespace mangadex_dl::app
