@@ -701,15 +701,16 @@ void dedupe_releases(const std::vector<Candidate>& candidates,
     return std::nullopt;
 }
 
-/// Groups the kept chapters and fills in everything derived per file.
+/// Groups the kept chapters and fills in everything derived per file. `stem` is the title's
+/// file stem (Plan::file_stem): every file name starts with it.
 [[nodiscard]] Result<std::vector<PlannedEpub>>
 make_epubs(const std::vector<const Candidate*>& kept, const PlanInput& input,
-           const PlanOptions& options, std::string_view manga_id, std::string_view title) {
+           const PlanOptions& options, std::string_view manga_id, std::string_view title,
+           std::string_view stem) {
     Grouping grouping = group_chapters(kept, options.layout);
     const std::optional<Cover> single_cover = options.layout == Layout::single
                                                   ? first_volume_cover(kept, input, options.lang)
                                                   : std::nullopt;
-    const std::string stem = sanitize_file_stem(title, manga_id);
     std::set<std::string> used_names{};
     for (std::size_t i = 0; i < grouping.epubs.size(); ++i) {
         PlannedEpub& epub = grouping.epubs[i];
@@ -801,6 +802,9 @@ Result<Plan> build_plan(const PlanInput& input, const PlanOptions& options) {
                               .direction = resolve_direction(options.direction,
                                                              input.manga.original_language)},
         .layout = options.layout,
+        // One source of truth for the stem: make_epubs builds every file name from it, and
+        // --dir-per-title names the title's directory after it.
+        .file_stem = sanitize_file_stem(title, manga_id),
     };
 
     Result<std::vector<Candidate>> selected = select_candidates(input, options);
@@ -823,7 +827,8 @@ Result<Plan> build_plan(const PlanInput& input, const PlanOptions& options) {
             kept.push_back(&candidates[i]);
         }
     }
-    Result<std::vector<PlannedEpub>> epubs = make_epubs(kept, input, options, manga_id, title);
+    Result<std::vector<PlannedEpub>> epubs =
+        make_epubs(kept, input, options, manga_id, title, plan.file_stem);
     if (!epubs) {
         return std::unexpected(std::move(epubs).error());
     }
