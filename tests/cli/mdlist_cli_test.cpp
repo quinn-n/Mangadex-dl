@@ -555,7 +555,7 @@ TEST_CASE("mdlist: -v prints the list line, then 'list:<n>: <uuid>' for each ite
     }
 }
 
-TEST_CASE("mdlist: -v shows the list name terminal-safe and cut; a nameless list has none",
+TEST_CASE("mdlist: -v shows the list name terminal-safe, cut and escaped; a nameless list has none",
           "[cli][mdlist][verbose]") {
     const Tree tree{mdx::clean_fixture()};
     const std::string clean{clean_id};
@@ -563,6 +563,8 @@ TEST_CASE("mdlist: -v shows the list name terminal-safe and cut; a nameless list
     for (int i = 0; i < 40; ++i) {
         long_name += "\xc3\xa9"; // U+00E9, two bytes: byte 64 is a continuation byte
     }
+    const std::string a62(md::max_list_display_name_bytes - 2, 'a');
+    const std::string a63(md::max_list_display_name_bytes - 1, 'a');
 
     struct Case {
         mdx::FixtureList list{};
@@ -576,6 +578,20 @@ TEST_CASE("mdlist: -v shows the list name terminal-safe and cut; a nameless list
         {.list = {.id = list(0x22), .name = long_name, .manga_ids = {clean}},
          .expected = std::format("mangadex-dl: list {} \"{}...\": 1 title", list(0x22),
                                  long_name.substr(0, 63))},
+        // `\` and `"` are escaped inside the quotes (cli-ux L1).
+        {.list = {.id = list(0x23), .name = R"(Say "hi" \ bye)", .manga_ids = {clean}},
+         .expected =
+             std::format(R"(mangadex-dl: list {} "Say \"hi\" \\ bye": 1 title)", list(0x23))},
+        // The cut comes first (64 bytes of the name), then the escapes: bytes 63 and 64 are `\"`,
+        // both kept and both escaped, so the cut never splits an escape.
+        {.list = {.id = list(0x24), .name = a62 + R"(\"tail)", .manga_ids = {clean}},
+         .expected = std::format(R"(mangadex-dl: list {} "{}\\\"...": 1 title)", list(0x24), a62)},
+        // `"` as byte 64, the last one kept: escaped, then the ellipsis.
+        {.list = {.id = list(0x25), .name = a63 + "\"x", .manga_ids = {clean}},
+         .expected = std::format(R"(mangadex-dl: list {} "{}\"...": 1 title)", list(0x25), a63)},
+        // `"` as byte 65: cut away, nothing to escape.
+        {.list = {.id = list(0x26), .name = a63 + "b\"", .manga_ids = {clean}},
+         .expected = std::format(R"(mangadex-dl: list {} "{}b...": 1 title)", list(0x26), a63)},
     };
     for (const Case& c : cases) {
         INFO(c.list.id);
@@ -875,6 +891,43 @@ TEST_CASE("mdlist --dir-per-title: a second title with the same name is moved as
     }
 }
 
+TEST_CASE("mdlist: flat, a second title with the same name gets one line per file",
+          "[cli][mdlist][collision]") {
+    const Tree tree{CleanTwin{}};
+    const std::string id = list(0x41);
+    tree.add_list(mdx::FixtureList{
+        .id = id, .name = "Twins", .manga_ids = {std::string{clean_id}, std::string{twin_id}}});
+    const fs::path out = tree.path("out");
+    std::string collisions{};
+    for (const std::string_view file : {clean_vol1, clean_vol2}) {
+        collisions += std::format(
+            "mangadex-dl: warning: list:2: {}: {} was already written by item 1 (another title "
+            "with the same name); pass --dir-per-title to give each title its own directory, or "
+            "download one of them on its own with 'mangadex-dl download <title> --title ...'\n",
+            twin_id, (out / file).string());
+    }
+
+    const Captured r = run_command(tree.args(id, out));
+    CHECK(r.exit_code == 0);
+    CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+    CHECK(r.err == collisions); // no "left alone: holds a different book; ... --title" line
+    CHECK(listing(out) ==
+          std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
+
+    SECTION("--json: unchanged, the twin's files are left alone as foreign") {
+        const Captured json = run_command(tree.args(id, out), {.globals = {.json = true}});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == collisions + "mangadex-dl: 2 files are already up to date; pass "
+                                       "--overwrite to download them again\n");
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+            CHECK(epub.at("existing") == "foreign");
+        }
+    }
+}
+
 TEST_CASE("mdlist --dir-per-title -v: 'output directory:' follows the item line",
           "[cli][mdlist][dir-per-title][verbose]") {
     const Tree tree{mdx::clean_fixture()};
@@ -936,7 +989,8 @@ TEST_CASE("mdlist --dir-per-title: an item whose directory is a file fails alone
     CHECK(r.out.empty());
     CHECK(r.err ==
           std::format(
-              "mangadex-dl: error: list:1: {}: cannot open directory '{}': Not a directory\n"
+              "mangadex-dl: error: list:1: {}: cannot open directory '{}': Not a directory; "
+              "rename or remove it, or run without --dir-per-title\n"
               "mangadex-dl: error: list:2: {}: {}\n"
               "mangadex-dl: error: 2 of 2 titles did not complete (items 1, 2); see the errors "
               "above\n",

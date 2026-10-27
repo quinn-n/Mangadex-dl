@@ -709,10 +709,11 @@ Result<std::string> ApiClient::fetch_list_document(const ListId& id, std::stop_t
         return std::unexpected(Error{
             .code = Errc::not_found,
             // The id is validated and canonical, so echoing it is safe (LIST as typed is not).
-            .message = std::format("list {} not found on MangaDex (HTTP 404): it does not exist "
+            // The status as received: 404, or the 401/403 MangaDex answers a private list with.
+            .message = std::format("list {} not found on MangaDex (HTTP {}): it does not exist "
                                    "or is private; check the id, make the list public on "
                                    "MangaDex, or use 'mangadex-dl download' if it is a title",
-                                   id.str()),
+                                   id.str(), status),
         });
     }
     if (!is_success(status)) {

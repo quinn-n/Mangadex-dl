@@ -673,3 +673,22 @@ TEST_CASE("OutputRegistry: keyed on the lexically normalized path", "[batch][reg
     CHECK(!registry.claim("out/a.epub", 7).has_value());
     CHECK(!registry.claim("out/sub/A.epub", 8).has_value());
 }
+
+TEST_CASE("OutputRegistry: claimed_by looks a path up without claiming it", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    CHECK(!registry.claimed_by("out/A.epub").has_value());
+    CHECK(!registry.claimed_by("").has_value());
+    CHECK(!registry.claim("out/A.epub", 2).has_value());
+    CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{2});
+    // Keyed as claim() keys it.
+    CHECK(registry.claimed_by("out//A.epub") == std::optional<std::size_t>{2});
+    CHECK(registry.claimed_by("./out/sub/../A.epub") == std::optional<std::size_t>{2});
+    CHECK(!registry.claimed_by("out/a.epub").has_value());
+    // The lookup recorded nothing: line 3 still claims out/B.epub first.
+    CHECK(!registry.claimed_by("out/B.epub").has_value());
+    CHECK(!registry.claim("out/B.epub", 3).has_value());
+    CHECK(registry.claimed_by("out/B.epub") == std::optional<std::size_t>{3});
+    // A later claim does not move the first one.
+    CHECK(registry.claim("out/A.epub", 4) == std::optional<std::size_t>{2});
+    CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{2});
+}

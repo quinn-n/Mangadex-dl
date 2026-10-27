@@ -203,6 +203,10 @@ public:
     /// std::filesystem::path(path).lexically_normal().generic_string() of the joined path.
     [[nodiscard]] std::optional<std::size_t> claim(std::string path, std::size_t line);
 
+    /// The line that claimed `path` so far (keyed as claim() keys it), or nullopt. Records
+    /// nothing.
+    [[nodiscard]] std::optional<std::size_t> claimed_by(std::string_view path) const;
+
 private:
     std::map<std::string, std::size_t, std::less<>> by_path_{};
 };

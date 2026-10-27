@@ -487,8 +487,10 @@ TEST_CASE("download dir per title: a title directory that is a file fails the ti
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == md::Errc::row_dir);
     CHECK(result.error().exit_code() == 1);
-    CHECK(result.error().message ==
-          "cannot open directory '" + (h.out() / clean_stem).string() + "': Not a directory");
+    // check_row_dir's wording, plus the way out only --dir-per-title has (cli-ux L7).
+    CHECK(result.error().message == "cannot open directory '" + (h.out() / clean_stem).string() +
+                                        "': Not a directory; rename or remove it, or run without "
+                                        "--dir-per-title");
     CHECK(list_tree(h.out()) == before);
     CHECK(observer.starting_with("end: ").empty());
     CHECK(observer.starting_with("begin: ").empty());
@@ -508,6 +510,7 @@ TEST_CASE("download dir per title: DIR that is a file is a global failure",
     const auto result = h.run(options, observer, &resolver);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == md::Errc::failure);
+    // DIR itself: no --dir-per-title advice (the flag is not what made DIR).
     CHECK(result.error().message ==
           "cannot open directory '" + h.out().string() + "': Not a directory");
     CHECK(resolver.calls().size() == 1);

@@ -493,9 +493,11 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
 
 - **By default, flat:** every title's files go straight into `DIR`, named as in `download`
   (see [File names](#file-names)). Two different titles with the same name would write the same
-  file: the earlier item keeps it, and the later one gets
-  `list:4: <uuid>: <path> was already written by item 2; download one of them on its own with 'mangadex-dl download <title> --title ...'`.
-  Nothing is overwritten, even with `--overwrite`.
+  file: the earlier item keeps it, and the later one gets one warning per file (instead of the
+  usual `left alone: holds a different book` warning):
+  `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'`.
+  Nothing is overwritten, even with `--overwrite`. The fix is `--dir-per-title`, which gives the
+  two titles different directories (below).
 - **`--dir-per-title`** puts each title in its own subdirectory, named exactly like its files and
   made safe the same way: `DIR/<title>/<title> - Vol. 01.epub`. The directory is created only
   when the title has a file to write, and never with `--dry-run`.
@@ -507,7 +509,7 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
     not recorded, so a same-name title added earlier in the list takes the plain name over.
   - A title whose own directory can't be used (a regular file with its name, say) fails alone,
     with exit code 1 for that title, and the next title runs:
-    `list:1: <uuid>: cannot open directory '<DIR>/<name>': Not a directory`.
+    `list:1: <uuid>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`.
 - **New paths:** a renamed title, another `--lang` (a title without an English title is named
   after its `--lang` title, when it has one), or switching between flat and `--dir-per-title`
   gives new paths. The files are downloaded again there, and the old ones are left alone; delete
@@ -531,9 +533,10 @@ with these differences:
   `...; run the same command again to retry them`, `2 of 15 titles would fail (items 4, 9)` with
   `--dry-run`, or `stopped at item 9: ...; 6 titles not run`.
 - **`-v`** first prints the list, `mangadex-dl: list <list-uuid> "<name>": 2 titles` (`1 title`
-  for one; `list <list-uuid>: 2 titles` for a list without a name), then begins each title with
-  `list:1: <uuid>`; with `--dir-per-title` it also prints `output directory: <DIR>/<name>`. `-vv`
-  adds the request trace, including the list request.
+  for one; `list <list-uuid>: 2 titles` for a list without a name; a long name is cut after 64
+  bytes and ends `...`, and a `"` or `\` in it is shown as `\"` or `\\`), then begins each
+  title with `list:1: <uuid>`; with `--dir-per-title` it also prints
+  `output directory: <DIR>/<name>`. `-vv` adds the request trace, including the list request.
 - **An empty list** prints the warning `mangadex-dl: warning: list <list-uuid> has no titles`
   (not shown with `-q`), creates nothing and exits 0.
 - **Ctrl-C / `SIGTERM`** during the list request: nothing is printed and nothing is created.
@@ -570,6 +573,8 @@ list itself can fail:
 
 - **4:** the list does not exist, or is private:
   `mangadex-dl: error: list <list-uuid> not found on MangaDex (HTTP 404): it does not exist or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' if it is a title`.
+  The status is the one MangaDex answered with: a private list may give `(HTTP 403)` or
+  `(HTTP 401)` instead of `(HTTP 404)`, with the same message and the same exit code.
   A title's bare UUID given as `LIST` ends this way too.
 - **3:** the list request failed (connection, DNS, TLS, timeout, server errors or rate limiting
   that did not clear, a response over 16 MiB); the error ends with the network remedy, as for a

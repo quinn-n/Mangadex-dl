@@ -56,6 +56,14 @@ constexpr std::string_view not_found_message =
     "list a0000000-0000-4000-8000-000000000001 not found on MangaDex (HTTP 404): it does not exist "
     "or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' "
     "if it is a title";
+/// The not-found message of a private list, which MangaDex answers with 401 or 403: the same text
+/// with the status received.
+[[nodiscard]] std::string private_list_message(int status) {
+    return std::format("list a0000000-0000-4000-8000-000000000001 not found on MangaDex (HTTP {}): "
+                       "it does not exist or is private; check the id, make the list public on "
+                       "MangaDex, or use 'mangadex-dl download' if it is a title",
+                       status);
+}
 /// The live 404 body for a list that does not exist (list spec "Exit codes").
 constexpr std::string_view custom_list_error_body =
     R"({"result":"error","errors":[{"id":"8f2b","status":404,"title":"not_found_http_exception",)"
@@ -212,7 +220,9 @@ TEST_CASE("mdlist fetch: 401 or 403 with a CustomList error body is not_found, a
     h.transport().push_status(std::string{l1_url}, status, std::string{custom_list_error_body});
     const auto list = h.fetch(l1());
     check_request_error(list, md::Errc::not_found);
-    CHECK(list.error().error.message == not_found_message);
+    // The status as received, not a fixed 404 (cli-ux L6); the exit code is still 4.
+    CHECK(list.error().error.message == private_list_message(status));
+    CHECK(list.error().error.exit_code() == 4);
     CHECK(h.transport().count(l1_url) == 1);
     CHECK(h.clock().sleeps().empty()); // no retry wait (the first API slot is free)
 }

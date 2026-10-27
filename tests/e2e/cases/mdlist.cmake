@@ -321,4 +321,4 @@ cli_e2e_case(NAME dir-per-title-dry-run
 cli_e2e_case(NAME dir-per-title-row-dir-file
              ARGS mdlist --dry-run --dir-per-title ${_mdlist_clean_api} ${_mdlist_l2} {{INPUTS}}/mdlist
              EXPECT_EXIT 7 EXPECT_STDOUT_EMPTY
-             EXPECT_STDERR_REGEX "^mangadex-dl: error: list:1: ${_mdlist_clean_id}: cannot open directory '[^\n]*/inputs/mdlist/Clean Title': Not a directory\n${_mdlist_l2_item2_re}mangadex-dl: error: 2 of 2 titles would fail \\(items 1, 2\\)\n$")
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: list:1: ${_mdlist_clean_id}: cannot open directory '[^\n]*/inputs/mdlist/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title\n${_mdlist_l2_item2_re}mangadex-dl: error: 2 of 2 titles would fail \\(items 1, 2\\)\n$")

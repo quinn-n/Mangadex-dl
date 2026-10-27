@@ -11,7 +11,7 @@
 // `batch` still prints exactly what it printed before.
 //
 // Covers AC39 (runner half), AC41 (runner level, the clean-twin tree), the item wording, the
-// mdlist flat-collision advice and the csv byte-identity.
+// mdlist flat-collision advice (one line per file: cli-ux M1) and the csv byte-identity.
 //
 // Catch2 test names must not start with '-'. Every name starts with "mdlist" so
 // `pixi run tsan -R 'cli\.mdlist'` selects them all.
@@ -382,7 +382,8 @@ TEST_CASE("mdlist runner --dir-per-title: an item whose directory is a file fail
     const std::vector<md::BatchJob> jobs =
         make_jobs(settings, {clean_id, unknown_id}, /*dir_per_title=*/true);
     const std::string row_error =
-        std::format("mangadex-dl: error: list:1: {}: cannot open directory '{}': Not a directory\n",
+        std::format("mangadex-dl: error: list:1: {}: cannot open directory '{}': Not a directory; "
+                    "rename or remove it, or run without --dir-per-title\n",
                     clean_id, (out / clean_dir).string());
     const std::string not_found = std::format("mangadex-dl: error: list:2: {}: {}\n", unknown_id,
                                               not_found_message(unknown_id));
@@ -404,7 +405,9 @@ TEST_CASE("mdlist runner --dir-per-title: an item whose directory is a file fail
     CHECK(statuses(doc) == std::vector<std::string>{"failed", "not_found"});
     CHECK(doc.at("titles").at(0).at("exit_code") == 1);
     CHECK(doc.at("titles").at(0).at("error") ==
-          std::format("cannot open directory '{}': Not a directory", (out / clean_dir).string()));
+          std::format("cannot open directory '{}': Not a directory; rename or remove it, or run "
+                      "without --dir-per-title",
+                      (out / clean_dir).string()));
     // The engine claimed the name before its pre-flight failed the item.
     CHECK(doc.at("titles").at(0).at("dir") == (out / clean_dir).string());
     // Item 2 ended before its plan (404): no name of its own, not item 1's either.
@@ -520,6 +523,19 @@ TEST_CASE("mdlist runner --dir-per-title: a second title with the same name is m
 
 // ---- flat mode collision ---------------------------------------------------------------------
 
+namespace {
+
+/// The mdlist collision line for `path` (item 2 = the twin, item 1 = the clean title).
+[[nodiscard]] std::string mdlist_collision(const fs::path& path) {
+    return std::format("mangadex-dl: warning: list:2: {}: {} was already written by item 1 "
+                       "(another title with the same name); pass --dir-per-title to give each "
+                       "title its own directory, or download one of them on its own with "
+                       "'mangadex-dl download <title> --title ...'\n",
+                       twin_id, path.string());
+}
+
+} // namespace
+
 TEST_CASE("mdlist runner: two titles writing the same file get the mdlist collision advice",
           "[cli][mdlist][batch-jobs][collision]") {
     const Tree tree{CleanTwin{}};
@@ -527,15 +543,68 @@ TEST_CASE("mdlist runner: two titles writing the same file get the mdlist collis
     const md::BatchSettings settings = tree.list_settings(out, /*dry_run=*/true);
     const Captured r = run_jobs(make_jobs(settings, {clean_id, twin_id}), settings);
     CHECK(r.exit_code == 0);
-    INFO("stderr: " << r.err);
-    for (const std::string_view file : {clean_vol1, clean_vol2}) {
-        CHECK(r.err.contains(std::format(
-            "mangadex-dl: warning: list:2: {}: {} was already written by item 1; download one of "
-            "them on its own with 'mangadex-dl download <title> --title ...'\n",
-            twin_id, (out / file).string())));
-    }
+    // A dry run writes nothing, so item 2 finds no file to leave alone: only the collision lines.
+    CHECK(r.err == mdlist_collision(out / clean_vol1) + mdlist_collision(out / clean_vol2));
     CHECK(!r.err.contains("'title' column"));
     CHECK(!r.err.contains("by line"));
+}
+
+TEST_CASE("mdlist runner: a real flat clash prints one line per file, the collision line",
+          "[cli][mdlist][batch-jobs][collision]") {
+    const Tree tree{CleanTwin{}};
+    const fs::path out = tree.path("out");
+    const md::BatchSettings settings = tree.list_settings(out);
+    const std::vector<md::BatchJob> jobs = make_jobs(settings, {clean_id, twin_id});
+    const std::string collisions =
+        mdlist_collision(out / clean_vol1) + mdlist_collision(out / clean_vol2);
+
+    SECTION("item 2 finds item 1's files: no 'holds a different book' line, no --title advice") {
+        const Captured r = run_jobs(jobs, settings);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == collisions);
+        CHECK(!r.err.contains("left alone"));
+        CHECK(!r.err.contains("use another DIR or --title"));
+
+        // A re-run: item 1 is up to date, item 2 still gets exactly one line per file.
+        const Captured again = run_jobs(jobs, settings);
+        CHECK(again.exit_code == 0);
+        CHECK(again.out.empty());
+        CHECK(again.err == collisions + "mangadex-dl: 2 files are already up to date; pass "
+                                        "--overwrite to download them again\n");
+    }
+    SECTION("--json: the report still says the files were left alone as foreign") {
+        const Captured r = run_jobs(jobs, settings, {.json = true}, list_summary());
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == collisions);
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        const Json& epubs = doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(epubs.size() == 2);
+        for (const Json& epub : epubs) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "foreign");
+        }
+    }
+    SECTION("-q: nothing at all") {
+        const Captured r = run_jobs(jobs, settings, {.quiet = true});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err.empty());
+    }
+    SECTION("a file only item 2 would write keeps the engine's warning") {
+        // Item 2 alone: nothing is claimed yet, so its left-alone warning is printed as usual.
+        const Captured first = run_jobs(make_jobs(settings, {clean_id}), settings);
+        REQUIRE(first.exit_code == 0);
+        const Captured r = run_jobs(make_jobs(settings, {twin_id}), settings);
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == std::format("mangadex-dl: warning: list:1: {0}: {1}: left alone: holds a "
+                                   "different book; use another DIR or --title\n"
+                                   "mangadex-dl: warning: list:1: {0}: {2}: left alone: holds a "
+                                   "different book; use another DIR or --title\n",
+                                   twin_id, (out / clean_vol1).string(),
+                                   (out / clean_vol2).string()));
+    }
 }
 
 // ---- csv: batch is unchanged -----------------------------------------------------------------
@@ -602,4 +671,29 @@ TEST_CASE("mdlist runner: source csv keeps batch's collision advice",
     CHECK(r.err.contains(std::format("mangadex-dl: warning: titles.csv:2: {} was already written "
                                      "by line 1; give one of them a 'title' column\n",
                                      (out / clean_vol1).string())));
+}
+
+TEST_CASE("mdlist runner: source csv, a real clash keeps both of batch's lines per file",
+          "[cli][mdlist][batch-jobs][csv][collision]") {
+    const Tree tree{CleanTwin{}};
+    const fs::path out = tree.path("out");
+    md::BatchSettings settings = tree.validated(out);
+    settings.label = "titles.csv";
+    const Captured r = run_jobs(make_jobs(settings, {clean_id, twin_id}), settings);
+    CHECK(r.exit_code == 0);
+    CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+    // Byte for byte what `batch` printed before mdlist's one-line rule: the engine's warning for
+    // each file during the row, then the collision line for each file after it.
+    const std::string vol1 = (out / clean_vol1).string();
+    const std::string vol2 = (out / clean_vol2).string();
+    CHECK(r.err ==
+          std::format("mangadex-dl: warning: titles.csv:2: {0}: left alone: holds a different "
+                      "book; use another DIR or --title\n"
+                      "mangadex-dl: warning: titles.csv:2: {1}: left alone: holds a different "
+                      "book; use another DIR or --title\n"
+                      "mangadex-dl: warning: titles.csv:2: {0} was already written by line 1; "
+                      "give one of them a 'title' column\n"
+                      "mangadex-dl: warning: titles.csv:2: {1} was already written by line 1; "
+                      "give one of them a 'title' column\n",
+                      vol1, vol2));
 }

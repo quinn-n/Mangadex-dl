@@ -358,4 +358,13 @@ std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t l
     return it->second;
 }
 
+std::optional<std::size_t> OutputRegistry::claimed_by(std::string_view path) const {
+    const std::string key = std::filesystem::path{path}.lexically_normal().generic_string();
+    const auto it = by_path_.find(key);
+    if (it == by_path_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
 } // namespace mangadex_dl

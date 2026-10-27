@@ -99,8 +99,9 @@ struct PlanResult {
 /// plan.file_stem as is), re-checks that it is one safe path component, passes the resolver's
 /// warning to observer.on_warning, prints the -v "output directory: DIR/<name>" line, and runs
 /// the read-only check_row_dir(DIR, name) pre-flight. Creates nothing. Returns
-/// options.dir / name. Errors: Errc::interrupted; Errc::row_dir (that directory is unusable;
-/// a multi-title run continues); Errc::failure (DIR itself is unusable, or the resolver broke
+/// options.dir / name. Errors: Errc::interrupted; Errc::row_dir (that directory is unusable:
+/// check_row_dir's message plus "; rename or remove it, or run without --dir-per-title"; a
+/// multi-title run continues); Errc::failure (DIR itself is unusable, or the resolver broke
 /// its contract: "internal error: ...").
 [[nodiscard]] Result<std::filesystem::path> resolve_title_dir(RunContext& ctx, const Plan& plan);
 

@@ -44,8 +44,10 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 /// - csv: rows are "<label>:<line>: ", "same as line <k>", "was already written by line <k>; give
 ///   one of them a 'title' column", and the closing line says "line"/"lines";
 /// - mdlist: rows are "<label>:<line>: <uuid>: ", "same as item <k>", "was already written by
-///   item <k>; download one of them on its own with 'mangadex-dl download <title> --title ...'",
-///   and the closing line says "item"/"items".
+///   item <k> (another title with the same name); pass --dir-per-title to give each title its own
+///   directory, or download one of them on its own with 'mangadex-dl download <title> --title
+///   ...'" (the only line for that file: the engine's "holds a different book" warning for it is
+///   dropped), and the closing line says "item"/"items".
 /// Either way the -v start line is "<label>:<line>: <uuid>".
 ///
 /// A job with options.dir_per_title gets its directory below DIR from the run's TitleDirRegistry

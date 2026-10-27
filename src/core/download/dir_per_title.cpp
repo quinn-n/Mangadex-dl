@@ -20,10 +20,14 @@
 #include <filesystem>
 #include <format>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace mangadex_dl::detail {
 namespace {
+
+/// Appended to check_row_dir's message when the title's own directory is unusable.
+constexpr std::string_view row_dir_remedy = "; rename or remove it, or run without --dir-per-title";
 
 /// Defence in depth: the name joins onto DIR, so it must be exactly one path component that the
 /// batch `dir` rules accept unchanged (no '/', no '.'/'..', no controls, no invisible or bidi
@@ -67,6 +71,8 @@ Result<std::filesystem::path> resolve_title_dir(RunContext& ctx, const Plan& pla
     case RowDirKind::ok:
         return dir;
     case RowDirKind::row_error:
+        // Only --dir-per-title makes this directory, so the way out names the flag.
+        verdict.message += row_dir_remedy;
         return std::unexpected(Error{.code = Errc::row_dir, .message = std::move(verdict.message)});
     case RowDirKind::global_error:
         return std::unexpected(Error{.code = Errc::failure, .message = std::move(verdict.message)});

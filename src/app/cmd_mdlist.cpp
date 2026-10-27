@@ -132,8 +132,24 @@ private:
     return error.exit_code();
 }
 
+/// `text` with each `\` written `\\` and each `"` written `\"`, so it reads unambiguously between
+/// double quotes. Every other byte is copied as is (terminal_safe deals with controls later).
+[[nodiscard]] std::string escape_quoted(std::string_view text) {
+    std::string escaped{};
+    escaped.reserve(text.size());
+    for (const char c : text) {
+        if (c == '\\' || c == '"') {
+            escaped += '\\';
+        }
+        escaped += c;
+    }
+    return escaped;
+}
+
 /// -v: `list <id> "<name>": <n> titles`, or `list <id>: <n> titles` for a list without a name.
-/// The name is display-only and untrusted: it is cut for display, is a format argument (never the
+/// The name is display-only and untrusted: it is cut for display (64 bytes of the name itself,
+/// on a code-point boundary), then escaped (`\` and `"`; after the cut, so a cut never splits an
+/// escape, and the escapes never count toward the 64 bytes), is a format argument (never the
 /// format string), and print_note makes the whole line terminal_safe.
 void print_list_line(Io& io, const OutputPolicy& policy, const CustomList& list) {
     if (policy.verbose < 1) {
@@ -144,7 +160,7 @@ void print_list_line(Io& io, const OutputPolicy& policy, const CustomList& list)
     if (list.name) {
         print_note(io, policy,
                    std::format("list {} \"{}\": {} {}", list.id.str(),
-                               list_name_for_display(*list.name), count, noun));
+                               escape_quoted(list_name_for_display(*list.name)), count, noun));
         return;
     }
     print_note(io, policy, std::format("list {}: {} {}", list.id.str(), count, noun));

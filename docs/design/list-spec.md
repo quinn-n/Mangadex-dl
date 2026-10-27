@@ -6,6 +6,12 @@ rev1 (fact-check + amendment A1) 2026-10-26:
 - Amendment **A1** adds `--dir-per-title`, specified in "Per-title subdirectories" and marked **A1** where other sections change.
 - No exit code was added. `batch` and `download` output are unchanged.
 
+rev2 (feature-board fixes, chosen by the user) 2026-10-27. These are message changes only, all `mdlist`-only, with `batch` and `download` byte-identical. The quotes below are updated to match:
+- Flat-mode same-name clash: the collision line names `--dir-per-title`. It replaces the engine's "left alone: holds a different book" warning for a path an earlier item already claimed, so each file gets one line.
+- The A1 unusable-title-directory error ends with `; rename or remove it, or run without --dir-per-title`.
+- In the `-v` list line, `\` and `"` in the name are escaped after the 64-byte cut.
+- The list-level not-found message shows the status received: `(HTTP 404)`, or `(HTTP 401)`/`(HTTP 403)` for an error body that names the CustomList.
+
 Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`download-spec.md`](download-spec.md),
 [`skip-existing-spec.md`](skip-existing-spec.md) (re-runs).
 
@@ -150,9 +156,9 @@ Exit status:
   - **List-level lines** have no item prefix: `mangadex-dl: error: list <list-uuid> not found on MangaDex …`.
   - **Wording that names a row** uses "item" where `batch` says "line". Every `batch` string stays byte-identical.
     - Duplicate: `list:5: <uuid>: same as item 2; skipped`.
-    - Cross-item collision (flat mode): `list:4: <uuid>: <path> was already written by item 2; download one of them on its own with 'mangadex-dl download <title> --title ...'`.
+    - Cross-item collision (flat mode): `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'` (rev2: it replaces the engine's "left alone: holds a different book" line for that file).
     - **A1**, directory name taken (with `--dir-per-title`; a warning, not shown with `-q`): `list:4: <uuid>: directory '<name>' already holds item 2 (a title with the same name); using '<name> [1a2b3c4d]'`.
-    - **A1**, the title's own directory is unusable (an error; the item fails alone): `list:4: <uuid>: cannot open directory '<DIR>/<name>': Not a directory`. This is `check_row_dir`'s existing wording.
+    - **A1**, the title's own directory is unusable (an error; the item fails alone): `list:4: <uuid>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`. This is `check_row_dir`'s existing wording plus the rev2 remedy.
     - Closing line, one only, even with `-q`/`--json`; the item list is capped at 10 as in `batch`:
       - `2 of 15 titles did not complete (items 4, 9); run the same command again to retry them`, or `…; see the errors above`, with the same retry rule as `batch`;
       - dry run: `2 of 15 titles would fail (items 4, 9)`;
@@ -160,7 +166,7 @@ Exit status:
   - **The up-to-date note** is printed once at the end, as in `batch`.
   - **Empty list:** `mangadex-dl: warning: list <list-uuid> has no titles`. Not shown with `-q`.
 - **`-v`:**
-  - After the fetch: `mangadex-dl: list <list-uuid> "<name>": <n> titles`. Without a name: `list <list-uuid>: <n> titles`. The name passes through `terminal_safe` and is capped at 64 bytes on a UTF-8 boundary, then `...`.
+  - After the fetch: `mangadex-dl: list <list-uuid> "<name>": <n> titles`. Without a name: `list <list-uuid>: <n> titles`. The name is capped at 64 bytes on a UTF-8 boundary, then `...`; then `\` and `"` are escaped (rev2); then the line passes through `terminal_safe`.
   - At each item: `list:<n>: <manga-uuid>`, then the engine's own lines.
   - **A1:** with `--dir-per-title`, after the title's plan: `mangadex-dl: output directory: <DIR>/<name>`. It is an engine verbose line, so it has no prefix and passes through `terminal_safe`.
   - `-vv` adds the request trace, including `GET <api>/list/<id> -> 200 (… ms)`.
@@ -209,7 +215,7 @@ Exit status:
 | SIGINT / SIGTERM (also during the list fetch) | 130 / 143 (re-raised by `main`) |
 
 - **A1:** an item whose own `--dir-per-title` directory is unusable is `failed` (`exit_code` 1) and the run continues, like `batch`'s row-scoped `dir` failure. It counts as 1 in the aggregate (failed + 4 → 7). It stops nothing. A problem with DIR itself still stops the run (exit 1).
-- **Exit 4 message:** `list <list-uuid> not found on MangaDex (HTTP 404): it does not exist or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' if it is a title`.
+- **Exit 4 message** (rev2: the parenthesis shows the status received, `(HTTP 404)`, or `(HTTP 401)`/`(HTTP 403)` for a CustomList error body): `list <list-uuid> not found on MangaDex (HTTP 404): it does not exist or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' if it is a title`.
   - A non-existent id is confirmed (live) to answer `404 {"result":"error","errors":[{"id":…,"status":404,"title":"not_found_http_exception","detail":"CustomList `<id>` not found.","context":null}]}`.
   - The mapping uses only the status, never the body text.
 - **Over the title cap:** `list <list-uuid> has more than 10000 titles; refusing to truncate it; split it into smaller lists`. Exit 3 follows the precedent of `download`'s "more than 10000 chapters; refusing to truncate" (an oversized API response). `with_remedy` must **not** append the network-connection remedy here (`[VERIFY]` V8).
@@ -479,7 +485,7 @@ AC1–AC35 keep their numbers; changes are marked **rev1**. A1 adds AC36–AC48.
 44. `[e2e]` L1 `--dir-per-title` → exit 0, exact stdout regex, `EXPECT_FILES` and `EXPECT_EPUB` under `out/Clean Title/`, no `.part-`.
 45. `[e2e]` L1 `--dry-run --dir-per-title` → the planned paths under `out/Clean Title/`, empty stderr, `out` absent.
 46. `[e2e]` L2 `--dir-per-title` with DIR `{{INPUTS}}/mdlist`, which holds a committed regular file named `Clean Title`:
-    - item 1 fails alone with `list:1: 11111111-…: cannot open directory '…/Clean Title': Not a directory`;
+    - item 1 fails alone with `list:1: 11111111-…: cannot open directory '…/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title`;
     - item 2 runs and is not found;
     - exit 7, no `stopped at`, nothing created.
 47. `[edge]` `--json --dry-run --dir-per-title` with `CLICOLOR_FORCE=1` → valid JSON, no ANSI, `dir` = `out/Clean Title`.

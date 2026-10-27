@@ -243,6 +243,9 @@ static_assert(
 static_assert(
     std::is_same_v<decltype(&md::OutputRegistry::claim),
                    std::optional<std::size_t> (md::OutputRegistry::*)(std::string, std::size_t)>);
+static_assert(
+    std::is_same_v<decltype(&md::OutputRegistry::claimed_by),
+                   std::optional<std::size_t> (md::OutputRegistry::*)(std::string_view) const>);
 static_assert(std::is_same_v<decltype(&md::TitleRunner::run),
                              md::RowOutcome (md::TitleRunner::*)(const md::BatchJob&, std::size_t,
                                                                  std::size_t)>);

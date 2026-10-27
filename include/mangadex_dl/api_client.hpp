@@ -106,8 +106,9 @@ public:
     /// a 2xx unparsed. 404 -> Errc::not_found "list <id> not found on MangaDex (HTTP 404): it does
     /// not exist or is private; check the id, make the list public on MangaDex, or use
     /// 'mangadex-dl download' if it is a title". 401/403 whose body is_custom_list_error_body ->
-    /// the same. Otherwise the usual status mapping (Errc::network "<url>: <reason>"); a stop ->
-    /// Errc::interrupted. Implemented in list plan T7.
+    /// the same, with the status received ("(HTTP 403)", "(HTTP 401)"). Otherwise the usual status
+    /// mapping (Errc::network "<url>: <reason>"); a stop -> Errc::interrupted. Implemented in list
+    /// plan T7.
     [[nodiscard]] Result<std::string> fetch_list_document(const ListId& id, std::stop_token stop);
 
 private:
