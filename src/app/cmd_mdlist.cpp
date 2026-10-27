@@ -241,8 +241,7 @@ std::string mdlist_help_footer() { return std::string{mdlist_footer} + exit_stat
 
 std::unique_ptr<Command> register_mdlist(CLI::App& parent, Command*& selected) {
     auto command = std::make_unique<MdlistCommand>();
-    CLI::App* sub =
-        parent.add_subcommand("mdlist", "Download every title in a public MangaDex list (MDList)");
+    CLI::App* sub = parent.add_subcommand("mdlist", "Download every title in a public MDList");
     command->bind(*sub);
     // The callback only selects. It captures pointers by value: `selected` lives in run()'s
     // Invocation and `self` is owned by run()'s command list, and both outlive the app.

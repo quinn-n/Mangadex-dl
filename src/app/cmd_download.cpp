@@ -41,7 +41,8 @@ constexpr std::string_view download_footer{
     "the new ones, so an interrupted run can be restarted and a series kept up to\n"
     "date.\n"
     "\n"
-    "For many titles at once, see 'mangadex-dl batch --help'.\n"
+    "For many titles at once, see 'mangadex-dl batch --help' (a CSV file)\n"
+    "or 'mangadex-dl mdlist --help' (a MangaDex list).\n"
     "\n"};
 
 /// A semantic usage error: `mangadex-dl: error: <message>` plus the same hint line as a CLI11 parse

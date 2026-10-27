@@ -1,0 +1,69 @@
+Download every title in a public MDList
+
+
+mangadex-dl mdlist [OPTIONS] LIST [DIR]
+
+
+POSITIONALS:
+  LIST REQUIRED                     Public MDList: its UUID or list URL
+  DIR [.]                           Output directory (created if missing)
+
+OPTIONS:
+  -h, --help                        Print this help message and exit
+      --volumes SPEC [all]          Volumes: all, none or a list like 1,3-5,8-
+      --loose-chapters SPEC [all]   Chapters with no volume (SPEC as --volumes)
+      --layout WORD [volumes]       Split into: volumes, chapters or single file
+  -l, --lang CODE [en]              Language to download (e.g. en, pt-br)
+      --group NAME|UUID             Preferred group; repeat in priority order
+      --data-saver                  Download compressed images (smaller files)
+      --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
+      --overwrite                   Re-download files even if up to date
+  -n, --dry-run                     List the files to write; download nothing
+  -j, --jobs N [8]                  Parallel image downloads, 1 to 8
+      --no-report                   Skip MangaDex@Home reliability reports
+      --fail-fast                   Stop at the first title that fails
+      --dir-per-title               Put each title in a subdirectory of DIR
+      --version                     Print the version and exit
+      --json                        Write machine-readable JSON to stdout
+  -q, --quiet                       Only print errors
+  -v, --verbose                     Print more detail to stderr (repeatable)
+      --color WORD [auto]           Color stderr: auto, always or never
+
+LIST:
+  A public MangaDex custom list (MDList): its UUID, or its address on the
+  website, https://mangadex.org/list/<uuid>/<name> (http://, www., no
+  scheme or a trailing / are fine). No login is used, so the list must be
+  public. Every title in it is downloaded into DIR, one after another in
+  the list's order, with the options above. With --dir-per-title, each
+  title goes into its own subdirectory, named like its files:
+  DIR/<title>/<title> - Vol. 01.epub.
+
+  To download the titles you follow, add them to a public MDList.
+
+Examples:
+  Every title in a list, into ~/Manga:
+    mangadex-dl mdlist https://mangadex.org/list/<uuid> ~/Manga
+  The same, one folder per title:
+    mangadex-dl mdlist <uuid> ~/Manga --dir-per-title
+  Show what would be written, without downloading anything:
+    mangadex-dl mdlist <uuid> ~/Manga --dry-run
+  Volumes 1 to 3 of each title, in French, as one JSON document:
+    mangadex-dl mdlist <uuid> ~/Manga --volumes 1-3 --lang fr --json
+
+Running the same command again skips files that already hold every chapter
+and rebuilds a file when MangaDex has added chapters to it, downloading only
+the new ones; titles added to the list since the last run are downloaded too.
+
+Symlinks inside DIR are followed: don't point DIR at a directory that others
+can write to. Each title costs several API requests: a long list is a long run.
+
+Exit status:
+  0   success
+  1   runtime failure (including a failed write to stdout)
+  2   usage error
+  3   network or API failure (connection, TLS, timeout, server error)
+  4   title or list not found on MangaDex (a private list counts)
+  5   no downloadable chapters matched the language and selection
+  6   incomplete: at least one output file failed
+  7   batch/mdlist: titles failed in more than one way (see per-title results)
+  70  internal error (a bug: please report it)

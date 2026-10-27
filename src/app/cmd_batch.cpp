@@ -50,6 +50,8 @@ constexpr std::string_view batch_footer{
     "    https://mangadex.org/title/<uuid>,,\n"
     "    <uuid>,My Title,series/my-title\n"
     "\n"
+    "For a MangaDex list (MDList) instead of a file, see 'mangadex-dl mdlist --help'.\n"
+    "\n"
     "Examples:\n"
     "  Everything in the list, into ~/Manga:\n"
     "    mangadex-dl batch titles.csv ~/Manga\n"

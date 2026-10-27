@@ -43,15 +43,16 @@ and rebuilds a file when MangaDex has added chapters to it, downloading only
 the new ones, so an interrupted run can be restarted and a series kept up to
 date.
 
-For many titles at once, see 'mangadex-dl batch --help'.
+For many titles at once, see 'mangadex-dl batch --help' (a CSV file)
+or 'mangadex-dl mdlist --help' (a MangaDex list).
 
 Exit status:
   0   success
   1   runtime failure (including a failed write to stdout)
   2   usage error
   3   network or API failure (connection, TLS, timeout, server error)
-  4   title not found on MangaDex
+  4   title or list not found on MangaDex (a private list counts)
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
-  7   batch: titles failed in more than one way (see the per-title results)
+  7   batch/mdlist: titles failed in more than one way (see per-title results)
   70  internal error (a bug: please report it)

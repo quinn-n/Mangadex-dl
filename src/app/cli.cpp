@@ -4,6 +4,7 @@
 #include "cmd_batch.hpp"
 #include "cmd_download.hpp"
 #include "cmd_download_output.hpp"
+#include "cmd_mdlist.hpp"
 #include "command.hpp"
 #include "exit_help.hpp"
 #include "io.hpp"
@@ -16,6 +17,7 @@
 #include <array>
 #include <format>
 #include <memory>
+#include <optional>
 #include <ostream> // IWYU pragma: keep (std::print(std::ostream&, ...) is declared here)
 #include <print>
 #include <span>
@@ -58,25 +60,38 @@ struct Invocation {
                        reached.front()->get_name());
 }
 
-/// `batch ... --title X` (or `--title=X`): CLI11 sends the unknown option to the root, which
-/// rejects it as "not expected". `batch` has no --title because each row names its own title, so
-/// say that instead. Only for ExtrasError once `batch` was reached.
-[[nodiscard]] bool batch_got_title(const CLI::App& app, const CLI::Error& error) {
+/// `batch ... --title X` or `mdlist ... --title X` (or `--title=X`): CLI11 sends the unknown
+/// option to the root, which rejects it as "not expected". Neither command has a --title (a batch
+/// row names its own title; one title for every list item would make the file names collide), so
+/// failure_text says that instead. Only for ExtrasError once `batch` or `mdlist` was reached.
+/// Returns the command's name (a string literal, static storage), or nullopt.
+[[nodiscard]] std::optional<std::string_view> title_option_owner(const CLI::App& app,
+                                                                 const CLI::Error& error) {
     const std::vector<CLI::App*> reached = app.get_subcommands();
-    if (error.get_name() != "ExtrasError" || reached.empty() ||
-        reached.front()->get_name() != "batch") {
-        return false;
+    if (error.get_name() != "ExtrasError" || reached.empty()) {
+        return std::nullopt;
     }
-    return std::ranges::any_of(app.remaining(true), [](const std::string& word) {
+    const std::string& name = reached.front()->get_name();
+    std::string_view owner{};
+    if (name == "batch") {
+        owner = "batch";
+    } else if (name == "mdlist") {
+        owner = "mdlist";
+    } else {
+        return std::nullopt;
+    }
+    const bool got_title = std::ranges::any_of(app.remaining(true), [](const std::string& word) {
         return word == "--title" || word.starts_with("--title=");
     });
+    return got_title ? std::optional<std::string_view>{owner} : std::nullopt;
 }
 
 /// The text App::exit prints for a parse error (never for --help or --version):
 /// `mangadex-dl: error: <message>` plus the hint line. `app` is the root app (run() calls its
 /// exit()). Without a subcommand, the "subcommand required" error becomes "unknown command 'x'"
-/// or "unknown option '-x'" for the first non-empty leftover, or "missing command"; `batch` with a
-/// leftover --title says that batch has no such option. User text goes through terminal_safe.
+/// or "unknown option '-x'" for the first non-empty leftover, or "missing command"; `batch` or
+/// `mdlist` with a leftover --title says that the command has no such option. User text goes
+/// through terminal_safe.
 [[nodiscard]] std::string failure_text(const CLI::App* app, const CLI::Error& error) {
     if (app->get_subcommands().empty()) {
         const std::string name = error.get_name();
@@ -94,17 +109,22 @@ struct Invocation {
                 // The command list is spelled out here, next to the registration list in run():
                 // keep the two in step.
                 return std::format(
-                    "{}: error: unknown command '{}' (commands: download, batch)\n{}", tool_name,
-                    terminal_safe(word), help_hint(*app));
+                    "{}: error: unknown command '{}' (commands: download, batch, mdlist)\n{}",
+                    tool_name, terminal_safe(word), help_hint(*app));
             }
             return std::format("{}: error: missing command; try '{} --help'\n", tool_name,
                                tool_name);
         }
     }
-    if (batch_got_title(*app, error)) {
-        return std::format("{}: error: batch has no --title option; give each row a 'title' "
-                           "column instead\n{}",
-                           tool_name, help_hint(*app));
+    if (const std::optional<std::string_view> owner = title_option_owner(*app, error)) {
+        if (*owner == "batch") {
+            return std::format("{}: error: batch has no --title option; give each row a 'title' "
+                               "column instead\n{}",
+                               tool_name, help_hint(*app));
+        }
+        return std::format("{}: error: mdlist has no --title option; to name a title yourself, "
+                           "download it on its own with '{} download <title> --title ...'\n{}",
+                           tool_name, tool_name, help_hint(*app));
     }
     std::string_view message{error.what()};
     const std::string own_prefix = std::format("{}: ", tool_name);
@@ -161,6 +181,7 @@ int run(std::span<const char* const> args, Io& io) {
     // Keep failure_text's "(commands: ...)" list in step with it.
     commands.push_back(register_download(app, inv.selected));
     commands.push_back(register_batch(app, inv.selected));
+    commands.push_back(register_mdlist(app, inv.selected));
 
     // argc may be 0 (execve with an empty argv). Never index argv[0] unchecked; give CLI11 a name.
     const std::string argv0{tool_name};
