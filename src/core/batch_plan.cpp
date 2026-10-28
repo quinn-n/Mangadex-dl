@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // `batch` phase 1 after parsing (batch plan T3a): the CLI-level checks, the per-row merge with
-// column-attributed diagnostics, the lexical containment of the `dir` column and the dedupe
+// column-attributed diagnostics, the lexical containment of the `dir` column, the per-row
+// `--dir-per-title` decision (only rows without a `dir` cell) and the dedupe
 // (detail::mark_duplicates, shared with plan_list: src/core/batch_internal.hpp). Pure: no I/O,
 // no locale, no printing. Every message is raw bytes; the app sanitizes on print.
 #include "batch_internal.hpp"
@@ -237,6 +238,9 @@ plan_record(const ListRecord& record, const BatchSettings& settings, PlanErrors&
         errors.row(options.error().message);
         return std::nullopt;
     }
+    // batch --dir-per-title: a non-empty `dir` cell replaces the per-title directory, so only rows
+    // without one take the engine's per-title step. Set before `sub_dir` is moved below.
+    options->dir_per_title = settings.dir_per_title && sub_dir.empty();
     std::string dir = merged.dir;
     return BatchJob{
         .line = record.line,
@@ -301,6 +305,7 @@ Result<BatchSettings> validate_batch_args(const RawBatchArgs& raw) {
         .defaults = raw.defaults,
         .base = std::move(*base),
         .fail_fast = raw.fail_fast,
+        .dir_per_title = raw.dir_per_title,
     };
 }
 
