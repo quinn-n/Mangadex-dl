@@ -9,6 +9,7 @@
 
 #include "mangadex_dl/batch_csv.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/model.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
 
@@ -196,7 +197,8 @@ struct ListSummary {
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run, const std::optional<ListSummary>& list);
 
-/// Cross-row collision detection. Owns its keys.
+/// Cross-row collision detection, and (dry run) what an earlier row's planned file will hold.
+/// Owns its keys and records.
 class OutputRegistry {
 public:
     /// Records `path` for `line`; returns the earlier line that already claimed it. Keyed on
@@ -207,8 +209,20 @@ public:
     /// nothing.
     [[nodiscard]] std::optional<std::size_t> claimed_by(std::string_view path) const;
 
+    /// Records `book` (EpubOutcome::epub of a file a dry-run row reported as planned: the plan, or
+    /// an update's final plan) as what `path` will hold once that row has run. Keyed as claim()
+    /// keys it; the latest call for a path wins. Claims nothing: claim()'s first-claimant line is
+    /// unaffected. Each record keeps the book's whole chapter list for the registry's lifetime
+    /// (one run).
+    void record_planned(std::string path, PlannedEpub book);
+
+    /// A copy of the latest record for `path` (keyed as claim() keys it), or nullopt. Records
+    /// nothing; never returns a view into the registry.
+    [[nodiscard]] std::optional<PlannedEpub> planned_at(std::string_view path) const;
+
 private:
     std::map<std::string, std::size_t, std::less<>> by_path_{};
+    std::map<std::string, PlannedEpub, std::less<>> planned_{}; ///< normalized path -> planned book
 };
 
 } // namespace mangadex_dl

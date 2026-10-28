@@ -773,6 +773,10 @@ TEST_CASE("batch: two rows writing the same file warn once naming both lines, al
         std::format("mangadex-dl: warning: {}:3: {} was already written by line 2; give one of "
                     "them a 'title' column\n",
                     list.string(), (out / clean_vol1).string());
+    const std::string dry_collision =
+        std::format("mangadex-dl: warning: {}:3: {} would already be written by line 2; give one "
+                    "of them a 'title' column\n",
+                    list.string(), (out / clean_vol1).string());
 
     SECTION("the second row finds the file the first one wrote") {
         const Captured r = run_command(tree.args(list, out));
@@ -788,6 +792,237 @@ TEST_CASE("batch: two rows writing the same file warn once naming both lines, al
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol1, clean_vol2}));
         CHECK(r.err == collision);
+    }
+    SECTION("--dry-run: the second row finds the first row's planned file up to date") {
+        md::RawBatchArgs args = tree.args(list, out);
+        args.defaults.dry_run = true;
+        const Captured r = run_command(args);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == dry_collision + "mangadex-dl: 1 file is already up to date; pass "
+                                       "--overwrite to download it again\n");
+        CHECK(!fs::exists(out));
+
+        const Captured json = run_command(args, Context{.globals = {.json = true}});
+        CHECK(json.exit_code == 0);
+        CHECK(!fs::exists(out));
+        args.defaults.dry_run = false;
+        const Captured real = run_command(args, Context{.globals = {.json = true}});
+        REQUIRE(real.exit_code == 0);
+        const Json doc = parse_document(json.out);
+        const Json real_doc = parse_document(real.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!real_doc.is_discarded());
+        const Json& vol1 = doc.at("titles").at(1).at("report").at("epubs").at(0);
+        const Json& real_vol1 = real_doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(vol1.at("status") == "exists");
+        CHECK(vol1.at("existing") == "complete");
+        CHECK(vol1.at("pages") == real_vol1.at("pages"));
+        CHECK(vol1 == real_vol1);
+    }
+    SECTION("--overwrite --dry-run: both rows plan Vol. 01, in the dry wording") {
+        md::RawBatchArgs args = tree.args(list, out);
+        args.defaults.overwrite = true;
+        args.defaults.dry_run = true;
+        const Captured r = run_command(args);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol1, clean_vol2}));
+        CHECK(r.err == dry_collision);
+        CHECK(!fs::exists(out));
+    }
+}
+
+// ---- a dry run over an earlier row's planned file (same path, same title)
+// ------------------------
+
+namespace {
+
+constexpr std::string_view clean_single = "Clean Title.epub";
+
+/// The csv collision line for `path`, found by `line` of `list` after line `earlier` claimed it.
+[[nodiscard]] std::string csv_collision(const fs::path& list, std::size_t line,
+                                        const fs::path& path, std::size_t earlier, bool dry_run) {
+    return std::format("mangadex-dl: warning: {}:{}: {} {} by line {}; give one of them a "
+                       "'title' column\n",
+                       list.string(), line, path.string(),
+                       dry_run ? "would already be written" : "was already written", earlier);
+}
+
+/// `args` as a dry run, then for real, both on the same DIR (the dry run must not create it when
+/// it does not exist yet).
+struct DryThenReal {
+    Captured dry{};
+    Captured real{};
+};
+
+[[nodiscard]] DryThenReal dry_then_real(const md::RawBatchArgs& args, const Context& context = {}) {
+    const bool existed = fs::exists(args.defaults.dir);
+    md::RawBatchArgs dry_args = args;
+    dry_args.defaults.dry_run = true;
+    DryThenReal runs{.dry = run_command(dry_args, context), .real = {}};
+    CHECK(fs::exists(args.defaults.dir) == existed);
+    runs.real = run_command(args, context);
+    return runs;
+}
+
+/// A dry-run epub as the real run's: equal apart from the status and the byte count.
+void check_same_epub(Json dry, Json real) {
+    CHECK(dry.at("status") ==
+          (real.at("status") == "written" ? Json("planned") : real.at("status")));
+    for (Json* epub : {&dry, &real}) {
+        epub->erase("status");
+        epub->erase("bytes");
+    }
+    CHECK(dry == real);
+}
+
+} // namespace
+
+TEST_CASE("batch: --dry-run over an earlier row's single file reports the update the real run "
+          "makes",
+          "[cli][batch][collision][dry-run]") {
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path list = tree.csv(
+        "grow.csv", std::format("manga,volumes,layout\n{0},1,single\n{0},1-2,single\n", clean_id));
+    const fs::path file = out / clean_single;
+
+    SECTION("the path is listed twice, the collision line once, as in the real run") {
+        const DryThenReal r = dry_then_real(tree.args(list, out));
+        CHECK(r.dry.exit_code == 0);
+        CHECK(r.real.exit_code == 0);
+        CHECK(r.dry.out == path_lines(out, {clean_single, clean_single}));
+        CHECK(r.real.out == r.dry.out);
+        CHECK(r.dry.err == csv_collision(list, 3, file, 2, true));
+        CHECK(r.real.err == csv_collision(list, 3, file, 2, false));
+    }
+    SECTION("-v: the dry run would update the file") {
+        md::RawBatchArgs args = tree.args(list, out);
+        args.defaults.dry_run = true;
+        const Captured r = run_command(args, Context{.globals = {.verbose = 1}});
+        CHECK(r.exit_code == 0);
+        INFO("stderr: " << r.err);
+        const std::vector<std::string> lines = lines_of(r.err);
+        const auto line3 =
+            std::ranges::find(lines, std::format("mangadex-dl: {}:3: {}", list.string(), clean_id));
+        REQUIRE(line3 != lines.end());
+        CHECK(std::ranges::find(line3, lines.end(),
+                                std::format("mangadex-dl: would update {} (download 1 chapter: "
+                                            "Ch. 3; reuse 2)",
+                                            file.string())) != lines.end());
+    }
+    SECTION("--json: line 3's file is the planned update, as the real run writes it") {
+        const DryThenReal r =
+            dry_then_real(tree.args(list, out), Context{.globals = {.json = true}});
+        REQUIRE(r.dry.exit_code == 0);
+        REQUIRE(r.real.exit_code == 0);
+        CHECK(r.dry.err == csv_collision(list, 3, file, 2, true));
+        const Json doc = parse_document(r.dry.out);
+        const Json real_doc = parse_document(r.real.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!real_doc.is_discarded());
+        const Json& update = doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(update.at("status") == "planned");
+        CHECK(update.at("existing") == "incomplete");
+        CHECK(update.at("replaced") == true);
+        CHECK(update.at("new_chapters") == Json::array({mdx::clean_chapter_id(3)}));
+        CHECK(update.at("reused_chapters") ==
+              Json::array({mdx::clean_chapter_id(1), mdx::clean_chapter_id(2)}));
+        check_same_epub(update, real_doc.at("titles").at(1).at("report").at("epubs").at(0));
+    }
+    SECTION("-q: nothing on stderr in either run") {
+        const DryThenReal r =
+            dry_then_real(tree.args(list, out), Context{.globals = {.quiet = true}});
+        CHECK(r.dry.exit_code == 0);
+        CHECK(r.dry.err.empty());
+        CHECK(r.real.err.empty());
+        CHECK(r.dry.out == r.real.out);
+    }
+}
+
+TEST_CASE("batch: --dry-run over an earlier row's single file of other volumes warns as the real "
+          "run does",
+          "[cli][batch][collision][dry-run]") {
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path list =
+        tree.csv("diverged.csv",
+                 std::format("manga,volumes,layout\n{0},1,single\n{0},2,single\n", clean_id));
+    const fs::path file = out / clean_single;
+    const std::string diverged =
+        std::format("mangadex-dl: warning: {}:3: {}: MangaDex lists 1 chapter this file lacks "
+                    "(Ch. 3), but the file holds 2 chapters MangaDex no longer lists (Ch. 1, Ch. "
+                    "2); left it alone (pass --overwrite to rebuild it without them)\n",
+                    list.string(), file.string());
+
+    SECTION("one stdout line; the diverged warning, then the collision line") {
+        const DryThenReal r = dry_then_real(tree.args(list, out));
+        CHECK(r.dry.exit_code == 0);
+        CHECK(r.real.exit_code == 0);
+        CHECK(r.dry.out == path_lines(out, {clean_single}));
+        CHECK(r.real.out == r.dry.out);
+        CHECK(r.dry.err == diverged + csv_collision(list, 3, file, 2, true));
+        CHECK(r.real.err == diverged + csv_collision(list, 3, file, 2, false));
+    }
+    SECTION("--json: line 3's file is left alone as diverged") {
+        const DryThenReal r =
+            dry_then_real(tree.args(list, out), Context{.globals = {.json = true}});
+        REQUIRE(r.dry.exit_code == 0);
+        REQUIRE(r.real.exit_code == 0);
+        const Json doc = parse_document(r.dry.out);
+        const Json real_doc = parse_document(r.real.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!real_doc.is_discarded());
+        const Json& left = doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(left.at("status") == "exists");
+        CHECK(left.at("existing") == "diverged");
+        check_same_epub(left, real_doc.at("titles").at(1).at("report").at("epubs").at(0));
+    }
+}
+
+TEST_CASE("batch: --dry-run over chained rows decides each against the latest planned file",
+          "[cli][batch][collision][dry-run]") {
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path file = out / clean_single;
+    const std::string up_to_date =
+        "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n";
+
+    SECTION("three rows on a fresh DIR") {
+        const fs::path list =
+            tree.csv("chain.csv", std::format("manga,volumes,layout\n{0},1,single\n"
+                                              "{0},1-2,single\n{0},all,single\n",
+                                              clean_id));
+        const DryThenReal r = dry_then_real(tree.args(list, out));
+        CHECK(r.dry.exit_code == 0);
+        CHECK(r.real.exit_code == 0);
+        CHECK(r.dry.out == path_lines(out, {clean_single, clean_single}));
+        CHECK(r.real.out == r.dry.out);
+        CHECK(r.dry.err == csv_collision(list, 3, file, 2, true) +
+                               csv_collision(list, 4, file, 2, true) + up_to_date);
+        CHECK(r.real.err == csv_collision(list, 3, file, 2, false) +
+                                csv_collision(list, 4, file, 2, false) + up_to_date);
+    }
+    SECTION("the first row already on disk from an earlier batch") {
+        const fs::path first =
+            tree.csv("first.csv", std::format("manga,volumes,layout\n{},1,single\n", clean_id));
+        REQUIRE(run_command(tree.args(first, out)).exit_code == 0);
+        const fs::path list = tree.csv(
+            "rest.csv",
+            std::format("manga,volumes,layout\n{0},1-2,single\n{0},all,single\n", clean_id));
+        const std::string before = fs_util::read_file(file);
+        md::RawBatchArgs dry = tree.args(list, out);
+        dry.defaults.dry_run = true;
+        const Captured planned = run_command(dry);
+        // The dry run leaves the file alone.
+        CHECK(fs_util::read_file(file) == before);
+        const Captured written = run_command(tree.args(list, out));
+        CHECK(planned.exit_code == 0);
+        CHECK(written.exit_code == 0);
+        CHECK(planned.out == path_lines(out, {clean_single}));
+        CHECK(written.out == planned.out);
+        CHECK(planned.err == csv_collision(list, 3, file, 2, true) + up_to_date);
+        CHECK(written.err == csv_collision(list, 3, file, 2, false) + up_to_date);
     }
 }
 

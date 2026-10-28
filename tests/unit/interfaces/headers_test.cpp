@@ -247,6 +247,12 @@ static_assert(
 static_assert(
     std::is_same_v<decltype(&md::OutputRegistry::claimed_by),
                    std::optional<std::size_t> (md::OutputRegistry::*)(std::string_view) const>);
+// Dry-run records of an earlier row's planned file: new names (no overloads), a copy out.
+static_assert(std::is_same_v<decltype(&md::OutputRegistry::record_planned),
+                             void (md::OutputRegistry::*)(std::string, md::PlannedEpub)>);
+static_assert(
+    std::is_same_v<decltype(&md::OutputRegistry::planned_at),
+                   std::optional<md::PlannedEpub> (md::OutputRegistry::*)(std::string_view) const>);
 static_assert(std::is_same_v<decltype(&md::TitleRunner::run),
                              md::RowOutcome (md::TitleRunner::*)(const md::BatchJob&, std::size_t,
                                                                  std::size_t)>);
@@ -426,6 +432,8 @@ static_assert(std::is_same_v<decltype(md::Plan::file_stem), std::string>);
 static_assert(std::is_same_v<decltype(md::DownloadServices::title_dir), md::TitleDirResolver*>);
 static_assert(
     std::is_same_v<decltype(md::DownloadServices::claimed), std::function<bool(std::string_view)>>);
+static_assert(std::is_same_v<decltype(md::DownloadServices::planned_in_run),
+                             std::function<std::optional<md::PlannedEpub>(std::string_view)>>);
 static_assert(std::is_same_v<decltype(md::BatchSettings::source), md::BatchSource>);
 static_assert(std::is_same_v<decltype(md::RowOutcome::dir), std::string>);
 
@@ -604,6 +612,8 @@ TEST_CASE("Network config aggregates default to the documented policy", "[interf
     const md::DownloadServices services{};
     CHECK(services.transport == nullptr);
     CHECK(services.clock == nullptr);
+    CHECK_FALSE(services.claimed);
+    CHECK_FALSE(services.planned_in_run);
     CHECK(services.stop.stop_possible());
     CHECK_FALSE(services.stop.stop_requested());
 }
