@@ -1,6 +1,6 @@
 # Implementation plan: `mangadex-dl batch --dir-per-title`
 
-Status: DRAFT for the ⏸ plan gate (fact-check pending). Design: `/home/user/Mangadex-dl/docs/design/batch-dir-per-title-spec.md` (gate decided 2026-10-28: QB1 replace, QB2 reserve first segments up front, QB3 stay with the manga, QB4 moot). Wherever the spec body and its "rev1 (gate)" notes disagree, the rev1 notes win: AC6 is dropped, and AC7, AC11 and AC28 are amended. Prior plan used for format and depth: `docs/design/list-plan.md`.
+Status: fact-checked (rev1, see the end), awaiting ⏸ plan approval. Design: `/home/user/Mangadex-dl/docs/design/batch-dir-per-title-spec.md` (gate decided 2026-10-28: QB1 replace, QB2 reserve first segments up front, QB3 stay with the manga, QB4 moot). Wherever the spec body and its "rev1 (gate)" notes disagree, the rev1 notes win: AC6 is dropped, and AC7, AC11 and AC28 are amended. Prior plan used for format and depth: `docs/design/list-plan.md`.
 
 What I checked in the tree on 2026-10-28 (orientation only; the fact-checkers re-confirm the [VERIFY] items):
 - `pixi list`: cli11 2.7.2, catch2 3.16.1, cmake 4.4.4, libstdcxx 16.2.0. **No new dependency.**
@@ -434,3 +434,18 @@ No new risk class: no new threads, C APIs or raw buffers. The existing controls 
   - `/home/user/Mangadex-dl/tests/support/mdx_twin.hpp`
   - `/home/user/Mangadex-dl/tests/unit/title_dir/title_dir_test.cpp`
   - `/home/user/Mangadex-dl/tests/cli/batch_jobs_list_test.cpp`
+
+---
+
+## Fact-check results (rev1, 2026-10-28)
+
+Two `fact-checker` runs (Clusters A+B; C+D+E plus R1–R9, S1, S4). Probes under `.platform-runs/20261028T0517*-factcheck/` (not committed). **Nothing refuted that changes a task's Owns or design.** All V-B1, V-P1, V-B5, V-B4, V-P2, V-P3, V-B6, V-P5, V-P6, V-B3, V-P7, V-P8 confirmed against CLI11 2.7.2, clang 23.1.3, GCC 16.2.0 / libstdc++ 16.2.0 and the existing dev install. Amendments, which win over the text above:
+
+- **T1:** R3/R4 cites are `batch_plan.cpp:235-248` (set `options->dir_per_title` after `validate_common`, before the moves) and `mark_duplicates` at `:257-269`. `Reservation{std::size_t line; std::set<MangaId> mangas;}` is fine (nothrow default-construction holds).
+- **T1 (C1):** a hand-built `ListRecord{.dir = "   "}` is a plan error (`checked_cell` treats only `""`/`nullopt` as inherit); only the CSV parser trims to absent. Unit tests use `std::nullopt` and `""` for derived rows; the all-spaces case is covered through `parse_batch_csv` or asserted as the existing plan error.
+- **T2 (C2):** the AC23 parity table passes values only as `--dir-per-title=<v>` (a separate token becomes FILE). `--dir-per-title=` (empty) is true; bogus values are `CLI::ConversionError` → exit 2 with the subcommand hint, as mdlist.
+- **T2/T3 (V-B6):** with `-v`, the engine's `planned N files; M chapters skipped` line sits between the runner's start line and the directory warning / `output directory:` line. AC12, 13, 15, 16, 29, 30, 31 assert relative order, never adjacency.
+- **S4 (citation refuted, shape confirmed):** `batch_cli_test.cpp:765-783` covers one file (singular note). AC14 generalises it: two collision lines, then `2 files are already up to date; pass --overwrite to download them again` (verified on the binary).
+- **T3 (V-B3, balanced brackets work):** add `e2e.batch.dir-per-title-reserved-real` (real run, exit 4, `EXPECT_FILES` under `out/Clean Title [11111111]/`). Its `EXPECT_NO_GLOB` must not contain the bracketed name (a glob character class): use `out/*/.*.part-*`. Reword the stale last line of `tests/e2e/inputs/README` to "only unbalanced `[`/`]` and `;` cannot be passed in file assertions"; the spec's AC29 premise is superseded likewise.
+- **T4 (V-P8):** `### Where the batch files go` → `#where-the-batch-files-go`; README:467 is the only inbound link to mdlist's `#where-the-files-go` and stays untouched.
+- Line numbers elsewhere in this plan are approximate; implementers re-read before editing.
