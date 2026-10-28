@@ -21,6 +21,7 @@
 
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -67,6 +68,10 @@ struct RunContext {
     /// DownloadServices::title_dir: nullable (null = the plain stem); used only by
     /// resolve_title_dir, on the calling thread. Never reached by a FetchPool worker.
     TitleDirResolver* title_dir = nullptr;
+    /// &DownloadServices::claimed (run_download always sets it; the function may be empty):
+    /// asked by the execute phase, on the calling thread, before --overwrite replaces a file.
+    /// Never reached by a FetchPool worker.
+    const std::function<bool(std::string_view)>* claimed = nullptr;
 };
 
 /// The plan phase's result: the plan and the title record (the execute phase needs its creators).

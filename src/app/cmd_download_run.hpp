@@ -80,7 +80,9 @@ struct TitleRun {
 ///
 /// `title_dir` (mdlist --dir-per-title only; null for `download` and `batch`) becomes
 /// DownloadServices::title_dir: borrowed for the call, called at most once by run_download on
-/// this thread, never stored past it.
+/// this thread, never stored past it. A non-null `row.claimed` (mdlist only) becomes
+/// DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite never replaces a path
+/// an earlier row claimed.
 [[nodiscard]] TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
                                  const Backend& backend, const std::string& agent, Io& io,
                                  const OutputPolicy& policy, const RowContext& row,

@@ -54,6 +54,7 @@
 #include <ctime>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -423,6 +424,8 @@ static_assert(std::is_nothrow_default_constructible_v<md::TitleDirRegistry>);
 static_assert(std::is_same_v<decltype(md::DownloadOptions::dir_per_title), bool>);
 static_assert(std::is_same_v<decltype(md::Plan::file_stem), std::string>);
 static_assert(std::is_same_v<decltype(md::DownloadServices::title_dir), md::TitleDirResolver*>);
+static_assert(
+    std::is_same_v<decltype(md::DownloadServices::claimed), std::function<bool(std::string_view)>>);
 static_assert(std::is_same_v<decltype(md::BatchSettings::source), md::BatchSource>);
 static_assert(std::is_same_v<decltype(md::RowOutcome::dir), std::string>);
 

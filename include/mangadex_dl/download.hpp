@@ -61,6 +61,12 @@ struct DownloadServices {
     /// --dir-per-title only; borrowed for the run_download call, nullable (null = the plain
     /// stem); called only on the calling thread.
     TitleDirResolver* title_dir = nullptr;
+    /// mdlist only (empty for `download` and `batch`): does an earlier title of the same run
+    /// already own `path` (EpubOutcome::path as the report builds it)? With --overwrite, a file
+    /// whose path it owns is never replaced: it is left alone as a foreign book (status exists,
+    /// existing foreign, with the "holds a different book" warning), in a dry run too. Called
+    /// only on the calling thread, during run_download; the views are valid only during the call.
+    std::function<bool(std::string_view path)> claimed{};
 };
 
 /// Runs the whole download. An Error is fatal for the run: Errc::failure (exit 1, a local

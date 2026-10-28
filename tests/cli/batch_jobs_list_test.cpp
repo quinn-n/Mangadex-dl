@@ -42,6 +42,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <ios>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -93,6 +94,12 @@ void write_file(const fs::path& path, std::string_view content) {
     file << content;
     file.close();
     REQUIRE(file.good());
+}
+
+[[nodiscard]] std::string read_file(const fs::path& path) {
+    std::ifstream file{path, std::ios::binary};
+    REQUIRE(file.is_open());
+    return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
 /// Selects the clean-twin tree (mdx_twin.hpp) instead of one canned title.
@@ -696,4 +703,83 @@ TEST_CASE("mdlist runner: source csv, a real clash keeps both of batch's lines p
                       "mangadex-dl: warning: titles.csv:2: {1} was already written by line 1; "
                       "give one of them a 'title' column\n",
                       vol1, vol2));
+}
+
+TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchanged: the later "
+          "row replaces the file",
+          "[cli][mdlist][batch-jobs][csv][collision][overwrite]") {
+    // Pins what `batch` printed and wrote before mdlist's --overwrite rule (mdlist only): the
+    // run's claimed paths never reach the engine for a csv source.
+    const Tree tree{CleanTwin{}};
+    const fs::path csv = tree.path("titles.csv");
+    write_file(csv, std::format("{}\n{}\n", clean_id, twin_id));
+    // What each title writes on its own, in its own directory.
+    const auto alone = [&tree](std::string_view manga, const fs::path& dir) {
+        const fs::path one = tree.path(std::format("{}.csv", manga));
+        write_file(one, std::format("{}\n", manga));
+        md::RawBatchArgs raw{.file = one.string()};
+        raw.defaults.dir = dir.string();
+        raw.defaults.api_base = tree.api_base();
+        std::ostringstream cmd_out;
+        std::ostringstream cmd_err;
+        app::Io io{.out = cmd_out, .err = cmd_err};
+        REQUIRE(app::run_batch_command(raw, app::GlobalOptions{}, io) == 0);
+        return std::pair{read_file(dir / clean_vol1), read_file(dir / clean_vol2)};
+    };
+    const auto clean_files = alone(clean_id, tree.path("clean-alone"));
+    const auto twin_files = alone(twin_id, tree.path("twin-alone"));
+    const bool different = clean_files != twin_files;
+    REQUIRE(different);
+
+    const fs::path out = tree.path("out");
+    md::RawBatchArgs raw{.file = csv.string()};
+    raw.defaults.dir = out.string();
+    raw.defaults.api_base = tree.api_base();
+    raw.defaults.overwrite = true;
+    const std::string collisions =
+        std::format("mangadex-dl: warning: {0}:2: {1} was already written by line 1; give one of "
+                    "them a 'title' column\n"
+                    "mangadex-dl: warning: {0}:2: {2} was already written by line 1; give one of "
+                    "them a 'title' column\n",
+                    csv.string(), (out / clean_vol1).string(), (out / clean_vol2).string());
+    const auto run = [&raw](const app::GlobalOptions& globals) {
+        std::ostringstream cmd_out;
+        std::ostringstream cmd_err;
+        app::Io io{.out = cmd_out, .err = cmd_err};
+        Captured result;
+        result.exit_code = app::run_batch_command(raw, globals, io);
+        result.out = cmd_out.str();
+        result.err = cmd_err.str();
+        return result;
+    };
+
+    SECTION("a real run: every path twice on stdout, the twin's bytes on disk") {
+        const Captured r = run({});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2, clean_vol1, clean_vol2}));
+        CHECK(r.err == collisions);
+        // A bool, so a failure does not print four EPUBs.
+        const bool twin_on_disk =
+            std::pair{read_file(out / clean_vol1), read_file(out / clean_vol2)} == twin_files;
+        CHECK(twin_on_disk);
+
+        const Captured json = run({.json = true});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == collisions);
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+            CHECK(epub.at("status") == "written");
+            CHECK(epub.at("replaced") == true);
+            CHECK(epub.at("existing") == "unchecked");
+        }
+    }
+    SECTION("--dry-run: both rows plan every path") {
+        raw.defaults.dry_run = true;
+        const Captured r = run({});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2, clean_vol1, clean_vol2}));
+        CHECK(r.err == collisions);
+        CHECK(!fs::exists(out));
+    }
 }

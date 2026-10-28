@@ -3,6 +3,7 @@
 
 #include "cmd_download_output.hpp"
 #include "io.hpp"
+#include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/download.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/exit_codes.hpp"
@@ -23,6 +24,7 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -132,6 +134,13 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
     services.jitter = make_jitter();
     services.user_agent = agent;
     services.title_dir = title_dir; // borrowed for run_download only; null = the plain stem
+    if (row.claimed != nullptr) {
+        // mdlist: --overwrite never replaces a path an earlier item claimed. Captures the
+        // registry pointer by value; the registry outlives this call (RowContext::claimed).
+        services.claimed = [registry = row.claimed](std::string_view path) {
+            return registry->claimed_by(path).has_value();
+        };
+    }
 
     // Borrows `io` (a parameter, so it outlives the observer); owns its copy of `row`.
     ConsoleObserver observer{io, policy, row};

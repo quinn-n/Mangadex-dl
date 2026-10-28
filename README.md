@@ -496,8 +496,9 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
   file: the earlier item keeps it, and the later one gets one warning per file (instead of the
   usual `left alone: holds a different book` warning):
   `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'`.
-  Nothing is overwritten, even with `--overwrite`. The fix is `--dir-per-title`, which gives the
-  two titles different directories (below).
+  Nothing is overwritten, even with `--overwrite`: in one run, a later item never replaces a
+  file an earlier item wrote (`--overwrite` still replaces files left by earlier runs). The fix
+  is `--dir-per-title`, which gives the two titles different directories (below).
 - **`--dir-per-title`** puts each title in its own subdirectory, named exactly like its files and
   made safe the same way: `DIR/<title>/<title> - Vol. 01.epub`. The directory is created only
   when the title has a file to write, and never with `--dry-run`.

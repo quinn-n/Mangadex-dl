@@ -62,8 +62,10 @@ struct RowContext {
     /// mdlist only (null for `download` and `batch`): the run's OutputRegistry, holding the paths
     /// of the earlier rows (a row claims its own only after its run). The engine's "<path>: left
     /// alone: holds a different book; ..." warning is dropped for a path in it, because the
-    /// runner's collision line for that path says it instead. Borrowed and only read: the
-    /// registry is declared before the runner and outlives every observer.
+    /// runner's collision line for that path says it instead. run_title also hands it to the
+    /// engine as DownloadServices::claimed, so --overwrite leaves such a path alone instead of
+    /// replacing it. Borrowed and only read: the registry is declared before the runner and
+    /// outlives every observer and every run_title call.
     const OutputRegistry* claimed = nullptr;
 
     friend bool operator==(const RowContext&, const RowContext&) = default;

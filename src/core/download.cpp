@@ -93,6 +93,7 @@ Result<RunReport> run_download(const DownloadOptions& options, const DownloadSer
         .lines = &lines,
         .stop = stop,
         .title_dir = services.title_dir,
+        .claimed = &services.claimed,
     };
     Result<detail::PlanResult> planned = detail::plan_phase(ctx);
     if (!planned) {

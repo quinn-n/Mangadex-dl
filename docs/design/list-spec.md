@@ -12,6 +12,9 @@ rev2 (feature-board fixes, chosen by the user) 2026-10-27. These are message cha
 - In the `-v` list line, `\` and `"` in the name are escaped after the 64-byte cut.
 - The list-level not-found message shows the status received: `(HTTP 404)`, or `(HTTP 401)`/`(HTTP 403)` for an error body that names the CustomList.
 
+rev3 (bug fix, chosen by the user) 2026-10-27, `mdlist`-only, with `batch` and `download` byte-identical (`batch` gets the same fix later, separately):
+- Flat mode with `--overwrite`: a path an earlier item of the same run claimed (written, planned or left alone as `exists`) is never replaced. The later item leaves it alone exactly as without `--overwrite` (status `exists`, existing `foreign`, only the collision line), in a dry run too, so stdout lists each path once. `--overwrite` still replaces files from earlier runs and every path not claimed in this run. The engine asks the run's `OutputRegistry` through `DownloadServices::claimed` before `--overwrite` replaces a file.
+
 Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`download-spec.md`](download-spec.md),
 [`skip-existing-spec.md`](skip-existing-spec.md) (re-runs).
 
@@ -271,7 +274,7 @@ Exit status:
   - 3 consecutive exit-3 items stop the run; a global local error stops it; a bad `io.out` stops it;
   - the runner's read-only pre-flight checks DIR itself (empty sub-dir) before each item.
   - **A1:** the title's own directory is checked inside the engine, after the plan (see "Per-title subdirectories").
-- **File-name collisions (flat mode):** all titles go flat into DIR, using MangaDex's titles. Two different titles that sanitise to the same name collide. The first item to claim a path owns it (`OutputRegistry`). The later item's file is "foreign" to it and left alone with `download`'s warning plus the collision warning. The item status is unchanged (as in `batch`). Nothing is overwritten, even with `--overwrite`; the registry is keyed on the path. A re-run in the same order behaves the same. With `--dir-per-title`, directory disambiguation (below) prevents this case.
+- **File-name collisions (flat mode):** all titles go flat into DIR, using MangaDex's titles. Two different titles that sanitise to the same name collide. The first item to claim a path owns it (`OutputRegistry`). The later item's file is "foreign" to it and left alone, with the collision warning in place of `download`'s (rev2). The item status is unchanged (as in `batch`). Nothing is overwritten, even with `--overwrite` (rev3: the engine asks the registry before replacing a file; files from earlier runs are still replaced); the registry is keyed on the path. A re-run in the same order behaves the same. With `--dir-per-title`, directory disambiguation (below) prevents this case.
 - **Interrupt:**
   - during the list fetch: Errc::interrupted, nothing printed on stdout, nothing created, no JSON, then 130/143;
   - inside an item, or between items: exactly as in `batch` (no partial or temp files, no further items, no JSON, no closing line).
@@ -315,7 +318,7 @@ Exit status:
 - The batch runner owns a `TitleDirRegistry` for the run, mapping each name to the item that claimed it.
 - **First claim wins, in list order.** A later item with a *different* manga id whose stem is taken gets `<stem> [<first 8 hex of its manga id>]`, plus the warning in "Input & output". If that name is also taken by another id (two ids sharing an 8-hex prefix *and* a title), it gets `<stem> [<full manga uuid>]`. The same manga id never conflicts with itself; duplicates are already skipped.
 - `OutputRegistry` (the file-path check) keeps running unchanged. Because directories are disambiguated, it can't fire across titles in this mode; it stays as the backstop.
-- **Limitation, documented, accepted as rare:** ownership is per run and by list order, not recorded on disk. Suppose run 1 put title A in `X/`, and later the list holds a title B with the same name *before* A. Then B claims `X/` and A moves to `X [aaaaaaaa]/` and is downloaded again there. Where B's file names collide with A's files in `X/`, A's files are "foreign" to B and are left alone with `download`'s warning; nothing is overwritten. Detecting directory ownership from the EPUB manifests on disk is out of scope.
+- **Limitation, documented, accepted as rare:** ownership is per run and by list order, not recorded on disk. Suppose run 1 put title A in `X/`, and later the list holds a title B with the same name *before* A. Then B claims `X/` and A moves to `X [aaaaaaaa]/` and is downloaded again there. Where B's file names collide with A's files in `X/`, A's files are "foreign" to B and are left alone with `download`'s warning; nothing is overwritten unless `--overwrite` is given, which replaces files left by an earlier run as usual (rev3 protects only files written earlier in the same run). Detecting directory ownership from the EPUB manifests on disk is out of scope.
 
 **When the name is known, and how the engine stays reusable.**
 - The title comes from `GET /manga/{id}`, inside `run_download`'s plan phase. DIR is first touched only in the execute phase (`OutputDir::open_if_exists(options.dir)` for a dry run, `OutputDir::open(options.dir, create)` otherwise). So the engine resolves the directory **between plan and execute**.
