@@ -1,6 +1,6 @@
 # Implementation plan: `mangadex-dl batch --dir-per-title`
 
-Status: fact-checked (rev1, see the end), awaiting ⏸ plan approval. Design: `/home/user/Mangadex-dl/docs/design/batch-dir-per-title-spec.md` (gate decided 2026-10-28: QB1 replace, QB2 reserve first segments up front, QB3 stay with the manga, QB4 moot). Wherever the spec body and its "rev1 (gate)" notes disagree, the rev1 notes win: AC6 is dropped, and AC7, AC11 and AC28 are amended. Prior plan used for format and depth: `docs/design/list-plan.md`.
+Status: APPROVED by the user 2026-10-28 (fact-checked rev1, see the end; S1, S3 and S7 accepted at the gate). Design: `/home/user/Mangadex-dl/docs/design/batch-dir-per-title-spec.md` (gate decided 2026-10-28: QB1 replace, QB2 reserve first segments up front, QB3 stay with the manga, QB4 moot). Wherever the spec body and its "rev1 (gate)" notes disagree, the rev1 notes win: AC6 is dropped, and AC7, AC11 and AC28 are amended. Prior plan used for format and depth: `docs/design/list-plan.md`.
 
 What I checked in the tree on 2026-10-28 (orientation only; the fact-checkers re-confirm the [VERIFY] items):
 - `pixi list`: cli11 2.7.2, catch2 3.16.1, cmake 4.4.4, libstdcxx 16.2.0. **No new dependency.**
