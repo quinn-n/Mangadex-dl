@@ -112,7 +112,8 @@ TEST_CASE("escape_del_and_c1: adjacent and mixed escapes", "[json][json_output]"
 
 TEST_CASE("escape_del_and_c1: a C2 that is not a C1 lead byte is copied unchanged",
           "[json][json_output]") {
-    // At the very end: the second byte is never read past the end (ASan would report it).
+    // At the very end: the second byte is never read past the end (ASan would not see it: the
+    // NUL terminator is valid memory; _GLIBCXX_ASSERTIONS would abort on the string_view index).
     CHECK(jo::escape_del_and_c1("x\xc2") == "x\xc2");
     CHECK(jo::escape_del_and_c1("\xc2") == "\xc2");
     // Followed by a DEL: the C2 stays, the DEL is escaped on its own.

@@ -28,8 +28,9 @@ namespace mangadex_dl::json_output {
 [[nodiscard]] std::string escape_del_and_c1(std::string text);
 
 /// The document as printed on stdout: dump(2, ' ', ensure_ascii=false, error_handler_t::replace),
-/// then escape_del_and_c1, then one '\n'. Never carries a raw C0, DEL or C1 control, so neither a
-/// 7-bit nor an 8-bit escape sequence.
+/// then escape_del_and_c1, then one '\n'. No string in it holds a raw C0
+/// control, and no raw DEL or C1 control appears anywhere (the only raw C0 bytes are the
+/// pretty-print and trailing newlines), so it carries neither a 7-bit nor an 8-bit escape sequence.
 [[nodiscard]] std::string dump_document(const nlohmann::ordered_json& doc);
 
 } // namespace mangadex_dl::json_output
