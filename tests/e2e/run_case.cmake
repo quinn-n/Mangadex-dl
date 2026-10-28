@@ -11,6 +11,8 @@
 #   (the cov task) and PATH (finds llvm-symbolizer) are KEPT.
 # - The exit code is asserted exactly; stdout and stderr are asserted separately.
 # - Any sanitizer marker on stderr fails the case WHATEVER the exit code.
+# - EXPECT_JSON / EXPECT_JSON_LINES also fail on a raw DEL or C1 control (C2 80..C2 9F) on stdout, and
+#   EXPECT_NO_ANSI also fails on the 8-bit CSI (C2 9B) on either stream, not only on ESC[.
 # - Signal deaths come back as strings ("SIGPIPE", "Segmentation fault", "Subprocess aborted"), per
 #   command in RESULTS_VARIABLE. A `sh -c` wrapper always `exec`s, so it never masks them.
 # - Goldens are compared byte for byte. They are written ONLY when UPDATE_GOLDEN=1, which only
@@ -40,6 +42,8 @@ include("${CASE_SPEC}")
 set(_marker_re "ERROR: (Address|Leak|Memory)Sanitizer|WARNING: ThreadSanitizer|runtime error:|AddressSanitizer:DEADLYSIGNAL")
 string(ASCII 27 _esc)
 string(ASCII 255 254 _invalid_utf8)
+string(ASCII 127 _del)          # DEL (U+007F)
+string(ASCII 194 155 _c1_csi)   # U+009B in UTF-8 (C2 9B): the 8-bit CSI, a terminal's ESC[
 
 # ---- 0. read the controls BEFORE the env is scrubbed --------------------------------------------
 set(_update OFF)
@@ -60,6 +64,8 @@ function(_expand out value)
   string(REPLACE "{{WORK}}" "${CASE_WORK_DIR}" value "${value}")
   string(REPLACE "{{FIXTURES}}" "${CASE_FIXTURES_DIR}" value "${value}")
   string(REPLACE "{{INVALID_UTF8}}" "${_invalid_utf8}" value "${value}")
+  string(REPLACE "{{DEL}}" "${_del}" value "${value}")
+  string(REPLACE "{{C1_CSI}}" "${_c1_csi}" value "${value}")
   set(${out} "${value}" PARENT_SCOPE)
 endfunction()
 
@@ -460,6 +466,21 @@ if(CASE_EXPECT_JSON_LINES)
 endif()
 
 if(CASE_EXPECT_JSON OR CASE_EXPECT_JSON_LINES)
+  # A --json document never carries a raw DEL or C1 control (U+0080..U+009F, UTF-8 C2 80..C2 9F):
+  # string(JSON) accepts them, and a terminal acts on them (U+009B is the 8-bit CSI). Each needle is
+  # the full two-byte UTF-8 sequence, never a lone byte: 9B alone also occurs inside U+011B (C4 9B).
+  string(FIND "${_out}" "${_del}" _raw_at)
+  foreach(_b RANGE 128 159)
+    if(NOT _raw_at EQUAL -1)
+      break()
+    endif()
+    string(ASCII 194 ${_b} _c1)
+    string(FIND "${_out}" "${_c1}" _raw_at)
+  endforeach()
+  if(NOT _raw_at EQUAL -1)
+    _fail_with("stdout: raw DEL or C1 control in the JSON (must be \\u-escaped as \\u007f / \\u0080..\\u009f)")
+  endif()
+
   # JSON text must be UTF-8 (RFC 8259) and CMake's JSON parser does not check that. Linux argv and paths
   # are bytes, so this catches a dump() without error_handler_t::replace.
   find_program(_iconv NAMES iconv)
@@ -477,8 +498,13 @@ endif()
 
 string(FIND "${_out}" "${_esc}[" _ansi_out)
 string(FIND "${_err}" "${_esc}[" _ansi_err)
-if(CASE_EXPECT_NO_ANSI AND (NOT _ansi_out EQUAL -1 OR NOT _ansi_err EQUAL -1))
-  _fail_with("ANSI escape sequence found in the output (expected none)")
+# EXPECT_NO_ANSI also rejects the 8-bit CSI (U+009B, C2 9B) on either stream: a terminal reads it as
+# ESC[. EXPECT_ANSI asks only for ESC[ on stdout (the color the tool emits).
+string(FIND "${_out}" "${_c1_csi}" _csi_out)
+string(FIND "${_err}" "${_c1_csi}" _csi_err)
+if(CASE_EXPECT_NO_ANSI AND (NOT _ansi_out EQUAL -1 OR NOT _ansi_err EQUAL -1
+                            OR NOT _csi_out EQUAL -1 OR NOT _csi_err EQUAL -1))
+  _fail_with("ANSI escape sequence (ESC[ or 8-bit CSI U+009B) found in the output (expected none)")
 endif()
 if(CASE_EXPECT_ANSI AND _ansi_out EQUAL -1)
   _fail_with("no ANSI escape sequence on stdout (expected color)")
