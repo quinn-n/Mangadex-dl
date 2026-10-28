@@ -22,8 +22,11 @@ Follow-ups noted during reviews and plan gates. Each item needs its own plan bef
   `parse_manifest`, never shown on a terminal; escaping it would change new EPUBs' manifest bytes
   and the exact-bytes test in `tests/unit/book_manifest/book_manifest_test.cpp`. The at-home report
   body (`at_home_report_json`, sent to MangaDex) is in the same position.
-- **U+2028 / U+2029 in `--json`.** Valid JSON and emitted raw; they are line separators for
-  pre-ES2019 JavaScript and some line-oriented viewers. Decide whether `--json` should escape them.
+- **U+2028 / U+2029, bidi and zero-width characters in `--json`.** Valid JSON and emitted raw:
+  U+2028/9 are line separators for pre-ES2019 JavaScript and some line-oriented viewers; the bidi
+  controls (U+202A..U+202E, U+2066..U+2069) and zero-width characters can reorder or hide text
+  when a document is viewed. None is a terminal control. Decide whether `--json` should escape
+  them; `is_unsafe_code_point` in `include/mangadex_dl/text_safety.hpp` already defines the set.
 
 ## Docs
 
