@@ -388,12 +388,13 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   with `--dry-run`, `would already be written by line 2`).
 - **`--dry-run` prints what the real run will print**, apart from the two caveats below.
   Without `--overwrite`, when a later row would write a file an earlier row already planned, the
-  dry run treats that file as already written. A different book there (another title with the same name, or the same title in another language) is left
-  alone, with `<path>: left alone: holds a different book; use another DIR or --title` and the
-  warning above. The same book is decided as a real re-run decides it: up to date (counted in
-  the "N files are already up to date" note), updated (the path is listed again, as the real
-  update lists it), or left alone as diverged, with the real warning. With `--overwrite`, each
-  row lists the path, because each row replaces it. Two things only a real run can know: exact
+  dry run treats that file as already written. A different book there (another title with the
+  same name, or the same title in another language) is left alone, with
+  `<path>: left alone: holds a different book; use another DIR or --title` and the warning above.
+  The same book is decided as a real re-run decides it: up to date (counted in the "N files are
+  already up to date" note), updated (the path is listed again, as the real update lists it),
+  or left alone as diverged, with the real warning. With `--overwrite`, each row lists the
+  path, because each row replaces it. Two things only a real run can know: exact
   page counts (a dry run takes them from MangaDex's chapter list, the real run from the image
   server) and damaged pages in an existing file. A `--dry-run` without `--overwrite` keeps each
   planned file's chapter list in memory until it ends, roughly 60 KB per typical title (about
