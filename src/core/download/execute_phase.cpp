@@ -951,7 +951,7 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
                                              FileResult& result) {
     const DownloadOptions& options = *ctx.options;
     if (options.overwrite) {
-        return false;
+        return false; // never asked with --overwrite: it plans the file over whatever is there
     }
     const std::optional<PlannedEpub> earlier = earlier_plan(ctx, result.outcome.path);
     if (!earlier) {

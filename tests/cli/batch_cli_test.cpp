@@ -832,8 +832,7 @@ TEST_CASE("batch: two rows writing the same file warn once naming both lines, al
     }
 }
 
-// ---- a dry run over an earlier row's planned file (same path, same title)
-// ------------------------
+// ---- a dry run over an earlier row's planned file (same path, same title) ---------------------
 
 namespace {
 
