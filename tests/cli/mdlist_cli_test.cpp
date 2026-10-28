@@ -1076,6 +1076,108 @@ TEST_CASE("mdlist: flat --overwrite, a second title with the same name never rep
     }
 }
 
+TEST_CASE("mdlist --dir-per-title --overwrite: a second title with the same name gets its own "
+          "directory, and files from an earlier run are replaced",
+          "[cli][mdlist][dir-per-title][collision][overwrite]") {
+    const Tree tree{CleanTwin{}};
+    const std::string id = list(0x43);
+    tree.add_list(mdx::FixtureList{
+        .id = id, .name = "Twins", .manga_ids = {std::string{clean_id}, std::string{twin_id}}});
+    const std::string twin_list = list(0x44);
+    tree.add_list(mdx::FixtureList{
+        .id = twin_list, .name = "Twin alone", .manga_ids = {std::string{twin_id}}});
+    const fs::path out = tree.path("out");
+    const std::string warning = std::format(
+        "mangadex-dl: warning: list:2: {}: directory 'Clean Title' already holds item 1 (a title "
+        "with the same name); using 'Clean Title [77777777]'\n",
+        twin_id);
+    // Each title's own bytes: the clean title (L1) and the twin alone, in other directories.
+    const fs::path clean_ref = tree.path("ref-clean");
+    const fs::path twin_ref = tree.path("ref-twin");
+    REQUIRE(run_command(tree.args(list(1), clean_ref)).exit_code == 0);
+    REQUIRE(run_command(tree.args(twin_list, twin_ref)).exit_code == 0);
+    const std::string clean1 = read_file(clean_ref / clean_vol1);
+    const std::string clean2 = read_file(clean_ref / clean_vol2);
+    const std::string twin1 = read_file(twin_ref / clean_vol1);
+    const std::string twin2 = read_file(twin_ref / clean_vol2);
+    md::RawMdlistArgs overwrite = tree.args(id, out);
+    overwrite.dir_per_title = true;
+    overwrite.defaults.overwrite = true;
+    const std::string expected_out = path_lines(out / clean_dir, {clean_vol1, clean_vol2}) +
+                                     path_lines(out / twin_dir, {clean_vol1, clean_vol2});
+
+    SECTION("a real run into an empty DIR: each title in its own directory, nothing foreign") {
+        const Captured r = run_command(overwrite);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == expected_out);
+        CHECK(r.err == warning);
+        CHECK(listing(out) ==
+              std::vector<std::string>{std::string{clean_dir}, std::string{twin_dir}});
+        CHECK(holds(out / clean_dir / clean_vol1, clean1));
+        CHECK(holds(out / clean_dir / clean_vol2, clean2));
+        CHECK(holds(out / twin_dir / clean_vol1, twin1));
+        CHECK(holds(out / twin_dir / clean_vol2, twin2));
+    }
+    SECTION("--json, a real run: every file is written, none is foreign or replaced") {
+        const Captured r = run_command(overwrite, {.globals = {.json = true}});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == warning);
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        CHECK(doc.at("titles").at(0).at("dir") == (out / clean_dir).string());
+        CHECK(doc.at("titles").at(1).at("dir") == (out / twin_dir).string());
+        for (const Json& title : doc.at("titles")) {
+            REQUIRE(title.at("report").at("epubs").size() == 2);
+            for (const Json& epub : title.at("report").at("epubs")) {
+                CHECK(epub.at("status") == "written");
+                CHECK(epub.at("existing") != "foreign");
+                CHECK(epub.at("replaced") == false);
+            }
+        }
+    }
+    SECTION("an --overwrite re-run replaces both titles' files from the earlier run") {
+        REQUIRE(run_command(overwrite).exit_code == 0);
+        // Stale files from that earlier run: --overwrite replaces them without looking.
+        for (const fs::path& dir : {out / clean_dir, out / twin_dir}) {
+            write_file(dir / clean_vol1, "stale");
+            write_file(dir / clean_vol2, "stale");
+        }
+        const Captured r = run_command(overwrite, {.globals = {.json = true}});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == warning);
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        for (const Json& title : doc.at("titles")) {
+            REQUIRE(title.at("report").at("epubs").size() == 2);
+            for (const Json& epub : title.at("report").at("epubs")) {
+                CHECK(epub.at("status") == "written");
+                CHECK(epub.at("replaced") == true);
+                CHECK(epub.at("existing") == "unchecked");
+            }
+        }
+        CHECK(holds(out / clean_dir / clean_vol1, clean1));
+        CHECK(holds(out / clean_dir / clean_vol2, clean2));
+        CHECK(holds(out / twin_dir / clean_vol1, twin1));
+        CHECK(holds(out / twin_dir / clean_vol2, twin2));
+    }
+    SECTION("--dry-run --overwrite: the same stdout and stderr as the real run, nothing created") {
+        md::RawMdlistArgs dry = overwrite;
+        dry.defaults.dry_run = true;
+        const Captured planned = run_command(dry);
+        CHECK(planned.exit_code == 0);
+        CHECK(!fs::exists(out));
+
+        const Captured real = run_command(overwrite);
+        CHECK(real.exit_code == 0);
+        CHECK(planned.out == expected_out);
+        CHECK(planned.err == warning);
+        CHECK(planned.out == real.out);
+        CHECK(planned.err == real.err);
+    }
+}
+
 TEST_CASE("mdlist --dir-per-title -v: 'output directory:' follows the item line",
           "[cli][mdlist][dir-per-title][verbose]") {
     const Tree tree{mdx::clean_fixture()};
