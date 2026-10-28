@@ -5,6 +5,7 @@ Downloads volumes and chapters from MangaDex and converts them into .epub or .pd
 `mangadex-dl download` takes a MangaDex title and writes fixed-layout EPUB 3 files: by default
 one `.epub` per volume, plus one per chapter that has no volume ("loose" chapters).
 `mangadex-dl batch` does the same for every title listed in a CSV file.
+`mangadex-dl mdlist` does the same for every title in a public MangaDex list.
 
 > **Status:** EPUB output only. PDF output is planned but not available yet.
 
@@ -16,6 +17,7 @@ one `.epub` per volume, plus one per chapter that has no volume ("loose" chapter
 - [Examples](#examples)
 - [Running again](#running-again)
 - [Many titles: `batch`](#many-titles-batch)
+- [A MangaDex list: `mdlist`](#a-mangadex-list-mdlist)
 - [Output](#output)
 - [Exit status](#exit-status)
 - [Network behaviour](#network-behaviour)
@@ -309,6 +311,10 @@ There is no `--title` option: one title for every row would make the file names 
 `batch`, also after `FILE` and `DIR`. `mangadex-dl batch --help` describes the format with
 examples.
 
+`FILE` is never a MangaDex list: a list's address there is a usage error (exit 2) with
+`FILE looks like a MangaDex list; use 'mangadex-dl mdlist <list>'`. To download a list, see
+[A MangaDex list: `mdlist`](#a-mangadex-list-mdlist).
+
 ### The CSV file
 
 - UTF-8 (a leading byte-order mark is skipped), comma-separated, LF or CRLF line endings.
@@ -441,6 +447,170 @@ and the per-title results (on stderr, or in `--json`) say which. A one-row list 
   to each title in turn. Running a list of thousands of titles is your responsibility towards
   MangaDex: split long lists, and stop if you see rate-limit errors (`HTTP 429` or `403`).
 
+## A MangaDex list: `mdlist`
+
+```
+mangadex-dl mdlist LIST [DIR] [OPTIONS]
+```
+
+`mdlist` downloads every title in a public MangaDex custom list (an "MDList", as the website
+calls it), one title after another in the list's order, into `DIR` (default `.`). Each title is
+run as `batch` runs a row, with the same options for every title, and the output, the stop rules,
+the exit status and the `--json` document follow `batch`'s (the differences are below).
+
+| Argument / option | Meaning |
+|---|---|
+| `LIST` | The list's UUID, or its address on the website, `https://mangadex.org/list/<uuid>/<name>` (`http://`, `www.`, no scheme and a trailing `/` are accepted). A list whose name has no Latin letters has an address that ends in `/list/<uuid>/`; copy it as it is. Required. |
+| `DIR` | Output directory, as in `download`. |
+| `--volumes`, `--loose-chapters`, `--layout`, `-l, --lang`, `--group`, `--direction`, `--data-saver`, `--overwrite`, `-n, --dry-run`, `-j, --jobs`, `--no-report` | As in `download`, for every title. A list names only titles, so there are no per-title settings. |
+| `--fail-fast` | Stop at the first title that fails. |
+| `--dir-per-title` | Put each title in a subdirectory of `DIR` (see [Where the files go](#where-the-files-go)). |
+
+The options are `batch`'s, with no `--title` and no per-title settings: one title for every
+item would make the file names collide (`mdlist LIST --title X` exits 2 with
+`mdlist has no --title option; to name a title yourself, download it on its own with 'mangadex-dl download <title> --title ...'`).
+The global options (`--json`, `-q`, `-v`, `--color`) work before or after `mdlist`, also after
+`LIST` and `DIR`. `mangadex-dl mdlist --help` lists the options with examples.
+
+`LIST` must be a list. A title's address there is a usage error (exit 2) that points to
+`download`; anything else that is not a list (a CSV file, `-`) is one that points to `batch`. The
+other way round, `download <list address>` and `batch <list address>` exit 2 with a pointer to
+`mdlist`.
+
+### Which titles are downloaded
+
+- **No login:** the list must be public. To download the titles you follow, add them to a public
+  MDList; reading follows directly needs a login, which `mangadex-dl` doesn't support yet. A
+  private list counts as not found (exit 4).
+- **Order:** the website's order. A title listed twice is downloaded once; the later entry is
+  skipped with a warning (`list:5: <uuid>: same as item 2; skipped`).
+- **At most 10 000 titles.** A longer list is refused (exit 3), never cut short.
+- **Content filters:** the website hides titles outside your content filters ("N hidden");
+  `mdlist` downloads every title in the list, so it may download more than the site shows.
+- **Caching:** MangaDex caches lists: a title you just added may take a while to appear.
+
+### Where the files go
+
+- **By default, flat:** every title's files go straight into `DIR`, named as in `download`
+  (see [File names](#file-names)). Two different titles with the same name would write the same
+  file: the earlier item keeps it, and the later one gets one warning per file (instead of the
+  usual `left alone: holds a different book` warning):
+  `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'`.
+  Nothing is overwritten, even with `--overwrite`: in one run, a later item never replaces a
+  file an earlier item wrote (`--overwrite` still replaces files left by earlier runs). The fix
+  is `--dir-per-title`, which gives the two titles different directories (below).
+- **`--dir-per-title`** puts each title in its own subdirectory, named exactly like its files and
+  made safe the same way: `DIR/<title>/<title> - Vol. 01.epub`. The directory is created only
+  when the title has a file to write, and never with `--dry-run`.
+  - The name is the plain title, with no id. Only when two different titles in one run have the
+    same name does the later one get ` [<first 8 hex digits of its UUID>]`, with a warning (not
+    shown with `-q`):
+    `list:4: <uuid>: directory '<name>' already holds item 2 (a title with the same name); using '<name> [1a2b3c4d]'`.
+    The first title in list order keeps the plain name. This is decided afresh on every run and
+    not recorded, so a same-name title added earlier in the list takes the plain name over.
+  - A title whose own directory can't be used (a regular file with its name, say) fails alone,
+    with exit code 1 for that title, and the next title runs:
+    `list:1: <uuid>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`.
+- **New paths:** a renamed title, another `--lang` (a title without an English title is named
+  after its `--lang` title, when it has one), or switching between flat and `--dir-per-title`
+  gives new paths. The files are downloaded again there, and the old ones are left alone; delete
+  them yourself.
+- **Symlinks inside `DIR` are followed**, as in `batch`; don't point `DIR` at a directory that
+  others can write to. A long list is a long, request-heavy run (see
+  [Things to know before running a long list](#things-to-know-before-running-a-long-list)).
+
+### What `mdlist` prints
+
+As `batch` prints (see [What a batch prints and when it stops](#what-a-batch-prints-and-when-it-stops)),
+with these differences:
+
+- **stdout:** one path per file, in list order; with `--dir-per-title` the paths include the
+  title's directory.
+- **stderr:** every warning and error about a title starts with `list:<n>: <uuid>: `, its
+  position in the list (from 1) and its UUID, for example
+  `mangadex-dl: error: list:2: <uuid>: title <uuid> not found on MangaDex (HTTP 404); check the UUID or URL`.
+  Where `batch` says "line", `mdlist` says "item":
+  `mangadex-dl: error: 1 of 2 titles did not complete (item 2); see the errors above`,
+  `...; run the same command again to retry them`, `2 of 15 titles would fail (items 4, 9)` with
+  `--dry-run`, or `stopped at item 9: ...; 6 titles not run`.
+- **`-v`** first prints the list, `mangadex-dl: list <list-uuid> "<name>": 2 titles` (`1 title`
+  for one; `list <list-uuid>: 2 titles` for a list without a name; a long name is cut after 64
+  bytes and ends `...`, and a `"` or `\` in it is shown as `\"` or `\\`), then begins each
+  title with `list:1: <uuid>`; with `--dir-per-title` it also prints
+  `output directory: <DIR>/<name>`. `-vv` adds the request trace, including the list request.
+- **An empty list** prints the warning `mangadex-dl: warning: list <list-uuid> has no titles`
+  (not shown with `-q`), creates nothing and exits 0.
+- **Ctrl-C / `SIGTERM`** during the list request: nothing is printed and nothing is created.
+  Later, they stop the run as they stop a batch.
+
+**`--json`** prints `batch`'s document, under the same rules, with one more key, `list`, after
+`source`:
+
+```
+{ "format_version": 1, "dry_run", "source",
+  "list": { "id", "name", "url" },
+  "titles": [ { "line", "manga_id", "dir", "status", "exit_code", "error", "duplicate_of",
+                "report" } ],
+  "summary": { "titles": { ... }, "files": { ... } } }
+```
+
+- `source` is `LIST` as typed. `list.id` is the list's UUID in lower case, `list.name` its name as
+  MangaDex returns it (or `null`), and `list.url` is `https://mangadex.org/list/<uuid>`.
+- `line` is the title's place in its source: the CSV line for `batch`, the list position (from 1)
+  for `mdlist`. `duplicate_of` is a position too.
+- `dir` is the title's directory, as typed: `DIR`, or with `--dir-per-title` `DIR/<name>`. It is
+  `DIR` when the title's name was never learned (a duplicate, a title not run, or one that ended
+  with exit 3 or 4 before it was planned).
+- An empty list prints `"titles": []`, with the `list` object filled in.
+
+A program written for `batch`'s document reads an `mdlist` document unchanged (`format_version`
+is still 1).
+
+### Exit status of a list
+
+The titles' results combine exactly as in a batch (see
+[Exit status of a batch](#what-a-batch-prints-and-when-it-stops)). Before any title runs, the
+list itself can fail:
+
+- **4:** the list does not exist, or is private:
+  `mangadex-dl: error: list <list-uuid> not found on MangaDex (HTTP 404): it does not exist or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' if it is a title`.
+  The status is the one MangaDex answered with: a private list may give `(HTTP 403)` or
+  `(HTTP 401)` instead of `(HTTP 404)`, with the same message and the same exit code.
+  A title's bare UUID given as `LIST` ends this way too.
+- **3:** the list request failed (connection, DNS, TLS, timeout, server errors or rate limiting
+  that did not clear, a response over 16 MiB); the error ends with the network remedy, as for a
+  title. Or the list can't be used, and retrying won't help, so there is no remedy:
+  `mangadex-dl: error: list <list-uuid>: malformed MangaDex API response (custom list): ...`, or
+  `mangadex-dl: error: list <list-uuid> has more than 10000 titles; refusing to truncate it; split it into smaller lists`.
+
+**Telling them apart:** a failure of the list prints no JSON (stdout stays empty, even with
+`--json`), creates nothing, and its error has no `list:<n>:` prefix. An exit 3 or 4 because every
+title failed that way prints the JSON document, and each title's error starts with
+`list:<n>: <uuid>:`.
+
+### Running a list again
+
+Running the same command again treats each title as a `download` re-run does (see
+[Running again](#running-again)), and also downloads the titles added to the list since the last
+run (see **Caching** above). Titles removed from the list are not touched: their files stay.
+Nothing is kept between runs.
+
+### Examples of `mdlist`
+
+```sh
+# Every title in a list, into ~/Manga
+mangadex-dl mdlist https://mangadex.org/list/<uuid>/my-list ~/Manga
+
+# The same, one folder per title
+mangadex-dl mdlist <uuid> ~/Manga --dir-per-title
+
+# Show what would be written, without downloading anything
+mangadex-dl mdlist <uuid> ~/Manga --dry-run
+
+# Volumes 1 to 3 of each title, in French, as one JSON document
+mangadex-dl mdlist <uuid> ~/Manga --volumes 1-3 --lang fr --json
+```
+
 ## Output
 
 - **stdout is data:** the path of each file as it is written or updated, one per line. With
@@ -499,10 +669,12 @@ and the per-title results (on stderr, or in `--json`) say which. A one-row list 
   With `--json` this message still goes to stderr, and the `epubs: []` document to stdout.
 - **Exit 6** ends with one closing line after the per-file errors, for example
   `mangadex-dl: error: 2 of 12 files failed; run the same command again to retry them`.
-- **Exit 3** errors end with `; check your network connection or proxy (https_proxy) and try again`.
+- **Exit 3** errors end with `; check your network connection or proxy (https_proxy) and try again`,
+  except an `mdlist` list that is malformed or too long, where retrying can't help (see
+  [Exit status of a list](#exit-status-of-a-list)).
 - **Usage errors** (exit 2) read `mangadex-dl: error: <what is wrong>`, followed by
   `Run 'mangadex-dl download --help' for more information.` (or `mangadex-dl batch --help`, or
-  `mangadex-dl --help` before a command is given).
+  `mangadex-dl mdlist --help`, or `mangadex-dl --help` before a command is given).
 
 `mangadex-dl` never prompts. Only `batch -` reads stdin.
 
@@ -511,13 +683,13 @@ and the per-title results (on stderr, or in `--json`) say which. A one-row list 
 | Code | Meaning |
 |---|---|
 | 0 | Success: every selected file was written or updated, was already up to date, was left alone with a warning, or (with `--dry-run`) is planned. |
-| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. |
+| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. For `batch` and `mdlist`, also the code of a title whose own directory can't be used (that title fails alone). |
 | 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. |
-| 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. |
-| 4 | The title does not exist on MangaDex. |
+| 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. For `mdlist`, also the same problems with the list response, or a list of more than 10 000 titles (see [Exit status of a list](#exit-status-of-a-list)). |
+| 4 | The title, or for `mdlist` the list, does not exist on MangaDex, or the list is private. |
 | 5 | The title exists, but nothing downloadable matched the language and selection. |
 | 6 | Incomplete: at least one file failed, either a new file or the update of an existing one (which is then kept unchanged); the others may have been written. |
-| 7 | `batch` only: the titles that did not complete failed in more than one way (for example one not found and one with no matching chapters); the per-title results say which. See [Exit status of a batch](#what-a-batch-prints-and-when-it-stops). |
+| 7 | `batch` and `mdlist` only: the titles that did not complete failed in more than one way (for example one not found and one with no matching chapters); the per-title results say which. See [Exit status of a batch](#what-a-batch-prints-and-when-it-stops). |
 | 70 | Internal error (a bug; please report it). |
 
 A run stopped by Ctrl-C or `SIGTERM` ends by that signal (the shell reports 130 or 143). When
@@ -529,7 +701,7 @@ quietly by `SIGPIPE` (141).
 All production traffic is HTTPS: the MangaDex API (`api.mangadex.org`), cover images
 (`uploads.mangadex.org`), the image servers the API hands out, and MangaDex@Home reports
 (`api.mangadex.network`). Requests carry the User-Agent `mangadex-dl/<version>`. No login is
-used; only public data is downloaded.
+used; only public data is downloaded. `mdlist` makes one extra API request, for the list.
 
 ### TLS and CA certificates
 
@@ -563,7 +735,8 @@ only the `curl` command-line tool does).
 
 ### Rate limiting
 
-- MangaDex API requests are limited to at most 4 per second, shared by the whole run.
+- MangaDex API requests are limited to at most 4 per second, shared by the whole of a
+  `download` run; with `batch` and `mdlist`, the limits apply to each title in turn.
 - Image-server lookups (`/at-home/server`, one per chapter plus any refreshes) are additionally
   limited to 40 per minute.
 - Page images from image servers outside `mangadex.org` are not throttled by the API limit;
@@ -627,8 +800,8 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 
 - Only `DIR/<name>.epub` files (mode 0644 subject to your umask, or an updated file's previous
   permissions) and their temporary files are ever written (with `batch`, also
-  `DIR/<dir>/<name>.epub` for a row with a `dir`). Existing `.epub` files are read, never
-  modified in place.
+  `DIR/<dir>/<name>.epub` for a row with a `dir`; with `mdlist --dir-per-title`, also
+  `DIR/<title>/<name>.epub`). Existing `.epub` files are read, never modified in place.
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
 - An existing file is replaced only with `--overwrite` (never a directory, which fails that
@@ -667,6 +840,7 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 
 - One title and one language per `download` run; `batch` runs a list of titles one after
   another (never in parallel).
+- `mdlist` downloads one list per run, at most 10 000 titles.
 - No resuming inside a file: an interrupted file is downloaded again from the start. (An
   interrupted update starts again from the old file, so its chapters are still reused.)
 - API responses over 16 MiB, images over 32 MiB, chapters over 5000 pages and images wider or

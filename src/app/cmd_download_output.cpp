@@ -3,6 +3,8 @@
 
 #include "command.hpp"
 #include "io.hpp"
+#include "mangadex_dl/batch.hpp"
+#include "mangadex_dl/existing_epub.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/text_safety.hpp"
@@ -258,7 +260,28 @@ void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
     }
 }
 
-void ConsoleObserver::on_warning(std::string_view message) { warning(message); }
+bool ConsoleObserver::left_to_collision_line(std::string_view message) const {
+    if (row_.claimed == nullptr) {
+        return false;
+    }
+    // Exactly what the engine's foreign_warning (src/core/download/existing.cpp) prints for
+    // ForeignReason::other_book, after the path; the CLI tests pin the pair.
+    const std::string suffix =
+        std::format(": left alone: {}; {}", foreign_reason_text(ForeignReason::other_book),
+                    foreign_remedy(ForeignReason::other_book));
+    if (message.size() <= suffix.size() || !message.ends_with(suffix)) {
+        return false;
+    }
+    const std::string_view path = message.substr(0, message.size() - suffix.size());
+    return row_.claimed->claimed_by(path).has_value();
+}
+
+void ConsoleObserver::on_warning(std::string_view message) {
+    if (left_to_collision_line(message)) {
+        return; // one line per file: the collision line, printed after this row, replaces it
+    }
+    warning(message);
+}
 
 void ConsoleObserver::on_verbose(int level, std::string_view message) {
     if (policy_.quiet || level < 1 || level > policy_.verbose) {

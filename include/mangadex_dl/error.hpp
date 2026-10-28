@@ -18,11 +18,14 @@ enum class Errc {
     usage,       ///< the invocation is invalid in a way the parser cannot see
     io,          ///< a read or write on a file or stream failed
     network,     ///< the network or the API failed (connect, TLS, timeout, retries, bad response)
-    not_found,   ///< the requested title does not exist
+    not_found,   ///< the requested title (or, for mdlist, the list) does not exist
     no_chapters, ///< nothing downloadable matched the language and selection
     incomplete,  ///< at least one output file failed while others may have been written
     interrupted, ///< SIGINT/SIGTERM arrived; the run unwound and cleaned up its temporaries
-    mixed_failures, ///< batch: the titles that did not complete failed in more than one way
+    mixed_failures, ///< batch/mdlist: the titles that did not complete failed in more than one way
+    /// --dir-per-title: this title's own directory below DIR is unusable (exit 1; the run
+    /// continues with the next title)
+    row_dir,
 };
 
 [[nodiscard]] constexpr int exit_code_for(Errc code) noexcept {
@@ -31,6 +34,7 @@ enum class Errc {
         return exit_code::usage;
     case Errc::failure:
     case Errc::io:
+    case Errc::row_dir:
         return exit_code::failure;
     case Errc::network:
         return exit_code::network;

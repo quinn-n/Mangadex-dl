@@ -2,8 +2,8 @@
 //
 // One title, run exactly as `download` runs it (batch plan T4): the backend (transport + clock),
 // the User-Agent and retry jitter, the per-title DownloadServices and ConsoleObserver, and the
-// closing lines `download` prints on stderr. `download` runs it once; `batch` once per row, over
-// one shared Backend.
+// closing lines `download` prints on stderr. `download` runs it once; `batch` and `mdlist` once per
+// row, over one shared Backend.
 #pragma once
 
 #include "cmd_download_output.hpp"
@@ -12,6 +12,7 @@
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
+#include "mangadex_dl/title_dir.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -76,8 +77,15 @@ struct TitleRun {
 /// print_error(io, policy, row.prefix + message) (an Error gets with_remedy; an interruption
 /// prints nothing). Never prints JSON. `backend` and `io` must outlive the call; nothing is kept
 /// after it returns.
+///
+/// `title_dir` (mdlist --dir-per-title only; null for `download` and `batch`) becomes
+/// DownloadServices::title_dir: borrowed for the call, called at most once by run_download on
+/// this thread, never stored past it. A non-null `row.claimed` (mdlist only) becomes
+/// DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite never replaces a path
+/// an earlier row claimed.
 [[nodiscard]] TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
                                  const Backend& backend, const std::string& agent, Io& io,
-                                 const OutputPolicy& policy, const RowContext& row);
+                                 const OutputPolicy& policy, const RowContext& row,
+                                 TitleDirResolver* title_dir = nullptr);
 
 } // namespace mangadex_dl::app

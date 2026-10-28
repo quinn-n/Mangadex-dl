@@ -248,3 +248,82 @@ cli_e2e_case(NAME batch-pipe-stderr-no-ansi
              ARGS batch --api-base file://{{FIXTURES}}/nochapters ${_edge_batch_in}/nochapters-mixed.csv out
              EXPECT_EXIT 7 EXPECT_STDOUT_EMPTY EXPECT_NO_ANSI
              EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/nochapters-mixed\\.csv:1: ")
+
+# ---- mdlist: the same contract for `mangadex-dl mdlist LIST [DIR]` (list spec AC25-AC29, AC47) ------
+# The EDGE_* knobs above stay on `download`. These cases point the stdin, write-error, SIGPIPE, UTF-8
+# and color edges at `mdlist`, whose input is a MangaDex list (fixture mode: a generated list document,
+# tests/e2e/inputs/README). L1 a0000000-...-000000000001 on clean holds the clean title; L8 (...08) on
+# nochapters holds an exit-5 and an exit-4 title; L10 (...0a) on bulk holds the bulk title.
+set(_edge_mdlist_clean_api --api-base file://{{FIXTURES}}/clean)
+set(_edge_mdlist_l1 a0000000-0000-4000-8000-000000000001)
+set(_edge_mdlist_l8 a0000000-0000-4000-8000-000000000008)
+set(_edge_mdlist_l10 a0000000-0000-4000-8000-00000000000a)
+set(_edge_mdlist_dry_l1_args mdlist --dry-run ${_edge_mdlist_clean_api} ${_edge_mdlist_l1})
+# Exact stdout of a dry run of L1 into DIR `out`.
+set(_edge_mdlist_paths_re
+    "^out/Clean Title - Vol\\. 01\\.epub\nout/Clean Title - Vol\\. 02\\.epub\n$")
+
+# stdin is never read: /dev/null and a closed fd 0 give the same stdout (never 70).
+cli_e2e_case(NAME mdlist-stdin-null ARGS ${_edge_mdlist_dry_l1_args} out STDIN NULL
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_mdlist_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME mdlist-stdin-closed ARGS ${_edge_mdlist_dry_l1_args} out STDIN CLOSED
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_mdlist_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT out)
+
+# Write errors: a dry run writes only to stdout, so /dev/full is exit 1 and one `write error` line
+# with the errno text.
+cli_e2e_case(NAME mdlist-dev-full ARGS ${_edge_mdlist_dry_l1_args} out
+             STDOUT_FILE /dev/full
+             EXPECT_EXIT 1 EXPECT_STDERR_REGEX "^mangadex-dl: write error: No space left on device\n$"
+             EXPECT_ABSENT out)
+
+# SIGPIPE policy A: `mdlist ... | head -n 1` -> the writer dies by SIGPIPE, silently. L10's one title
+# (4000 loose chapters) planned one file per chapter prints well over 64 KiB of lines.
+set(_edge_mdlist_bulk_args mdlist --dry-run --layout chapters --api-base file://{{FIXTURES}}/bulk
+    ${_edge_mdlist_l10} out)
+cli_e2e_case(NAME mdlist-sigpipe ARGS ${_edge_mdlist_bulk_args} PIPE_HEAD 1
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "^[^\n]+\n$" EXPECT_STDERR_EMPTY)
+cli_e2e_case(NAME mdlist-sigpipe-parent-ignores ARGS ${_edge_mdlist_bulk_args} PIPE_HEAD 1
+             PARENT_IGNORES_SIGPIPE
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "^[^\n]+\n$" EXPECT_STDERR_EMPTY)
+
+# UTF-8: an invalid-UTF-8 LIST is a usage error with a fixed message (never echoed, never 70) even
+# under LC_ALL=C; an invalid-UTF-8 DIR still gives valid --json.
+cli_e2e_case(NAME mdlist-invalid-utf8-list-lc-c
+             ARGS mdlist ${_edge_mdlist_clean_api} "{{INVALID_UTF8}}" out
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 2 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: LIST must be a MangaDex list UUID or a https://mangadex\\.org/list/<uuid> URL; for a CSV file of titles use 'mangadex-dl batch <file>'\nRun 'mangadex-dl mdlist --help' for more information\\.\n$"
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME mdlist-invalid-utf8-dir-json
+             ARGS mdlist --json --dry-run ${_edge_mdlist_clean_api} ${_edge_mdlist_l1}
+                  "{{INVALID_UTF8}}"
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+# A UTF-8 DIR reaches stdout verbatim under C.UTF-8 and under C (locale-independent output).
+set(_edge_mdlist_zoe_paths_re
+    "^Zoë/Clean Title - Vol\\. 01\\.epub\nZoë/Clean Title - Vol\\. 02\\.epub\n$")
+cli_e2e_case(NAME mdlist-utf8-dir ARGS ${_edge_mdlist_dry_l1_args} "Zoë"
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_mdlist_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+cli_e2e_case(NAME mdlist-utf8-dir-lc-c ARGS ${_edge_mdlist_dry_l1_args} "Zoë"
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_mdlist_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+
+# Color: --json never carries ANSI, even with CLICOLOR_FORCE=1; piped stderr with failing items is plain.
+cli_e2e_case(NAME mdlist-json-clicolor-force
+             ARGS mdlist --json --dry-run ${_edge_mdlist_clean_api} ${_edge_mdlist_l1} out
+             ENV CLICOLOR_FORCE=1
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+cli_e2e_case(NAME mdlist-pipe-stderr-no-ansi
+             ARGS mdlist --api-base file://{{FIXTURES}}/nochapters ${_edge_mdlist_l8} out
+             EXPECT_EXIT 7 EXPECT_STDOUT_EMPTY EXPECT_NO_ANSI
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: list:1: 55555555-5555-4555-8555-555555555555: ")
+# --dir-per-title in the document: `dir` is the title's own directory DIR/<name> (AC47).
+cli_e2e_case(NAME mdlist-json-dir-per-title-clicolor-force
+             ARGS mdlist --json --dry-run --dir-per-title ${_edge_mdlist_clean_api} ${_edge_mdlist_l1} out
+             ENV CLICOLOR_FORCE=1
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+             EXPECT_STDOUT_REGEX "\"dir\": \"out/Clean Title\",.*\"path\": \"out/Clean Title/Clean Title - Vol\\. 01\\.epub\","
+             EXPECT_ABSENT out)

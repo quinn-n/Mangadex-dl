@@ -7,6 +7,7 @@
 
 #include "mangadex_dl/attributes.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/list_id.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/selection.hpp"
@@ -393,6 +394,13 @@ Result<std::string> validate_title_override(std::string_view title) {
 Result<DownloadOptions> validate_download_args(const RawDownloadArgs& raw) {
     Result<MangaId> manga = MangaId::parse(raw.manga);
     if (!manga) {
+        // A bare UUID parses as a MangaId, so only a list URL reaches this hint. The message never
+        // contains MANGA.
+        if (looks_like_list_id(raw.manga)) {
+            return std::unexpected(
+                usage_error("MANGA is a MangaDex list, not a title; use 'mangadex-dl mdlist "
+                            "<list>' to download every title in it"));
+        }
         return std::unexpected(std::move(manga).error());
     }
     if (raw.dir.empty()) {

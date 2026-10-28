@@ -218,24 +218,28 @@ TEST_CASE("batch --help documents FILE, DIR, the CSV format and exit 7, without 
                          "    https://mangadex.org/title/<uuid>,,\n"
                          "    <uuid>,My Title,series/my-title\n"
                          "\n"
+                         "For a MangaDex list (MDList) instead of a file, see 'mangadex-dl mdlist "
+                         "--help'.\n"
+                         "\n"
                          "Examples:\n"));
     CHECK(r.out.contains("Symlinks inside DIR are followed"));
     CHECK(r.out.contains("\nExit status:\n"));
-    CHECK(r.out.contains("\n  7   batch: titles failed in more than one way (see the per-title "
-                         "results)\n"));
+    CHECK(r.out.contains(
+        "\n  7   batch/mdlist: titles failed in more than one way (see per-title results)\n"));
     CHECK(!r.out.contains("--api-base"));   // hidden: a test and loopback seam, not a user option
     CHECK(!r.out.contains("--title TEXT")); // a per-row column only, not an option
     CHECK(!r.out.contains('\x1b'));
     check_fits_80_columns(r.out);
 }
 
-TEST_CASE("batch: the root and download help list batch, row 7 and the pointer to batch",
-          "[cli][batch][help]") {
+TEST_CASE(
+    "batch: the root and download help list batch, row 7 and the pointers to batch and mdlist",
+    "[cli][batch][help]") {
     const Captured root = run_args({"--help"});
     CHECK(root.exit_code == 0);
     CHECK(root.err.empty());
     CHECK(root.out.contains("\n  batch "));
-    CHECK(root.out.contains("\n  7   batch: "));
+    CHECK(root.out.contains("\n  7   batch/mdlist: "));
     check_fits_80_columns(root.out);
 
     const Captured download = run_args({"download", "--help"});
@@ -244,9 +248,10 @@ TEST_CASE("batch: the root and download help list batch, row 7 and the pointer t
     CHECK(download.out.contains(
         "the new ones, so an interrupted run can be restarted and a series kept up to\n"
         "date.\n\n"
-        "For many titles at once, see 'mangadex-dl batch --help'.\n\n"
+        "For many titles at once, see 'mangadex-dl batch --help' (a CSV file)\n"
+        "or 'mangadex-dl mdlist --help' (a MangaDex list).\n\n"
         "Exit status:\n"));
-    CHECK(download.out.contains("\n  7   batch: "));
+    CHECK(download.out.contains("\n  7   batch/mdlist: "));
     check_fits_80_columns(download.out);
 }
 

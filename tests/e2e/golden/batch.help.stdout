@@ -45,6 +45,8 @@ CSV file:
     https://mangadex.org/title/<uuid>,,
     <uuid>,My Title,series/my-title
 
+For a MangaDex list (MDList) instead of a file, see 'mangadex-dl mdlist --help'.
+
 Examples:
   Everything in the list, into ~/Manga:
     mangadex-dl batch titles.csv ~/Manga
@@ -66,8 +68,8 @@ Exit status:
   1   runtime failure (including a failed write to stdout)
   2   usage error
   3   network or API failure (connection, TLS, timeout, server error)
-  4   title not found on MangaDex
+  4   title or list not found on MangaDex (a private list counts)
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
-  7   batch: titles failed in more than one way (see the per-title results)
+  7   batch/mdlist: titles failed in more than one way (see per-title results)
   70  internal error (a bug: please report it)

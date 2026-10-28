@@ -4,6 +4,10 @@
 // phase (src/core/download/plan_phase.cpp) and the execute phase
 // (src/core/download/execute_phase.cpp) on the calling thread.
 //
+// --dir-per-title (list plan T6): between the phases, a non-empty plan's title directory is
+// resolved and checked (src/core/download/dir_per_title.cpp), and the unchanged execute phase
+// runs with DIR/<name> as its options.dir. Without the flag the two phases run as before.
+//
 // Stop requests: the caller's stop_source (DownloadServices::stop), an InterruptBridge that turns
 // SIGINT/SIGTERM into a request on it within 50 ms, and stop_now() checks at every phase step
 // that turn a pending signal into a request at once. Every stop unwinds as Errc::interrupted.
@@ -18,6 +22,7 @@
 #include "mangadex_dl/report.hpp"
 
 #include <expected>
+#include <filesystem>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -87,10 +92,27 @@ Result<RunReport> run_download(const DownloadOptions& options, const DownloadSer
         .observer = &observer,
         .lines = &lines,
         .stop = stop,
+        .title_dir = services.title_dir,
+        .claimed = &services.claimed,
     };
     Result<detail::PlanResult> planned = detail::plan_phase(ctx);
     if (!planned) {
         return std::unexpected(std::move(planned.error()));
+    }
+    // An empty plan (exit 5) claims no directory and leaves DIR alone, so it takes the old path.
+    if (options.dir_per_title && !planned->plan.epubs.empty()) {
+        Result<std::filesystem::path> title_dir = detail::resolve_title_dir(ctx, planned->plan);
+        if (!title_dir) {
+            return std::unexpected(std::move(title_dir.error()));
+        }
+        // Both locals live in this frame until execute_phase returns, after ctx (whose borrowed
+        // pointers they share); nothing keeps &effective past the call. The copied stop_source
+        // shares its state, so the bridge's stop requests still reach the execute phase.
+        DownloadOptions effective = options;
+        effective.dir = std::move(*title_dir);
+        detail::RunContext title_ctx = ctx;
+        title_ctx.options = &effective;
+        return detail::execute_phase(title_ctx, *planned);
     }
     return detail::execute_phase(ctx, *planned);
 }

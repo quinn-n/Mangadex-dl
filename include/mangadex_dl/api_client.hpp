@@ -7,6 +7,7 @@
 
 #include "mangadex_dl/attributes.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/list_id.hpp"
 #include "mangadex_dl/manga_id.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/net/retry.hpp"
@@ -101,6 +102,14 @@ public:
                                                  std::string_view file, std::stop_token stop);
     [[nodiscard]] Result<std::string> fetch_cover(const MangaId& id, std::string_view file,
                                                   std::stop_token stop);
+    /// GET <api>/list/<canonical id> (no query), body cap max_api_json_bytes; returns the body of
+    /// a 2xx unparsed. 404 -> Errc::not_found "list <id> not found on MangaDex (HTTP 404): it does
+    /// not exist or is private; check the id, make the list public on MangaDex, or use
+    /// 'mangadex-dl download' if it is a title". 401/403 whose body is_custom_list_error_body ->
+    /// the same, with the status received ("(HTTP 403)", "(HTTP 401)"). Otherwise the usual status
+    /// mapping (Errc::network "<url>: <reason>"); a stop -> Errc::interrupted. Implemented in list
+    /// plan T7.
+    [[nodiscard]] Result<std::string> fetch_list_document(const ListId& id, std::stop_token stop);
 
 private:
     struct State;

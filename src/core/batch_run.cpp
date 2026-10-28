@@ -2,7 +2,8 @@
 //
 // `batch`, phase 2: the row loop over an injected TitleRunner, its stop rules, the aggregate exit
 // code, the closing message and cross-row collision detection (batch plan T3b; batch-spec.md
-// "Exit codes" and "Input & output").
+// "Exit codes" and "Input & output"). The list plan's T5 adds the source-aware wording (`line` for
+// csv, `item` for mdlist) and the runner's effective dir (RowOutcome::dir).
 //
 // Threads: everything here runs on the calling thread. The runner's own threads (run_download's
 // pool, bridge and reporter) start and are joined inside one runner.run() call.
@@ -25,8 +26,26 @@
 namespace mangadex_dl {
 namespace {
 
-/// At most this many line numbers are listed in the closing message, then " and <k> more".
+/// At most this many line (or item) numbers are listed in the closing message, then
+/// " and <k> more".
 constexpr std::size_t max_listed_lines = 10;
+
+/// What a row is called in the closing message: one CSV line, or one list item.
+struct RowNoun {
+    std::string_view one{};
+    std::string_view many{};
+};
+
+/// "line"/"lines" for csv, "item"/"items" for mdlist. Points at static storage.
+[[nodiscard]] constexpr RowNoun row_noun(BatchSource source) noexcept {
+    switch (source) {
+    case BatchSource::csv:
+        return RowNoun{.one = "line", .many = "lines"};
+    case BatchSource::mdlist:
+        return RowNoun{.one = "item", .many = "items"};
+    }
+    return RowNoun{.one = "line", .many = "lines"}; // only reachable through an out-of-range value
+}
 
 [[nodiscard]] bool is_duplicate(const BatchJob& job) noexcept {
     return job.duplicate_of.has_value();
@@ -51,12 +70,13 @@ constexpr std::size_t max_listed_lines = 10;
     };
 }
 
-/// The result row for a job the runner ran.
+/// The result row for a job the runner ran. `dir` is the runner's effective directory when it
+/// reported one (--dir-per-title: DIR/<name>), else the job's.
 [[nodiscard]] TitleResult run_result(const BatchJob& job, RowOutcome outcome) {
-    return TitleResult{
+    TitleResult row{
         .line = job.line,
         .manga_id = std::string{job.options.manga.str()},
-        .dir = job.dir,
+        .dir = std::move(outcome.dir),
         .status = title_status_for(outcome.exit_code),
         .exit_code = outcome.exit_code,
         .error = outcome.error.empty() ? std::nullopt
@@ -64,6 +84,10 @@ constexpr std::size_t max_listed_lines = 10;
         .files = outcome.files,
         .report = std::move(outcome.report),
     };
+    if (row.dir.empty()) {
+        row.dir = job.dir;
+    }
+    return row;
 }
 
 /// Did not complete: every status that feeds the exit code (not ok, duplicate or not_run).
@@ -146,9 +170,10 @@ constexpr std::size_t max_listed_lines = 10;
     return std::nullopt; // only reachable through an out-of-range enum value
 }
 
-/// "line 4" / "lines 4, 9, 12" / "lines 1, ..., 10 and 3 more".
-[[nodiscard]] std::string lines_phrase(const std::vector<std::size_t>& lines) {
-    std::string text = lines.size() == 1 ? "line " : "lines ";
+/// "line 4" / "lines 4, 9, 12" / "lines 1, ..., 10 and 3 more" (or "item"/"items").
+[[nodiscard]] std::string lines_phrase(const std::vector<std::size_t>& lines, RowNoun noun) {
+    std::string text{lines.size() == 1 ? noun.one : noun.many};
+    text += ' ';
     const std::size_t listed = std::min(lines.size(), max_listed_lines);
     for (std::size_t i = 0; i < listed; ++i) {
         if (i != 0) {
@@ -277,6 +302,12 @@ int batch_exit_code(const BatchResult& result) noexcept {
 }
 
 std::optional<std::string> batch_closing_message(const BatchResult& result, bool dry_run) {
+    return batch_closing_message(result, dry_run, BatchSource::csv);
+}
+
+std::optional<std::string> batch_closing_message(const BatchResult& result, bool dry_run,
+                                                 BatchSource source) {
+    const RowNoun noun = row_noun(source);
     if (result.stop == BatchStop::interrupted) {
         return std::nullopt;
     }
@@ -285,10 +316,10 @@ std::optional<std::string> batch_closing_message(const BatchResult& result, bool
             result.titles, [](const auto& row) { return row.status == TitleStatus::not_run; }));
         if (not_run == 0) {
             // Only a local failure on the last runnable row stops with nothing left to run.
-            return std::format("stopped at line {}: {}", result.stopped_at_line, *reason);
+            return std::format("stopped at {} {}: {}", noun.one, result.stopped_at_line, *reason);
         }
-        return std::format("stopped at line {}: {}; {} not run", result.stopped_at_line, *reason,
-                           titles_phrase(not_run));
+        return std::format("stopped at {} {}: {}; {} not run", noun.one, result.stopped_at_line,
+                           *reason, titles_phrase(not_run));
     }
 
     std::vector<std::size_t> failed_lines{};
@@ -309,18 +340,28 @@ std::optional<std::string> batch_closing_message(const BatchResult& result, bool
     }
     const std::string of = std::format("{} of {}", failed_lines.size(), titles_phrase(considered));
     if (dry_run) {
-        return std::format("{} would fail ({})", of, lines_phrase(failed_lines));
+        return std::format("{} would fail ({})", of, lines_phrase(failed_lines, noun));
     }
     // Suggest a retry only when one could help; otherwise point at the per-row errors.
     const std::string_view advice =
         retryable ? "run the same command again to retry them" : "see the errors above";
-    return std::format("{} did not complete ({}); {}", of, lines_phrase(failed_lines), advice);
+    return std::format("{} did not complete ({}); {}", of, lines_phrase(failed_lines, noun),
+                       advice);
 }
 
 std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t line) {
     std::string key = std::filesystem::path{std::move(path)}.lexically_normal().generic_string();
     const auto [it, inserted] = by_path_.try_emplace(std::move(key), line);
     if (inserted || it->second == line) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<std::size_t> OutputRegistry::claimed_by(std::string_view path) const {
+    const std::string key = std::filesystem::path{path}.lexically_normal().generic_string();
+    const auto it = by_path_.find(key);
+    if (it == by_path_.end()) {
         return std::nullopt;
     }
     return it->second;

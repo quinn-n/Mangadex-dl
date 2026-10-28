@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The "Exit status:" help footer, shared by the root `--help`, `download --help` and
-// `batch --help` (and so by the help2man page). Built from exit_codes.hpp so the documented
+// The "Exit status:" help footer, shared by the root `--help`, `download --help`, `batch --help`
+// and `mdlist --help` (and so by the help2man page). Built from exit_codes.hpp so the documented
 // numbers can't drift from the code.
 #pragma once
 
@@ -19,10 +19,10 @@ namespace mangadex_dl::app {
                        "  {:<3} runtime failure (including a failed write to stdout)\n"
                        "  {:<3} usage error\n"
                        "  {:<3} network or API failure (connection, TLS, timeout, server error)\n"
-                       "  {:<3} title not found on MangaDex\n"
+                       "  {:<3} title or list not found on MangaDex (a private list counts)\n"
                        "  {:<3} no downloadable chapters matched the language and selection\n"
                        "  {:<3} incomplete: at least one output file failed\n"
-                       "  {:<3} batch: titles failed in more than one way (see the per-title "
+                       "  {:<3} batch/mdlist: titles failed in more than one way (see per-title "
                        "results)\n"
                        "  {:<3} internal error (a bug: please report it)",
                        exit_code::success, exit_code::failure, exit_code::usage, exit_code::network,

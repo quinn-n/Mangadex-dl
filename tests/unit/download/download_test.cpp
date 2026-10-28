@@ -288,6 +288,18 @@ public:
         return md::run_download(options, services, observer);
     }
 
+    /// The same, with DownloadServices::claimed set (mdlist's per-run claimed paths).
+    [[nodiscard]] md::Result<md::RunReport>
+    run_claimed(const md::DownloadOptions& options, RecordingObserver& observer,
+                std::function<bool(std::string_view)> claimed) {
+        md::DownloadServices services{};
+        services.transport = transport_.get();
+        services.clock = clock_.get();
+        services.user_agent = "mangadex-dl/test";
+        services.claimed = std::move(claimed);
+        return md::run_download(options, services, observer);
+    }
+
     // URLs exactly as the client builds them in fixture mode.
     [[nodiscard]] std::string base_url() const { return "file://" + root_.string(); }
     [[nodiscard]] std::string api() const { return base_url() + "/api"; }
@@ -349,6 +361,13 @@ private:
     std::ifstream in(path, std::ios::binary);
     REQUIRE(in.good());
     return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
+void write_file(const std::filesystem::path& path, std::string_view content) {
+    std::ofstream file{path, std::ios::binary | std::ios::trunc};
+    file << content;
+    file.close();
+    REQUIRE(file.good());
 }
 
 [[nodiscard]] std::vector<md::EpubStatus> statuses(const md::RunReport& report) {
@@ -557,6 +576,87 @@ TEST_CASE("download --overwrite: a directory that takes the name mid-build fails
     // No temporary is left behind.
     CHECK(list_dir(h.out("out")) ==
           std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
+}
+
+TEST_CASE("download --overwrite never replaces a path DownloadServices::claimed owns",
+          "[download][overwrite]") {
+    Harness h{mdx::clean_fixture()};
+    const std::string vol1 = (h.out("out") / clean_vol1).string();
+    const std::string vol2 = (h.out("out") / clean_vol2).string();
+    const std::string left_alone =
+        vol1 + ": left alone: holds a different book; use another DIR or --title";
+    // Records every question and its thread; owns vol1 only. The vector outlives every run.
+    std::vector<std::pair<std::string, std::thread::id>> asked{};
+    const std::function<bool(std::string_view)> claims_vol1 =
+        [log = &asked, owned = &vol1](std::string_view path) {
+            log->emplace_back(std::string{path}, std::this_thread::get_id());
+            return path == *owned;
+        };
+    md::DownloadOptions overwrite = h.options();
+    overwrite.overwrite = true;
+
+    SECTION("a real run: the claimed file is left alone as foreign, the other one replaced") {
+        RecordingObserver first;
+        REQUIRE(h.run(h.options(), first).has_value());
+        const std::string original_vol2 = read_file(vol2);
+        write_file(vol1, "item 1's book");
+        write_file(vol2, "stale");
+
+        RecordingObserver observer;
+        const auto result = h.run_claimed(overwrite, observer, claims_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::written});
+        CHECK(result->epubs[0].existing == md::ExistingKind::foreign);
+        CHECK_FALSE(result->epubs[0].replaced);
+        CHECK(result->epubs[0].pages == 0);
+        CHECK(result->epubs[1].existing == md::ExistingKind::unchecked);
+        CHECK(result->epubs[1].replaced);
+        CHECK(md::exit_code_for(*result) == 0);
+        CHECK(observer.warnings() == std::vector<std::string>{left_alone});
+        CHECK(observer.begins() == std::vector<std::string>{std::string{clean_vol2}});
+        CHECK(observer.ends() == result->epubs);
+        CHECK(read_file(vol1) == "item 1's book");
+        CHECK(read_file(vol2) == original_vol2);
+        CHECK(list_dir(h.out("out")) ==
+              std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
+        // Asked once per file, on the calling thread only.
+        REQUIRE(asked.size() == 2);
+        CHECK(asked[0].first == vol1);
+        CHECK(asked[1].first == vol2);
+        for (const auto& [path, thread] : asked) {
+            CHECK(thread == std::this_thread::get_id());
+        }
+    }
+    SECTION("a dry run: the claimed file is left alone, also before DIR exists") {
+        md::DownloadOptions dry = overwrite;
+        dry.dry_run = true;
+        RecordingObserver observer;
+        const auto result = h.run_claimed(dry, observer, claims_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        CHECK(result->epubs[0].existing == md::ExistingKind::foreign);
+        CHECK_FALSE(result->epubs[0].replaced);
+        CHECK(result->epubs[1].existing == md::ExistingKind::none);
+        CHECK_FALSE(result->epubs[1].replaced);
+        CHECK(observer.warnings() == std::vector<std::string>{left_alone});
+        CHECK(observer.ends() == result->epubs);
+        CHECK_FALSE(std::filesystem::exists(h.out("out")));
+        CHECK(asked.size() == 2);
+    }
+    SECTION("without --overwrite the question is never asked") {
+        RecordingObserver observer;
+        const auto result = h.run_claimed(h.options(), observer, claims_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::written, md::EpubStatus::written});
+        CHECK(asked.empty());
+    }
+    SECTION("an empty function claims nothing") {
+        RecordingObserver observer;
+        const auto result = h.run_claimed(overwrite, observer, {});
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::written, md::EpubStatus::written});
+        CHECK(observer.warnings().empty());
+    }
 }
 
 TEST_CASE("download dry-run plans every file without creating or downloading anything",

@@ -3,6 +3,8 @@
 // `batch`: the CLI-level settings, the per-row plan (merge, validation, dedupe), the row loop and
 // its aggregation, the closing message and the --json document. Frozen interface (batch plan T1);
 // implemented in src/core/batch_plan.cpp (T3a) and src/core/batch_run.cpp, batch_json.cpp (T3b).
+// The list plan's T1 adds BatchSource, ListSummary, RowOutcome::dir and the source/list
+// overloads (defined in list plan T5).
 #pragma once
 
 #include "mangadex_dl/batch_csv.hpp"
@@ -29,12 +31,20 @@ struct RawBatchArgs {
     bool fail_fast = false;
 };
 
+/// Where a multi-title run's rows come from: the wording of row-scoped messages ("line"/"lines"
+/// for csv, "item"/"items" for mdlist).
+enum class BatchSource {
+    csv,
+    mdlist,
+};
+
 struct BatchSettings {
     std::string file{};         ///< as typed
     std::string label{};        ///< FILE as typed, or "<stdin>" for "-"
     RawDownloadArgs defaults{}; ///< validated CLI-level strings
     DownloadOptions base{};     ///< validated CLI-level options (manga = nil placeholder)
     bool fail_fast = false;
+    BatchSource source = BatchSource::csv;
 };
 
 /// Errc::usage: FILE empty; FILE looks like a manga id ("FILE looks like a MangaDex title; use
@@ -90,6 +100,8 @@ struct RowOutcome {
     /// unclassified): the batch stops. false with exit_code 1 = a row-scoped failure
     /// (check_row_dir row_error): the row is `failed` and the batch continues.
     bool fatal = false;
+    std::string dir{}; ///< effective dir when it differs from job.dir (--dir-per-title:
+                       ///< DIR/<name>); empty = job.dir
 
     friend bool operator==(const RowOutcome&, const RowOutcome&) = default;
 };
@@ -161,9 +173,28 @@ protected:
 [[nodiscard]] std::optional<std::string> batch_closing_message(const BatchResult& result,
                                                                bool dry_run);
 
+/// The same, worded for `source`: "line"/"lines" (csv, byte-identical to the two-argument
+/// overload) or "item"/"items" (mdlist).
+[[nodiscard]] std::optional<std::string> batch_closing_message(const BatchResult& result,
+                                                               bool dry_run, BatchSource source);
+
+/// The --json `list` object (mdlist only).
+struct ListSummary {
+    std::string id{}; ///< canonical list UUID
+    std::optional<std::string> name{};
+    std::string url{}; ///< https://mangadex.org/list/<id>
+
+    friend bool operator==(const ListSummary&, const ListSummary&) = default;
+};
+
 /// The --json document, ordered_json, indent 2, replace handler, '\n'-terminated, never ANSI.
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run);
+
+/// The same, plus `"list": {"id", "name" (null when absent), "url"}` right after `"source"` when
+/// `list` has a value. With nullopt, byte-identical to the three-argument overload.
+[[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
+                                        bool dry_run, const std::optional<ListSummary>& list);
 
 /// Cross-row collision detection. Owns its keys.
 class OutputRegistry {
@@ -171,6 +202,10 @@ public:
     /// Records `path` for `line`; returns the earlier line that already claimed it. Keyed on
     /// std::filesystem::path(path).lexically_normal().generic_string() of the joined path.
     [[nodiscard]] std::optional<std::size_t> claim(std::string path, std::size_t line);
+
+    /// The line that claimed `path` so far (keyed as claim() keys it), or nullopt. Records
+    /// nothing.
+    [[nodiscard]] std::optional<std::size_t> claimed_by(std::string_view path) const;
 
 private:
     std::map<std::string, std::size_t, std::less<>> by_path_{};

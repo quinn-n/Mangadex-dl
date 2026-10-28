@@ -4,6 +4,8 @@
 // status spellings are API: renaming or removing one is a breaking change that needs a
 // format_version bump. Each row's `report` is the row's `download --json` document, built by
 // detail::report_json, so it is byte-identical to what `download --json` prints for that title.
+// The list plan's T5 adds the additive `list` object (mdlist only) right after `source`; a batch
+// document never carries it.
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/report.hpp"
 #include "report_json.hpp"
@@ -91,6 +93,15 @@ struct TitleCounts {
     }
 };
 
+/// The `list` object: {id, name (null when absent), url}, in that order.
+[[nodiscard]] Json list_json(const ListSummary& list) {
+    Json out = Json::object();
+    out["id"] = list.id;
+    out["name"] = nullable(list.name);
+    out["url"] = list.url;
+    return out;
+}
+
 [[nodiscard]] Json summary_json(const BatchResult& result) {
     TitleCounts counts{};
     RunSummary files{};
@@ -150,6 +161,11 @@ std::string_view title_status_name(TitleStatus status) noexcept {
 }
 
 std::string batch_to_json(const BatchResult& result, std::string_view source, bool dry_run) {
+    return batch_to_json(result, source, dry_run, std::nullopt);
+}
+
+std::string batch_to_json(const BatchResult& result, std::string_view source, bool dry_run,
+                          const std::optional<ListSummary>& list) {
     Json titles = Json::array();
     for (const TitleResult& row : result.titles) {
         titles.push_back(title_json(row));
@@ -159,13 +175,18 @@ std::string batch_to_json(const BatchResult& result, std::string_view source, bo
     doc["format_version"] = format_version;
     doc["dry_run"] = dry_run;
     doc["source"] = source;
+    if (list) {
+        doc["list"] = list_json(*list);
+    }
     doc["titles"] = std::move(titles);
     doc["summary"] = summary_json(result);
 
-    // replace: FILE, DIR, the dir cells and every report string are untrusted bytes; the strict
-    // handler would throw on invalid UTF-8, and replace applies at every depth. ensure_ascii=false
-    // keeps valid UTF-8 readable; control characters (ESC included) are always escaped as \u00XX,
-    // so the document never carries ANSI.
+    // replace: FILE (or LIST), DIR, the dir cells, the list name and every report string are
+    // untrusted bytes; the strict handler would throw on invalid UTF-8, and replace applies at
+    // every depth. ensure_ascii=false keeps valid UTF-8 readable; C0 control characters (ESC
+    // included) are always escaped as \u00XX, so the document never carries a 7-bit escape
+    // sequence. DEL and the C1 controls pass through unescaped (list plan gate decision: a
+    // separate change escapes them in every --json document).
     std::string text = doc.dump(2, ' ', false, Json::error_handler_t::replace);
     text += '\n';
     return text;

@@ -41,6 +41,18 @@ check the bytes with `od -c`.
                             column)
 
 
+The DIR input for `mangadex-dl mdlist` (mdlist/)
+================================================
+
+  mdlist/Clean Title        a regular file with the clean title's directory name. With DIR
+                            {{INPUTS}}/mdlist and --dir-per-title, the clean title's own directory
+                            DIR/Clean Title is this file, so that item fails alone
+                            (e2e.mdlist.dir-per-title-row-dir-file, a dry run so nothing is ever
+                            created here). The name holds a space: keep it.
+
+The lists `mdlist` reads are not committed: they are generated list documents in the fixture trees
+(below).
+
 Generated MangaDex fixtures ({{FIXTURES}})
 ==========================================
 
@@ -96,9 +108,33 @@ Layout of one tree (<root> = {{FIXTURES}}/<name>), matching the fixture transpor
   <root>/api/cover/offset-<n>.json                   GET /cover?manga[]=<id>&limit=100&offset=<n>
                                                      (n = 0, 100, ...; offset-0 always exists)
   <root>/api/at-home/server/<chapterId>.json         GET /at-home/server/<chapterId>
+  <root>/api/list/<listId>.json                      GET /list/<listId> (custom lists; only the trees
+                                                     below serve any)
   <root>/uploads/covers/<mangaId>/<fileName>         cover images
   <root>/at-home/data/<hash>/<file>                  page images ({baseUrl}/data/<hash>/<file>)
   <root>/at-home/data-saver/<hash>/<file>            the same bytes ({baseUrl}/data-saver/...)
+
+Custom lists (MDLists) for `mangadex-dl mdlist` (tests/e2e/cases/mdlist.cmake and the `mdlist-*`
+cases in _edge.cmake), written by write_fixture_tree from FixtureManga::lists
+(tests/support/mdx_fixture.hpp). Each document has MangaDex's live shape: `data.type` "custom_list",
+`attributes.name` (or null), visibility "public", and `relationships` holding the manga entries in
+order, then exactly one `user` entry (the owner), last. Covers are one title per tree, so every list
+mixes its tree's one real title with unknown ids. The ids are a0000000-0000-4000-8000-<n as 12 hex
+digits> (mdx::list_id(n)); pass one as LIST, bare or as https://mangadex.org/list/<id>[/<slug>].
+
+  id (n)  tree         name                 manga relationships
+  L1  01  clean        "Clean List"         1111...
+  L2  02  clean        "Clean And Unknown"  1111..., 6666... (item 2 is not found)
+  L3  03  clean        "Empty"              none (only the user entry): an empty list
+  L4  04  clean        "Twice"              1111... twice (item 2 is a duplicate)
+  L5  05  clean        "Bad Id"             one with id `../x`: a malformed list (exit 3)
+  L6  06  clean        (none)               1111..., but data.id is L1's: a malformed list (exit 3)
+  L8  08  nochapters   (none)               5555... (exit 5), 6666... (exit 4)
+  L9  09  incomplete   (none)               4444... (exit 6)
+  L10 0a  bulk         (none)               3333... (for the SIGPIPE cases)
+      ff  (no tree)                         no document anywhere: an unknown list (HTTP 404, exit 4)
+
+The clean-* variants serve no list.
 
 Rules the fixtures follow (and tests may rely on):
 - JSON shapes are MangaDex's (docs/design/download-factcheck.md, cluster F), with a few extra fields

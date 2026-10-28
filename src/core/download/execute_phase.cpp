@@ -669,6 +669,22 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
     outcome.epub.chapters = held_chapters(*assessment.held);
 }
 
+/// --overwrite: does an earlier title of this run own `path` (DownloadServices::claimed)? Then
+/// the file is not replaced.
+[[nodiscard]] bool claimed_in_run(const RunContext& ctx, std::string_view path) {
+    return ctx.claimed != nullptr && *ctx.claimed && (*ctx.claimed)(path);
+}
+
+/// --overwrite, a path claimed_in_run: left alone exactly as an assessment finds that title's
+/// book (foreign, other_book), real and dry run alike, without looking at what is there.
+void leave_claimed(DownloadObserver& observer, EpubOutcome& outcome) {
+    const InspectFailure other{.reason = ForeignReason::other_book, .error = 0};
+    observer.on_warning(foreign_warning(outcome.path, other));
+    outcome.status = EpubStatus::exists;
+    outcome.existing = ExistingKind::foreign;
+    outcome.replaced = false;
+}
+
 /// An incomplete file's lists (D1): its final chapters, and which are downloaded or reused.
 void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     outcome.epub = assessment.final_plan;
@@ -815,8 +831,9 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
 }
 
 /// Produces one file: assessment of what is under its name (unless --overwrite), then a fresh
-/// build, an update, or nothing. The value is the file's outcome (written, exists or failed);
-/// an Error ends the run.
+/// build, an update, or nothing. With --overwrite, a path an earlier title of the run claimed is
+/// left alone (leave_claimed) instead. The value is the file's outcome (written, exists or
+/// failed); an Error ends the run.
 [[nodiscard]] Result<FileResult> produce(RunContext& ctx, const PlanResult& planned, OutputDir& dir,
                                          std::size_t index) {
     const DownloadOptions& options = *ctx.options;
@@ -831,6 +848,10 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         .kept = {},
     };
     if (options.overwrite) {
+        if (claimed_in_run(ctx, result.outcome.path)) {
+            leave_claimed(*ctx.observer, result.outcome);
+            return result;
+        }
         const Result<EntryKind> found = dir.entry_kind(epub.file_name);
         if (!found) {
             return std::unexpected(found.error());
@@ -887,6 +908,10 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     };
     EpubOutcome& outcome = result.outcome;
     bool replaces = false;
+    if (options.overwrite && claimed_in_run(ctx, outcome.path)) {
+        leave_claimed(*ctx.observer, outcome); // also when DIR does not exist yet
+        return result;
+    }
     if (dir != nullptr && options.overwrite) {
         const Result<EntryKind> found = dir->entry_kind(epub.file_name);
         if (!found) {

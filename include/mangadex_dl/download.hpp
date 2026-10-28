@@ -19,6 +19,8 @@
 
 namespace mangadex_dl {
 
+class TitleDirResolver; // title_dir.hpp
+
 /// Progress and diagnostics from run_download. Every call happens on the thread that called
 /// run_download (never on a worker), so implementations need no locking. Views and references
 /// are valid only during the call.
@@ -47,19 +49,31 @@ protected:
     DownloadObserver() = default;
 };
 
-/// What run_download talks to. The pointers are borrowed for the duration of the call only and
-/// must be non-null.
+/// What run_download talks to. `transport` and `clock` must be non-null; `title_dir` is nullable
+/// (null = the plain stem). Every pointer is borrowed for the run_download call only and never
+/// stored past it.
 struct DownloadServices {
     Transport* transport = nullptr;
     Clock* clock = nullptr;
     std::function<std::uint32_t(std::uint32_t)> jitter{}; ///< see ApiClient
     std::stop_source stop{}; ///< shares its stop state with the caller's copy
     std::string user_agent{};
+    /// --dir-per-title only; borrowed for the run_download call, nullable (null = the plain
+    /// stem); called only on the calling thread.
+    TitleDirResolver* title_dir = nullptr;
+    /// mdlist only (empty for `download` and `batch`): does an earlier title of the same run
+    /// already own `path` (EpubOutcome::path as the report builds it)? With --overwrite, a file
+    /// whose path it owns is never replaced: it is left alone as a foreign book (status exists,
+    /// existing foreign, with the "holds a different book" warning), in a dry run too. Called
+    /// only on the calling thread, during run_download; the views are valid only during the call.
+    std::function<bool(std::string_view path)> claimed{};
 };
 
 /// Runs the whole download. An Error is fatal for the run: Errc::failure (exit 1, a local
-/// problem), Errc::network (3), Errc::not_found (4) or Errc::interrupted. Otherwise the report
-/// says what happened per file; exit_code_for(report) gives 0, 5 or 6.
+/// problem), Errc::network (3), Errc::not_found (4) or Errc::interrupted. With
+/// options.dir_per_title, also Errc::row_dir (exit 1): this title's own directory below DIR is
+/// unusable, nothing was written, and a multi-title run continues with the next title. Otherwise
+/// the report says what happened per file; exit_code_for(report) gives 0, 5 or 6.
 [[nodiscard]] Result<RunReport> run_download(const DownloadOptions& options,
                                              const DownloadServices& services,
                                              DownloadObserver& observer);
