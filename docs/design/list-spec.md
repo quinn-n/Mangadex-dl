@@ -556,7 +556,7 @@ AC1–AC35 keep their numbers; changes are marked **rev1**. A1 adds AC36–AC48.
 - **Q2. List not found or private:** reuse exit 4 and reword its row; no new code.
 - **Q3. Layout of DIR:** flat by default, as `batch` does, **plus the opt-in `--dir-per-title` in this same change.** Specified by amendment A1 ("Per-title subdirectories").
 - **QA1. Title directory names:** plain `<stem>/`, no id suffix; only a same-name clash within one run gets ` [<8 hex>]`.
-- **QA2. `--dir-per-title` on `batch`:** not in this change. The user wants it added later as a separate change (a row's `dir` cell would win over the derived name).
+- **QA2. `--dir-per-title` on `batch`:** not in this change. The user wants it added later as a separate change (a row's `dir` cell would win over the derived name). Done in `batch-dir-per-title-spec.md` (the cell replaces the derived name).
 
 ## [VERIFY] items
 

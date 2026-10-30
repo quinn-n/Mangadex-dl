@@ -304,6 +304,7 @@ order, into `DIR` (default `.`). `FILE` is a CSV file, or `-` to read the list f
 | `--volumes`, `--loose-chapters`, `--layout`, `-l, --lang`, `--group`, `--direction` | As in `download`: the value for every row whose CSV cell is empty. |
 | `--data-saver`, `--overwrite`, `-n, --dry-run`, `-j, --jobs`, `--no-report` | As in `download`, for every row. These have no CSV column, so a list from someone else can never replace your files or change the load. |
 | `--fail-fast` | Stop at the first title that fails. |
+| `--dir-per-title` | Put each title in its own subdirectory of `DIR`, named like its files: `DIR/<title>/<title> - Vol. 01.epub`. A row with a `dir` goes into `DIR/<dir>` as without the flag. See [Where the batch files go](#where-the-batch-files-go). |
 
 There is no `--title` option: one title for every row would make the file names collide. Use the
 `title` column instead (`batch FILE --title X` exits 2 with
@@ -330,7 +331,7 @@ examples.
   |---|---|
   | `manga` | The title, as `MANGA` in `download`. Required. |
   | `title` | `--title` for this row. |
-  | `dir` | A subdirectory of `DIR` for this row, e.g. `series/one`: relative, no `.` or `..` parts, no `\`. |
+  | `dir` | A subdirectory of `DIR` for this row, e.g. `series/one`: relative, no `.` or `..` parts, no `\`. With `--dir-per-title`, it replaces the title's own directory. |
   | `volumes`, `loose-chapters`, `layout`, `lang`, `direction` | As the options. |
   | `group` | Preferred groups in priority order, separated by `\|`: `Group A\|Group B`. Replaces `--group` for this row. |
   | `note` | Ignored: free text for yourself. |
@@ -359,11 +360,46 @@ https://mangadex.org/title/<uuid>,,,,
 <uuid>,My Title,series/my-title,fr,read later
 ```
 
+### Where the batch files go
+
+- **By default, flat:** every title's files go straight into `DIR`, or into `DIR/<dir>` for a row
+  with a `dir`, named as in `download` (see [File names](#file-names)).
+- **`--dir-per-title`** puts each title in its own subdirectory, named exactly like its files and
+  made safe the same way: `DIR/<title>/<title> - Vol. 01.epub`. A row's `title` cell therefore
+  names its directory too. The directory is created only when the title has a file to write, and
+  never with `--dry-run`.
+  - A row with a `dir` goes into `DIR/<dir>`, exactly as without the flag: the cell replaces the
+    title's own directory. To nest, write both parts: `shonen/One Piece`.
+  - **Names given in `dir` cells are kept for those rows.** Before the first title runs, the first
+    part of every `dir` (`series` for `series/clean`) is set aside. Another title with that name
+    gets ` [<first 8 hex digits of its UUID>]`, with a warning (not shown with `-q`):
+    `titles.csv:3: directory '<name>' is used by the 'dir' of line 2; using '<name> [1a2b3c4d]'`.
+    This depends only on the list: not on the order of the rows, and not on whether the row with
+    the `dir` succeeds. Rows of the same title as that row keep the plain name and share it.
+  - Two different titles with the same name: the earlier line keeps the plain name, and the later
+    one gets the suffix, with a warning (not shown with `-q`):
+    `titles.csv:4: directory '<name>' already holds line 2 (a title with the same name); using '<name> [1a2b3c4d]'`.
+    This is decided afresh on every run and not recorded, so moving the rows can change which of
+    the two keeps the plain name.
+  - The same title on several rows with different `title` cells (or `lang`s) stays in the
+    directory its first row without a `dir` got, and each row's files keep their own names:
+    `DIR/Clean Title/Other Title - Vol. 01.epub`. Give the rows different `dir` cells to separate
+    them.
+  - A title whose own directory can't be used (a regular file with its name, say) fails alone,
+    with exit code 1 for that title, and the next row runs:
+    `titles.csv:1: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`.
+- **New paths:** a renamed title (or `title` cell), another `--lang` or `lang`, or switching
+  between flat and `--dir-per-title` gives new paths. The files are downloaded again there, and
+  the old ones are left alone; delete them yourself.
+
 ### Examples
 
 ```sh
 # Everything in the list, into ~/Manga
 mangadex-dl batch titles.csv ~/Manga
+
+# The same, one folder per title
+mangadex-dl batch titles.csv ~/Manga --dir-per-title
 
 # Show what would be written, without downloading anything
 mangadex-dl batch titles.csv ~/Manga --dry-run
@@ -381,7 +417,8 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   With `--json`, one document at the end instead (below).
 - **stderr:** every warning and error about a row starts with the list's name and the line,
   e.g. `mangadex-dl: error: titles.csv:4: title <uuid> not found on MangaDex (HTTP 404); ...`. With `-v`, each title
-  begins with `titles.csv:4: <uuid>`. When stderr is a terminal, the progress line gains the
+  begins with `titles.csv:4: <uuid>`; with `--dir-per-title`, a row without a `dir` also prints
+  `output directory: <DIR>/<name>`. When stderr is a terminal, the progress line gains the
   title's position: `(2/15) [1/2] Vol. 1: 3/5 pages`. The "N files are already up to date" note
   is printed once, at the end. Two rows that would write the same file get a warning naming both
   lines.
@@ -430,10 +467,14 @@ and 3 to 7, never on exit 2):
 
 `exit_code` is what `download` would have returned for that title (`null` for `duplicate` and
 `not_run`), and `report` is that title's `download --json` document (`null` when there is none).
+`dir` is the title's directory, as typed: `DIR`, `DIR/<dir>` for a row with a `dir`, or with
+`--dir-per-title` `DIR/<name>` (`DIR` when the title's name was never learned: a duplicate, a
+title not run, or one that ended before it had anything to download: exit 3 or 4 before it was
+planned, or 5).
 
 **Exit status of a batch:** 0 when every title succeeded (or was a skipped duplicate), and for an
 empty list. When titles failed and they all failed the same way, the batch exits with that code
-(3, 4, 5 or 6, or 1 for rows whose own `dir` failed); when they failed in more than one way, 7,
+(3, 4, 5 or 6, or 1 for rows whose own directory failed); when they failed in more than one way, 7,
 and the per-title results (on stderr, or in `--json`) say which. A one-row list exits exactly as
 `download` would.
 
@@ -800,8 +841,8 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 
 - Only `DIR/<name>.epub` files (mode 0644 subject to your umask, or an updated file's previous
   permissions) and their temporary files are ever written (with `batch`, also
-  `DIR/<dir>/<name>.epub` for a row with a `dir`; with `mdlist --dir-per-title`, also
-  `DIR/<title>/<name>.epub`). Existing `.epub` files are read, never modified in place.
+  `DIR/<dir>/<name>.epub` for a row with a `dir`; with `--dir-per-title` (`batch` and `mdlist`),
+  also `DIR/<title>/<name>.epub`). Existing `.epub` files are read, never modified in place.
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
 - An existing file is replaced only with `--overwrite` (never a directory, which fails that
