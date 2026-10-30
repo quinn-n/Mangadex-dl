@@ -78,7 +78,7 @@ struct TitleRun {
 /// prints nothing). Never prints JSON. `backend` and `io` must outlive the call; nothing is kept
 /// after it returns.
 ///
-/// `title_dir` (mdlist --dir-per-title only; null for `download` and `batch`) becomes
+/// `title_dir` (--dir-per-title rows of `batch` and `mdlist` only; null for `download`) becomes
 /// DownloadServices::title_dir: borrowed for the call, called at most once by run_download on
 /// this thread, never stored past it. A non-null `row.claimed` (mdlist only) becomes
 /// DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite never replaces a path
