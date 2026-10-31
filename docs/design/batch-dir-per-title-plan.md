@@ -159,9 +159,11 @@ These conventions apply to every task. They are inherited from list-plan.
     - in `batch_footer`, insert these lines directly after `"    <uuid>,My Title,series/my-title\n"`. There is no blank line between them, because the CSV section has none (`cli-ux-reviewer` may polish):
       ```
       "  With --dir-per-title, each title goes into its own subdirectory, named like\n"
-      "  its files: DIR/<title>/<title> - Vol. 01.epub. A row's dir cell replaces\n"
-      "  that name, so the row goes into DIR/<dir> exactly as without the flag.\n"
+      "  its files: DIR/<title>/<title> - Vol. 01.epub. Later rows of the same title\n"
+      "  (another title cell or lang) reuse that directory. A row's dir cell replaces\n"
+      "  the name, so the row goes into DIR/<dir> exactly as without the flag.\n"
       ```
+      (rev2 (board): four lines, chosen by the user at the feature board; was three.)
     - after `"    mangadex-dl batch titles.csv ~/Manga\n"`, add `"  The same, one folder per title:\n"` and `"    mangadex-dl batch titles.csv ~/Manga --dir-per-title\n"`.
   - **`cmd_batch_jobs.cpp`:**
     - `ConsoleTitleDirResolver(TitleDirRegistry&, BatchSource source) noexcept` stores the enum by value (no view);

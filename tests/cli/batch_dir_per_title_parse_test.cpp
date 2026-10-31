@@ -247,8 +247,9 @@ TEST_CASE("batch --dir-per-title --help: the footer explains the flag after the 
     CHECK(r.out.contains(
         "    <uuid>,My Title,series/my-title\n"
         "  With --dir-per-title, each title goes into its own subdirectory, named like\n"
-        "  its files: DIR/<title>/<title> - Vol. 01.epub. A row's dir cell replaces\n"
-        "  that name, so the row goes into DIR/<dir> exactly as without the flag.\n"
+        "  its files: DIR/<title>/<title> - Vol. 01.epub. Later rows of the same title\n"
+        "  (another title cell or lang) reuse that directory. A row's dir cell replaces\n"
+        "  the name, so the row goes into DIR/<dir> exactly as without the flag.\n"
         "\n"));
     CHECK(r.out.contains("  Everything in the list, into ~/Manga:\n"
                          "    mangadex-dl batch titles.csv ~/Manga\n"

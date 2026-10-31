@@ -33,11 +33,12 @@ Typical user: a human with a long CSV of series who wants one folder per series 
     ```
           --dir-per-title               Put each title in a subdirectory of DIR
     ```
-  - Footer, at the end of the "CSV file:" section, after the `For example:` block (every line ≤ 80 columns, aligned by hand because footer formatting is off):
+  - Footer, at the end of the "CSV file:" section, after the `For example:` block (every line ≤ 80 columns, aligned by hand because footer formatting is off). **rev2 (board):** four lines, adding that later rows of the same title reuse the directory (was three lines):
     ```
       With --dir-per-title, each title goes into its own subdirectory, named like
-      its files: DIR/<title>/<title> - Vol. 01.epub. A row's dir cell replaces
-      that name, so the row goes into DIR/<dir> exactly as without the flag.
+      its files: DIR/<title>/<title> - Vol. 01.epub. Later rows of the same title
+      (another title cell or lang) reuse that directory. A row's dir cell replaces
+      the name, so the row goes into DIR/<dir> exactly as without the flag.
     ```
   - Examples, after "Everything in the list, into ~/Manga:" (same wording as mdlist):
     ```
@@ -322,7 +323,7 @@ The fixture trees serve one real title each, so a cross-manga derived-vs-derived
 19. `[cli]` A dry run + flag creates nothing. The planned paths are under `DIR/<name>/`, and a `row_dir` problem fails the row in the dry run too.
 20. `[cli]` Interrupt (the existing batch interrupt seam) + flag, during a row and between rows → `Errc::interrupted`, no `.part-`/temp files, no JSON, no closing line, 130.
 21. `[cli]` A flat run, then a flag run into the same DIR: flat files are neither read, changed nor moved; the new files are written under `DIR/Clean Title/`.
-22. `[cli]` `batch --help`: the `--dir-per-title` line comes right after `--fail-fast` and is byte-identical to mdlist's line. The footer has the three-line paragraph and the example, and no line exceeds 80 columns. `download --help` has no `--dir-per-title`, and `download … --dir-per-title` → exit 2 with download's hint.
+22. `[cli]` `batch --help`: the `--dir-per-title` line comes right after `--fail-fast` and is byte-identical to mdlist's line. The footer has the four-line paragraph (rev2 (board); was three lines) and the example, and no line exceeds 80 columns. `download --help` has no `--dir-per-title`, and `download … --dir-per-title` → exit 2 with download's hint.
 23. `[cli]` `batch --dir-per-title=<value>` parses exactly as `mdlist --dir-per-title=<value>` (same CLI11 flag semantics; see V-B1). Unknown or invalid forms → exit 2 with the batch hint, never 100–114.
 
 **Installed binary**
