@@ -315,7 +315,7 @@ public:
     [[nodiscard]] AuthResult<TokenGrant> request(GrantKind grant, const Secret& body,
                                                  std::stop_token stop);
 
-    /// Revokes with `body` (revoke_body): success on any HTTP 200, whatever the body (V3); a 4xx,
+    /// Revokes with `body` (revoke_body): success on any HTTP 2xx, whatever the body (V3); a 4xx,
     /// 5xx or transport error is an error. revoke_timeout limits, no retries, not counted.
     [[nodiscard]] Result<void> revoke(const Secret& body, std::stop_token stop);
 
