@@ -96,6 +96,10 @@ if(EDGE_JSON_ARGS)
   cli_e2e_case(NAME json-clicolor-force ARGS ${EDGE_JSON_ARGS} ENV CLICOLOR_FORCE=1
                EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI)
   cli_e2e_case(NAME json-tty ARGS ${EDGE_JSON_ARGS} TTY EXPECT_EXIT 0 EXPECT_NO_ANSI)
+  # DEL and the C1 controls (here U+009B, the 8-bit CSI) in DIR are \u-escaped, never raw bytes.
+  cli_e2e_case(NAME json-del-c1-dir ARGS ${EDGE_JSON_ARGS} "out{{DEL}}{{C1_CSI}}x"
+               EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+               EXPECT_STDOUT_REGEX "\"path\": \"out\\\\u007f\\\\u009bx/")
 endif()
 
 # ---- UTF-8 and locale independence ------------------------------------------------------------------
@@ -228,6 +232,12 @@ cli_e2e_case(NAME batch-invalid-utf8-dir-json
              ARGS batch --json --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv
                   "{{INVALID_UTF8}}"
              EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+# DEL and U+009B (the 8-bit CSI) in DIR are \u-escaped in the row's dir and the embedded report.
+cli_e2e_case(NAME batch-del-c1-dir-json
+             ARGS batch --json --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv
+                  "out{{DEL}}{{C1_CSI}}x"
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+             EXPECT_STDOUT_REGEX "\"dir\": \"out\\\\u007f\\\\u009bx\",.*\"path\": \"out\\\\u007f\\\\u009bx/")
 # A UTF-8 DIR reaches stdout verbatim under C.UTF-8 and under C (locale-independent output).
 cli_e2e_case(NAME batch-utf8-dir
              ARGS batch --dry-run ${_edge_batch_clean_api} ${_edge_batch_in}/clean.csv "Zoë"
@@ -300,6 +310,12 @@ cli_e2e_case(NAME mdlist-invalid-utf8-dir-json
              ARGS mdlist --json --dry-run ${_edge_mdlist_clean_api} ${_edge_mdlist_l1}
                   "{{INVALID_UTF8}}"
              EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY)
+# DEL and U+009B (the 8-bit CSI) in DIR are \u-escaped in the item's dir and the embedded report.
+cli_e2e_case(NAME mdlist-del-c1-dir-json
+             ARGS mdlist --json --dry-run ${_edge_mdlist_clean_api} ${_edge_mdlist_l1}
+                  "out{{DEL}}{{C1_CSI}}x"
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+             EXPECT_STDOUT_REGEX "\"dir\": \"out\\\\u007f\\\\u009bx\",.*\"path\": \"out\\\\u007f\\\\u009bx/")
 # A UTF-8 DIR reaches stdout verbatim under C.UTF-8 and under C (locale-independent output).
 set(_edge_mdlist_zoe_paths_re
     "^Zoë/Clean Title - Vol\\. 01\\.epub\nZoë/Clean Title - Vol\\. 02\\.epub\n$")

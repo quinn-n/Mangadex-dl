@@ -107,3 +107,4 @@ Plan impact:
 9. **T13 / V10:** add no mdlist-specific rate-limit claim. Reuse "apply to each title in turn", or qualify README line 566.
 10. **Citations:** `batch_plan.cpp:186-203` (V8c), `output_dir.cpp:415-454` (V13a).
 11. **C1/DEL in `--json` (V17b):** decided at the plan gate: out of scope here; a separate change escapes DEL and U+0080–U+009F in every `--json` document. T5 asserts only C0/ESC escaping.
+    Resolved by json-c1 (`docs/design/json-c1-plan.md`): every stdout `--json` document now escapes DEL and C1 as `\u007f` / `\u0080`..`\u009f`.

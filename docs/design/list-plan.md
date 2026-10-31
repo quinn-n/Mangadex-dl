@@ -5,6 +5,7 @@ Status: **APPROVED 2026-10-26** at the ⏸ plan gate, after fact-check ([`list-f
 **Plan-gate decisions (user, 2026-10-26):**
 - Spec issues 2, 4 and 6 are accepted as written: an exit-5 item claims no directory; a malformed relationship entry makes the list malformed (exit 3); the AC46 E2E case is a dry run, with the real-run variant at the cli tier in a `TempDir`.
 - C1/DEL bytes in `--json` (fact-check V17b): **out of scope here.** A separate change will escape DEL and U+0080–U+009F in every `--json` document; `mdlist` inherits it. In this change, `list.name` follows the existing document rules, and T5's tests assert only C0/ESC escaping (never that C1 or DEL are escaped).
+  - Resolved by json-c1 (`docs/design/json-c1-plan.md`): DEL and C1 are now escaped in every stdout `--json` document, `mdlist`'s included.
 
 Design: `/home/user/Mangadex-dl/docs/design/list-spec.md` (rev1, amendment A1). The gate decisions are binding:
 - Q1: the name is `mdlist`.
