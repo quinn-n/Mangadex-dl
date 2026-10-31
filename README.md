@@ -481,7 +481,7 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
 
 - **No login:** the list must be public. To download the titles you follow, add them to a public
   MDList; reading follows directly needs a login, which `mangadex-dl` doesn't support yet. A
-  private list counts as not found (exit 4).
+  private list counts as not found: MangaDex answers it with HTTP 404 (exit 4).
 - **Order:** the website's order. A title listed twice is downloaded once; the later entry is
   skipped with a warning (`list:5: <uuid>: same as item 2; skipped`).
 - **At most 10 000 titles.** A longer list is refused (exit 3), never cut short.
@@ -574,8 +574,8 @@ list itself can fail:
 
 - **4:** the list does not exist, or is private:
   `mangadex-dl: error: list <list-uuid> not found on MangaDex (HTTP 404): it does not exist or is private; check the id, make the list public on MangaDex, or use 'mangadex-dl download' if it is a title`.
-  The status is the one MangaDex answered with: a private list may give `(HTTP 403)` or
-  `(HTTP 401)` instead of `(HTTP 404)`, with the same message and the same exit code.
+  MangaDex answers a private list with HTTP 404 (the code also accepts a 401/403 that names the
+  list, with the same message).
   A title's bare UUID given as `LIST` ends this way too.
 - **3:** the list request failed (connection, DNS, TLS, timeout, server errors or rate limiting
   that did not clear, a response over 16 MiB); the error ends with the network remedy, as for a

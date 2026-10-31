@@ -2,7 +2,7 @@
 
 Status: DRAFT 2026-10-26. Design gate decided Q1 `mdlist`, Q2 reuse exit 4, Q3 flat by default plus an opt-in `--dir-per-title`. Produced by `cli-designer`.
 rev1 (fact-check + amendment A1) 2026-10-26:
-- V1–V6 results are folded in: V2–V6 CONFIRMED, V1 UNRESOLVED with strong indirect evidence for 404.
+- V1–V6 results are folded in: V2–V6 CONFIRMED. **V1 RESOLVED (user live test, 2026-10-28):** an anonymous `GET /list/{id}` for a private list answers 404; `mdlist` exits 4 with `(HTTP 404)`. At rev1 it was still unresolved, with strong indirect evidence for 404. The 401/403-with-CustomList-body fallback is kept defensively.
 - Amendment **A1** adds `--dir-per-title`, specified in "Per-title subdirectories" and marked **A1** where other sections change.
 - No exit code was added. `batch` and `download` output are unchanged.
 
@@ -29,7 +29,7 @@ Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`do
 - Titles run one after another. `--jobs` still parallelises the images within each title. No new threads.
 - No config file and no env-var options, as today. Precedence is "command line > built-in default" only. CLI11's order (CLI > config > env > default) has nothing to arbitrate. The later `follows` spec will need a precedence statement for credentials; this one does not.
 - `GET /list/{id}` returns every title in one response. This is confirmed for lists of up to 121 titles (the largest found). There is no pagination parameter (`limit`/`offset` are silently ignored) and no documented cap (V2).
-- Remaining API assumptions are marked `[VERIFY]`; V1 and the new V11 are still open.
+- Remaining API assumptions are marked `[VERIFY]`; the new V11 is still open. V1 RESOLVED (user live test, 2026-10-28): an anonymous `GET /list/{id}` for a private list answers 404; `mdlist` exits 4.
 
 ## Decision 1: a new subcommand `mdlist LIST [DIR]`
 
@@ -223,11 +223,10 @@ Exit status:
   - The mapping uses only the status, never the body text.
 - **Over the title cap:** `list <list-uuid> has more than 10000 titles; refusing to truncate it; split it into smaller lists`. Exit 3 follows the precedent of `download`'s "more than 10000 chapters; refusing to truncate" (an oversized API response). `with_remedy` must **not** append the network-connection remedy here (`[VERIFY]` V8).
 - **Telling list-level from aggregate 3/4 apart:** list-level failures print no JSON and their stderr line has no `list:<n>:` prefix. An aggregate 4 ("every item's title is gone") prints the JSON document.
-- **Private lists (V1, unresolved, strong indirect evidence):**
-  - An anonymous request for a private list is **expected to answer 404**. The API spec documents only 200 and 404 for `GET /list/{id}`, and the website's frontend retries with auth only after a 404. So the message says "does not exist or is private".
-  - Fallback, kept in case that is wrong: a 401 or 403 whose JSON error body names the CustomList maps to 4 with the same message.
+- **Private lists (V1 RESOLVED, user live test, 2026-10-28):**
+  - An anonymous `GET /list/{id}` for a private list **answers 404**; `mdlist` exits 4 with `(HTTP 404)` (AC32, run live by the user). This matches the earlier indirect evidence: the API spec documents only 200 and 404 for `GET /list/{id}`, and the website's frontend retries with auth only after a 404. So the message says "does not exist or is private".
+  - Fallback, kept defensively although MangaDex was not seen to use it: a 401 or 403 whose JSON error body names the CustomList maps to 4 with the same message.
   - Any other 403 stays 3: a rate-limit ban is a generic 403.
-  - AC32 (live, human) is what closes V1.
 - **Rejected:** a new code 8 `list_unavailable`. Scripts can already tell the cases apart (above). "Check the id / make it public" is the same remedy class as a title's 4. The 3–63 space is better kept for the auth failures step 2 may need.
 - **Help footer rows** (every help golden changes; 80 columns):
   - `4   title or list not found on MangaDex (a private list counts)`
@@ -560,10 +559,10 @@ AC1–AC35 keep their numbers; changes are marked **rev1**. A1 adds AC36–AC48.
 
 ## [VERIFY] items
 
-- **V1 (API, live): UNRESOLVED, strong indirect evidence for 404.**
-  - The API spec documents only 200/404 for `GET /list/{id}`, and the website frontend retries with auth only after a 404, so a private list asked for anonymously is inferred to answer 404.
+- **V1 (API, live): RESOLVED (user live test, 2026-10-28).** An anonymous `GET /list/{id}` for a private list answers 404; `mdlist` exits 4 with `(HTTP 404)`. This was AC32, run live by the user against one of their own private lists.
+  - Before the live test, the evidence was indirect: the API spec documents only 200/404 for `GET /list/{id}`, and the website frontend retries with auth only after a 404.
   - A non-existent id answers `404 {"result":"error","errors":[{"id":…,"status":404,"title":"not_found_http_exception","detail":"CustomList `<id>` not found.","context":null}]}`. A rate-limit ban is a generic 403.
-  - Design kept: exit 4 and its wording, with the 401/403-with-CustomList-body → 4 fallback and any other 403 → 3. AC32 closes it live.
+  - Design kept: exit 4 and its wording, with any other 403 → 3. The 401/403-with-CustomList-body → 4 fallback is kept defensively.
 - **V2 (API): CONFIRMED up to ≥121 titles.**
   - The largest list found (121 titles) came back complete in one response. `limit`/`offset` are silently ignored; there is no pagination parameter and no documented cap.
   - Create/PUT bodies are limited to 8 KB, but titles can be added one at a time, so lists of more than 200 are likely possible.
