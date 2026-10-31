@@ -307,3 +307,155 @@ cli_e2e_case(NAME tty-no-color-error
              ARGS batch ${_batch_nochapters_api} ${_batch_in}/nochapters-mixed.csv out
              TTY ENV NO_COLOR=1 EXPECT_EXIT 7 EXPECT_NO_ANSI
              EXPECT_STDOUT_REGEX "^mangadex-dl: error: [^\n]*/batch/nochapters-mixed\\.csv:1: ")
+
+# ---- --dir-per-title (batch-dir-per-title spec AC4, AC25-AC33, AC39) ---------------------------------
+# Each title goes into DIR/<its file stem>/; a row with a `dir` cell goes into DIR/<dir>/ exactly as
+# without the flag, and the first segment of every such cell is reserved up front for that row's
+# title. Committed lists: per-title-mixed.csv, dir-reserved.csv, dir-duplicate.csv (inputs README).
+set(_batch_title_paths_re
+    "^out/Clean Title/Clean Title - Vol\\. 01\\.epub\nout/Clean Title/Clean Title - Vol\\. 02\\.epub\n$")
+set(_batch_title_files
+    "out/Clean Title/Clean Title - Vol. 01.epub" "out/Clean Title/Clean Title - Vol. 02.epub")
+set(_batch_row_dir_files
+    "out/series/clean/Clean Title - Vol. 01.epub" "out/series/clean/Clean Title - Vol. 02.epub")
+set(_batch_reserved_name "Clean Title [11111111]")
+
+# AC4, flat-path regression lock: the same mixed list WITHOUT the flag keeps today's layout (the
+# `title` cell names files only, the `dir` row goes to DIR/<dir>/).
+set(_batch_mixed_flat_files
+    "out/Clean Title - Vol. 01.epub" "out/Clean Title - Vol. 02.epub"
+    "out/Other Title - Vol. 01.epub" "out/Other Title - Vol. 02.epub"
+    ${_batch_row_dir_files})
+cli_e2e_case(NAME dir-per-title-mixed-flat
+             ARGS batch ${_batch_clean_api} ${_batch_in}/per-title-mixed.csv out
+             EXPECT_EXIT 0
+             EXPECT_STDOUT_REGEX "^out/Clean Title - Vol\\. 01\\.epub\nout/Clean Title - Vol\\. 02\\.epub\nout/Other Title - Vol\\. 01\\.epub\nout/Other Title - Vol\\. 02\\.epub\nout/series/clean/Clean Title - Vol\\. 01\\.epub\nout/series/clean/Clean Title - Vol\\. 02\\.epub\n$"
+             EXPECT_STDERR_EMPTY EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_mixed_flat_files}
+             EXPECT_ABSENT "out/Clean Title" "out/Other Title")
+
+# AC25: a derived row lands in DIR/<stem>/, nothing flat, no temp file left behind.
+cli_e2e_case(NAME dir-per-title
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/clean.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_title_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_title_files}
+             EXPECT_EPUB ${_batch_title_files}
+             EXPECT_ABSENT ${_batch_clean_files}
+             EXPECT_NO_GLOB "out/.*.part-*" "out/Clean Title/.*.part-*")
+# AC26: a dry run plans the same paths and creates nothing (neither DIR nor DIR/<stem>).
+cli_e2e_case(NAME dir-per-title-dry-run
+             ARGS batch --dir-per-title --dry-run ${_batch_clean_api} ${_batch_in}/clean.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_title_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+# AC27: a row with a `dir` cell is byte-identical to the run without the flag (case row-dir).
+cli_e2e_case(NAME dir-per-title-row-dir
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/row-dir.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_row_dir_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_row_dir_files}
+             EXPECT_ABSENT "out/Clean Title")
+# AC28: the mixed list WITH the flag. Line 3 (`title` Other Title) is the same manga as line 2, so it
+# stays in line 2's directory with its own file names (gate QB3); line 4's `dir` replaces the name.
+cli_e2e_case(NAME dir-per-title-mixed
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/per-title-mixed.csv out
+             EXPECT_EXIT 0
+             EXPECT_STDOUT_REGEX "^out/Clean Title/Clean Title - Vol\\. 01\\.epub\nout/Clean Title/Clean Title - Vol\\. 02\\.epub\nout/Clean Title/Other Title - Vol\\. 01\\.epub\nout/Clean Title/Other Title - Vol\\. 02\\.epub\nout/series/clean/Clean Title - Vol\\. 01\\.epub\nout/series/clean/Clean Title - Vol\\. 02\\.epub\n$"
+             EXPECT_STDERR_EMPTY EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_title_files}
+                          "out/Clean Title/Other Title - Vol. 01.epub"
+                          "out/Clean Title/Other Title - Vol. 02.epub"
+                          ${_batch_row_dir_files}
+             EXPECT_ABSENT "out/Other Title" "out/Other Title - Vol. 01.epub"
+                           "out/Other Title - Vol. 02.epub" ${_batch_clean_files})
+
+# AC29: line 2's `dir` cell reserves `Clean Title` up front, for a title that is not found (404). The
+# clean title (line 3) is moved aside to `Clean Title [11111111]` anyway: reservations depend on the
+# list alone, never on row order or results. The dry run asserts the paths through stdout...
+set(_batch_reserved_paths_re
+    "^out/Clean Title \\[11111111\\]/Clean Title - Vol\\. 01\\.epub\nout/Clean Title \\[11111111\\]/Clean Title - Vol\\. 02\\.epub\n$")
+set(_batch_reserved_rows_re
+    "^mangadex-dl: error: [^\n]*/batch/dir-reserved\\.csv:2: ${_batch_not_found_msg_re}\nmangadex-dl: warning: [^\n]*/batch/dir-reserved\\.csv:3: directory 'Clean Title' is used by the 'dir' of line 2; using 'Clean Title \\[11111111\\]'\n")
+cli_e2e_case(NAME dir-per-title-reserved
+             ARGS batch --dir-per-title --dry-run ${_batch_clean_api} ${_batch_in}/dir-reserved.csv out
+             EXPECT_EXIT 4 EXPECT_STDOUT_REGEX "${_batch_reserved_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_reserved_rows_re}mangadex-dl: error: 1 of 2 titles would fail \\(line 2\\)\n$"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+# ...and the real run writes there (balanced brackets are fine in literal file assertions; the glob
+# avoids the bracketed name, which file(GLOB) would read as a character class).
+cli_e2e_case(NAME dir-per-title-reserved-real
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/dir-reserved.csv out
+             EXPECT_EXIT 4 EXPECT_STDOUT_REGEX "${_batch_reserved_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_reserved_rows_re}mangadex-dl: error: 1 of 2 titles did not complete \\(line 2\\); see the errors above\n$"
+             EXPECT_NO_ANSI
+             EXPECT_FILES "out/${_batch_reserved_name}/Clean Title - Vol. 01.epub"
+                          "out/${_batch_reserved_name}/Clean Title - Vol. 02.epub"
+             EXPECT_EPUB "out/${_batch_reserved_name}/Clean Title - Vol. 01.epub"
+             EXPECT_ABSENT "out/Clean Title" ${_batch_clean_files}
+             EXPECT_NO_GLOB "out/*/.*.part-*")
+
+# AC30: the title's own directory is a committed regular file ({{INPUTS}}/mdlist/Clean Title, shared
+# read-only with e2e.mdlist.dir-per-title-row-dir-file): the row fails with the engine's remedy. A dry
+# run, so nothing is ever created under the source tree.
+cli_e2e_case(NAME dir-per-title-unusable
+             ARGS batch --dir-per-title --dry-run ${_batch_clean_api} ${_batch_in}/clean.csv
+                  {{INPUTS}}/mdlist
+             EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/clean\\.csv:1: cannot open directory '[^\n]*/inputs/mdlist/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title\nmangadex-dl: error: 1 of 1 title would fail \\(line 1\\)\n$"
+             EXPECT_NO_ANSI)
+# AC31: an explicit `dir` that runs into a file keeps today's message (no remedy suffix), and the
+# derived line 3 plans under DIR/Clean Title/. A dry run into {{INPUTS}}: nothing is created there.
+cli_e2e_case(NAME dir-per-title-row-dir-file
+             ARGS batch --dir-per-title --dry-run ${_batch_clean_api} ${_batch_in}/row-dir-file.csv
+                  {{INPUTS}}
+             EXPECT_EXIT 1
+             EXPECT_STDOUT_REGEX "^[^\n]*/inputs/Clean Title/Clean Title - Vol\\. 01\\.epub\n[^\n]*/inputs/Clean Title/Clean Title - Vol\\. 02\\.epub\n$"
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/row-dir-file\\.csv:2: cannot open directory '[^\n]*/README': Not a directory\nmangadex-dl: error: 1 of 2 titles would fail \\(line 2\\)\n$"
+             EXPECT_NO_ANSI)
+
+# AC32: --json `dir` is DIR/<name> for a row that claimed a name and DIR for one that never learned it.
+cli_e2e_case(NAME dir-per-title-json
+             ARGS batch --json --dir-per-title ${_batch_clean_api} ${_batch_in}/clean-unknown.csv out
+             EXPECT_EXIT 4 EXPECT_JSON EXPECT_NO_ANSI
+             EXPECT_STDOUT_REGEX "\"line\": 1,[^}]*\"dir\": \"out/Clean Title\",[^}]*\"status\": \"ok\",.*\"path\": \"out/Clean Title/Clean Title - Vol\\. 01\\.epub\",.*\"line\": 2,[^}]*\"dir\": \"out\",[^}]*\"status\": \"not_found\","
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/clean-unknown\\.csv:2: ${_batch_not_found_msg_re}\nmangadex-dl: error: 1 of 2 titles did not complete \\(line 2\\); see the errors above\n$"
+             EXPECT_FILES ${_batch_title_files})
+# ...and exit-5 / exit-4 rows leave no directory behind (neither DIR nor DIR/<name>).
+cli_e2e_case(NAME dir-per-title-no-chapters
+             ARGS batch --dir-per-title ${_batch_nochapters_api} ${_batch_in}/nochapters-mixed.csv out
+             EXPECT_EXIT 7 EXPECT_STDOUT_EMPTY EXPECT_STDERR_REGEX "${_batch_mixed_stderr_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+
+# AC33: identical derived rows are duplicates: the existing warning, one set of files.
+cli_e2e_case(NAME dir-per-title-duplicate
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/two-clean.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_title_paths_re}"
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: [^\n]*/batch/two-clean\\.csv:2: same as line 1; skipped\n$"
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_title_files}
+             EXPECT_ABSENT ${_batch_clean_files})
+# Identical explicit-`dir` rows: the duplicate reserves nothing (the reservation loop skips it), the
+# existing warning, and the files land in DIR/<dir>/ as without the flag.
+cli_e2e_case(NAME dir-per-title-dir-duplicate
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/dir-duplicate.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_row_dir_paths_re}"
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: [^\n]*/batch/dir-duplicate\\.csv:3: same as line 2; skipped\n$"
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_row_dir_files}
+             EXPECT_ABSENT "out/Clean Title" ${_batch_clean_files})
+
+# AC39 (pseudo-TTY; skipped with 77 without script): progress as in tty-progress, then the paths
+# under DIR/<stem>/; with --json, one document and no progress.
+cli_e2e_case(NAME dir-per-title-tty-progress
+             ARGS batch --dir-per-title ${_batch_clean_api} ${_batch_in}/clean.csv out
+             TTY EXPECT_EXIT 0
+             EXPECT_STDOUT_REGEX "\\(1/1\\) \\[1/2\\] Vol\\. 1: [0-5]/5 pages.*out/Clean Title/Clean Title - Vol\\. 01\\.epub\n.*\\(1/1\\) \\[2/2\\] Vol\\. 2: [0-2]/2 pages.*out/Clean Title/Clean Title - Vol\\. 02\\.epub\n$"
+             EXPECT_FILES ${_batch_title_files})
+cli_e2e_case(NAME dir-per-title-tty-json
+             ARGS batch --json --dir-per-title ${_batch_clean_api} ${_batch_in}/clean.csv out
+             TTY EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI
+             EXPECT_STDOUT_REGEX "\"dir\": \"out/Clean Title\","
+             EXPECT_FILES ${_batch_title_files})

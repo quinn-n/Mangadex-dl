@@ -39,6 +39,14 @@ check the bytes with `od -c`.
   invalid-utf8.csv          the byte 0xFF on line 1
   chapter-url.csv           headerless: a chapter URL on line 1, then 1111... (not a title, not a
                             column)
+  per-title-mixed.csv       `manga,title,dir`: 1111..., (derived); 1111...,Other Title, (the same
+                            manga under another name); 1111...,,series/clean (explicit dir). For
+                            --dir-per-title and its flat-layout regression lock
+  dir-reserved.csv          `manga,dir`: 6666...,Clean Title (line 2: not found, but its dir still
+                            reserves `Clean Title`), then 1111..., (line 3, empty dir: moved aside
+                            to `Clean Title [11111111]` under --dir-per-title)
+  dir-duplicate.csv         `manga,dir`: 1111...,series/clean twice (line 3 is a duplicate of line
+                            2, so it reserves nothing under --dir-per-title)
 
 
 The DIR input for `mangadex-dl mdlist` (mdlist/)
@@ -48,7 +56,8 @@ The DIR input for `mangadex-dl mdlist` (mdlist/)
                             {{INPUTS}}/mdlist and --dir-per-title, the clean title's own directory
                             DIR/Clean Title is this file, so that item fails alone
                             (e2e.mdlist.dir-per-title-row-dir-file, a dry run so nothing is ever
-                            created here). The name holds a space: keep it.
+                            created here). The name holds a space: keep it. `batch` reads it too,
+                            the same way (e2e.batch.dir-per-title-unusable, also a dry run).
 
 The lists `mdlist` reads are not committed: they are generated list documents in the fixture trees
 (below).
@@ -152,5 +161,7 @@ Rules the fixtures follow (and tests may rely on):
   the existing EPUB.
 - PNG and GIF images are real and decodable. JPEG and WebP images are header-only: sniffable (JPEG
   SOF0, WebP VP8X) but not decodable.
-- Ids, hashes and file names match ^[A-Za-z0-9][A-Za-z0-9._-]*$. Titles never contain '[', ']' or
-  ';' (the CMake driver cannot pass them in file assertions).
+- Ids, hashes and file names match ^[A-Za-z0-9][A-Za-z0-9._-]*$. Titles never contain ';' or an
+  unbalanced '[' or ']': those are the only names the CMake driver cannot pass in file assertions
+  (EXPECT_FILES / EXPECT_ABSENT / EXPECT_EPUB are literal paths, so balanced brackets such as
+  `Clean Title [11111111]` work; EXPECT_NO_GLOB reads '[' as a character class).
