@@ -36,12 +36,13 @@ struct RowNoun {
     std::string_view many{};
 };
 
-/// "line"/"lines" for csv, "item"/"items" for mdlist. Points at static storage.
+/// "line"/"lines" for csv, "item"/"items" for mdlist and follows. Points at static storage.
 [[nodiscard]] constexpr RowNoun row_noun(BatchSource source) noexcept {
     switch (source) {
     case BatchSource::csv:
         return RowNoun{.one = "line", .many = "lines"};
     case BatchSource::mdlist:
+    case BatchSource::follows:
         return RowNoun{.one = "item", .many = "items"};
     }
     return RowNoun{.one = "line", .many = "lines"}; // only reachable through an out-of-range value

@@ -54,7 +54,7 @@ namespace mangadex_dl::test::download_cli {
                .stdin_tty = tty.stdin_tty,
                .stdout_tty = tty.stdout_tty,
                .stderr_tty = tty.stderr_tty,
-               .env = env};
+               .env = std::move(env)};
     Captured result;
     result.exit_code = app::run(std::span<const char* const>{argv}, io);
     result.out = out.str();

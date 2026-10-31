@@ -6,8 +6,13 @@
 #pragma once
 
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <string_view>
+
+namespace mangadex_dl {
+class Prompter; // include/mangadex_dl/prompt.hpp
+} // namespace mangadex_dl
 
 namespace mangadex_dl::app {
 
@@ -17,6 +22,11 @@ struct EnvSnapshot {
     bool no_color = false;       ///< NO_COLOR is set and non-empty
     bool clicolor_force = false; ///< CLICOLOR_FORCE is set, non-empty and not "0"
     bool term_dumb = false;      ///< TERM is exactly "dumb"
+    /// HOME, XDG_CONFIG_HOME and XDG_STATE_HOME: owned copies of the raw values, nullopt when unset
+    /// or empty. Not yet checked for being absolute (make_user_dirs does that).
+    std::optional<std::string> home{};
+    std::optional<std::string> xdg_config_home{};
+    std::optional<std::string> xdg_state_home{};
 };
 
 struct Io {
@@ -29,15 +39,18 @@ struct Io {
     bool stderr_tty = false;
     EnvSnapshot env{};
     int stdin_fd = -1; ///< fd to read stdin from; borrowed, never closed; -1 = closed (the default)
+    /// Borrowed (it must outlive every run() that uses this Io); null = the real terminal prompter
+    /// (src/app/cmd_auth_prompt.cpp) over stdin_fd and err. Tests inject a scripted one.
+    mangadex_dl::Prompter* prompter = nullptr;
 };
 
-/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0. On the
-/// first call it also installs a RecordingStdioBuf (recording_stdio_buf.hpp) over `stdout` as
-/// std::cout's buffer, for finish_stdout(). That buffer is a function-local static, so it is
-/// destroyed only during static destruction, and its owner puts std::cout's original buffer back
-/// first. libstdc++'s final flush of std::cout (its ios_base::Init, constructed earlier and
-/// therefore destroyed later) never reaches a destroyed buffer, and std::cerr's tie points at the
-/// std::cout object, which is never destroyed.
+/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0, no
+/// injected prompter. On the first call it also installs a RecordingStdioBuf
+/// (recording_stdio_buf.hpp) over `stdout` as std::cout's buffer, for finish_stdout(). That buffer
+/// is a function-local static, so it is destroyed only during static destruction, and its owner
+/// puts std::cout's original buffer back first. libstdc++'s final flush of std::cout (its
+/// ios_base::Init, constructed earlier and therefore destroyed later) never reaches a destroyed
+/// buffer, and std::cerr's tie points at the std::cout object, which is never destroyed.
 [[nodiscard]] Io process_io();
 
 /// SIGPIPE policy A: default disposition and unblocked, even if the parent ignored or blocked it,

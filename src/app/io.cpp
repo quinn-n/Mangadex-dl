@@ -44,8 +44,18 @@ void write_stderr(std::string_view text) noexcept {
     return std::string_view{value};
 }
 
-[[nodiscard]] EnvSnapshot read_env() noexcept {
-    // All three variables treat "set but empty" like "unset".
+/// An owned copy of `name`'s value; nullopt when it is unset or empty.
+[[nodiscard]] std::optional<std::string> env_copy(const char* name) {
+    const std::optional<std::string_view> value = env_value(name);
+    if (!value || value->empty()) {
+        return std::nullopt;
+    }
+    return std::string{*value};
+}
+
+/// Not noexcept: the three directory variables are copied into owned strings.
+[[nodiscard]] EnvSnapshot read_env() {
+    // Every variable treats "set but empty" like "unset".
     const std::string_view no_color = env_value("NO_COLOR").value_or(std::string_view{});
     const std::string_view force = env_value("CLICOLOR_FORCE").value_or(std::string_view{});
     const std::string_view term = env_value("TERM").value_or(std::string_view{});
@@ -53,6 +63,9 @@ void write_stderr(std::string_view text) noexcept {
         .no_color = !no_color.empty(),
         .clicolor_force = !force.empty() && force != "0",
         .term_dumb = term == "dumb",
+        .home = env_copy("HOME"),
+        .xdg_config_home = env_copy("XDG_CONFIG_HOME"),
+        .xdg_state_home = env_copy("XDG_STATE_HOME"),
     };
 }
 

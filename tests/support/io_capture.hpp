@@ -11,6 +11,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mangadex_dl::test {
@@ -47,7 +48,7 @@ struct Captured {
                .stdin_tty = tty.stdin_tty,
                .stdout_tty = tty.stdout_tty,
                .stderr_tty = tty.stderr_tty,
-               .env = env,
+               .env = std::move(env),
                .stdin_fd = stdin_fd};
     Captured result;
     result.exit_code = app::run(std::span<const char* const>{argv}, io);

@@ -45,20 +45,39 @@ namespace {
     case Errc::mixed_failures:
     case Errc::row_dir: // mdlist --dir-per-title only (batch never produces it): the row fails
         return false;
+    case Errc::login_required: // follows logs in before any row runs; run_download never
+    case Errc::auth_rejected:  // produces these, so a row that did is treated as global
+        return true;
     }
     return true; // only reachable through an out-of-range enum value
 }
 
-/// What one row is called in row-scoped messages: "line" (a CSV line) or "item" (a list
-/// position). Points at static storage.
+/// What one row is called in row-scoped messages: "line" (a CSV line) or "item" (a list or
+/// follows position). Points at static storage.
 [[nodiscard]] constexpr std::string_view row_noun(BatchSource source) noexcept {
     switch (source) {
     case BatchSource::csv:
         return "line";
     case BatchSource::mdlist:
+    case BatchSource::follows:
         return "item";
     }
     return "line"; // only reachable through an out-of-range enum value
+}
+
+/// Does `source` hand each row the run's OutputRegistry (RowContext::claimed), so a row with
+/// --overwrite never replaces a file an earlier row of the same run wrote? mdlist and follows
+/// do; csv keeps its current behaviour (pinned by a batch test). A switch rather than a
+/// comparison, so -Wswitch makes every new source decide (follows plan V27).
+[[nodiscard]] constexpr bool claims_paths(BatchSource source) noexcept {
+    switch (source) {
+    case BatchSource::csv:
+        return false;
+    case BatchSource::mdlist:
+    case BatchSource::follows:
+        return true;
+    }
+    return false; // only reachable through an out-of-range enum value
 }
 
 /// The app side of the TitleDirResolver seam (mdlist --dir-per-title): claims each title's
@@ -156,15 +175,16 @@ public:
         }
 
         // The observer copies the RowContext, prefix included (nothing borrows `prefix`); it
-        // borrows the registry (mdlist) and only reads it, before warn_collisions writes to it.
-        TitleRun run = run_title(
-            job.options, job.raw, *backend_, *agent_, *io_, *policy_,
-            RowContext{.prefix = prefix,
-                       .position = position,
-                       .total = total,
-                       .exists_notice = false,
-                       .claimed = settings_->source == BatchSource::mdlist ? registry_ : nullptr},
-            title_dir);
+        // borrows the registry (mdlist, follows) and only reads it, before warn_collisions writes
+        // to it.
+        TitleRun run =
+            run_title(job.options, job.raw, *backend_, *agent_, *io_, *policy_,
+                      RowContext{.prefix = prefix,
+                                 .position = position,
+                                 .total = total,
+                                 .exists_notice = false,
+                                 .claimed = claims_paths(settings_->source) ? registry_ : nullptr},
+                      title_dir);
 
         RowOutcome outcome{.exit_code = run.exit_code, .error = std::move(run.closing_error)};
         if (per_title) {
@@ -209,13 +229,15 @@ public:
     }
 
 private:
-    /// csv "<label>:<line>: "; mdlist "<label>:<line>: <uuid>: ", because the user wrote no file
-    /// to look a position up in (raw: print_error/print_warning sanitize it with the message).
+    /// csv "<label>:<line>: "; mdlist and follows "<label>:<line>: <uuid>: ", because the user
+    /// wrote no file to look a position up in (raw: print_error/print_warning sanitize it with the
+    /// message).
     [[nodiscard]] std::string row_prefix(const BatchJob& job) const {
         switch (settings_->source) {
         case BatchSource::csv:
             break;
         case BatchSource::mdlist:
+        case BatchSource::follows:
             return std::format("{}:{}: {}: ", settings_->label, job.line, job.options.manga.str());
         }
         return std::format("{}:{}: ", settings_->label, job.line);
@@ -228,6 +250,7 @@ private:
         case BatchSource::csv:
             break;
         case BatchSource::mdlist:
+        case BatchSource::follows:
             return std::format("{}{} was already written by item {} (another title with the same "
                                "name); pass --dir-per-title to give each title its own "
                                "directory, or download one of them on its own with '{} download "

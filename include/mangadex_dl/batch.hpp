@@ -4,7 +4,8 @@
 // its aggregation, the closing message and the --json document. Frozen interface (batch plan T1);
 // implemented in src/core/batch_plan.cpp (T3a) and src/core/batch_run.cpp, batch_json.cpp (T3b).
 // The list plan's T1 adds BatchSource, ListSummary, RowOutcome::dir and the source/list
-// overloads (defined in list plan T5).
+// overloads (defined in list plan T5). The follows plan's T1 adds BatchSource::follows and
+// FollowsSummary (its batch_to_json overload is defined in follows plan T14).
 #pragma once
 
 #include "mangadex_dl/batch_csv.hpp"
@@ -32,10 +33,11 @@ struct RawBatchArgs {
 };
 
 /// Where a multi-title run's rows come from: the wording of row-scoped messages ("line"/"lines"
-/// for csv, "item"/"items" for mdlist).
+/// for csv, "item"/"items" for mdlist and follows).
 enum class BatchSource {
     csv,
     mdlist,
+    follows, ///< the titles the user follows (follows plan): mdlist's wording and row prefix
 };
 
 struct BatchSettings {
@@ -174,7 +176,7 @@ protected:
                                                                bool dry_run);
 
 /// The same, worded for `source`: "line"/"lines" (csv, byte-identical to the two-argument
-/// overload) or "item"/"items" (mdlist).
+/// overload) or "item"/"items" (mdlist, follows).
 [[nodiscard]] std::optional<std::string> batch_closing_message(const BatchResult& result,
                                                                bool dry_run, BatchSource source);
 
@@ -187,6 +189,18 @@ struct ListSummary {
     friend bool operator==(const ListSummary&, const ListSummary&) = default;
 };
 
+/// The --json `follows` object (follows only). Never holds a secret.
+struct FollowsSummary {
+    std::string username{};
+    std::size_t titles = 0; ///< how many titles the user follows
+    /// The requested --status words, normalised to the API spelling, in the order given; nullopt
+    /// without --status (JSON null).
+    std::optional<std::vector<std::string>> statuses{};
+    std::size_t selected = 0; ///< how many follows the run selected (== titles without --status)
+
+    friend bool operator==(const FollowsSummary&, const FollowsSummary&) = default;
+};
+
 /// The --json document, ordered_json, indent 2, replace handler, '\n'-terminated, never ANSI.
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run);
@@ -195,6 +209,11 @@ struct ListSummary {
 /// `list` has a value. With nullopt, byte-identical to the three-argument overload.
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run, const std::optional<ListSummary>& list);
+
+/// The same, plus `"follows": {"username", "titles", "statuses" (null when absent), "selected"}`
+/// right after `"source"`. Implemented in follows plan T14.
+[[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
+                                        bool dry_run, const FollowsSummary& follows);
 
 /// Cross-row collision detection. Owns its keys.
 class OutputRegistry {

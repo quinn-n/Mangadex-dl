@@ -19,13 +19,26 @@ enum class HttpMethod {
     post,
 };
 
-/// One request. The transport only reads it during fetch(); the curl transport copies `body`
-/// (CURLOPT_COPYPOSTFIELDS), so nothing in the request needs to outlive the call.
+/// One request. The transport only reads it during fetch(), and nothing in it needs to outlive the
+/// call. `body` is the one member a transport may borrow rather than copy (see its doc).
+///
+/// Secrets: `authorization` and `body` may hold one (a bearer token, a login form body).
+/// - The caller that built such a request wipes both with secure_wipe (secret.hpp) after fetch()
+///   returns, on every path, and never copies a request that carries them.
+/// - A transport never logs them, never puts them in a TransportError, never follows a redirect
+///   with the Authorization header, and wipes any copy it makes itself (the header line, the
+///   header-list node) on a best-effort basis. libcurl's internal copies are out of reach; that
+///   residual is accepted.
 struct HttpRequest {
     HttpMethod method = HttpMethod::get;
     std::string url{};
-    std::string body{};             ///< POST only
-    std::string content_type{};     ///< POST only
+    /// POST only. Borrowed by the curl transport (CURLOPT_POSTFIELDS): it must stay unchanged
+    /// until fetch() returns, and the transport resets the handle before then.
+    std::string body{};
+    std::string content_type{}; ///< POST only
+    /// The whole Authorization value ("Bearer <t>"); empty = no header. CR, LF or NUL ->
+    /// TransportErrc::local before any I/O. Set only by ApiClient::get_authorized.
+    std::string authorization{};
     std::size_t max_body_bytes = 0; ///< a larger response body is TransportErrc::too_large
     std::chrono::milliseconds connect_timeout{15000};
     std::chrono::seconds stall_timeout{30}; ///< abort when no byte arrives for this long

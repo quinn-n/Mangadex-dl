@@ -8,9 +8,13 @@
 // planner) is defined yet, so it is the only one called. The list plan's T1 headers (ListId, the
 // title-directory seam, the mdlist document/fetch/settings, and the additive members and
 // overloads in the existing headers) are checked the same way: only their header-inline parts
-// run.
+// run. The follows plan's T1 headers (Secret and the core-dump guard, the prompter seam, the
+// session store, auth, follows, and the additive members and overloads in the existing headers)
+// are checked the same way, and no Secret is instantiated at run time (its behaviour is tested
+// in tests/unit/secret/, follows plan T2).
 #include "mangadex_dl/api_client.hpp"
 #include "mangadex_dl/attributes.hpp"
+#include "mangadex_dl/auth.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/batch_csv.hpp"
 #include "mangadex_dl/book_manifest.hpp"
@@ -21,6 +25,7 @@
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/fetch_pool.hpp"
 #include "mangadex_dl/filename.hpp"
+#include "mangadex_dl/follows.hpp"
 #include "mangadex_dl/fs/bounded_read.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
 #include "mangadex_dl/fs/read_source.hpp"
@@ -38,8 +43,11 @@
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/planner.hpp"
+#include "mangadex_dl/prompt.hpp"
 #include "mangadex_dl/report.hpp"
+#include "mangadex_dl/secret.hpp"
 #include "mangadex_dl/selection.hpp"
+#include "mangadex_dl/session_store.hpp"
 #include "mangadex_dl/text_safety.hpp"
 #include "mangadex_dl/title_dir.hpp"
 #include "mangadex_dl/update_plan.hpp"
@@ -49,14 +57,17 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -475,6 +486,256 @@ static_assert(std::is_same_v<decltype(&md::validate_mdlist_args),
 static_assert(std::is_same_v<decltype(&md::plan_list),
                              std::vector<md::BatchJob> (*)(const md::CustomList&,
                                                            const md::MdlistSettings&)>);
+
+// ---- follows plan T1: exit codes, limits and names --------------------------------------------
+static_assert(md::exit_code::login_required == 8 && md::exit_code::auth_rejected == 9);
+static_assert(md::exit_code_for(md::Errc::login_required) == 8);
+static_assert(md::exit_code_for(md::Errc::auth_rejected) == 9);
+static_assert(md::max_prompt_answer_bytes == 4096);
+static_assert(md::official_auth_issuer == "https://auth.mangadex.org/realms/mangadex");
+static_assert(md::api_clients_url == "https://mangadex.org/settings");
+static_assert(md::max_token_bytes == 16384);
+static_assert(md::max_token_response_bytes == std::size_t{64} * 1024);
+static_assert(md::max_credentials_file_bytes == std::size_t{16} * 1024);
+static_assert(md::max_session_file_bytes == std::size_t{64} * 1024);
+static_assert(md::max_password_stdin_bytes == 4096);
+static_assert(md::max_token_requests == 3);
+static_assert(md::reuse_min_validity == std::chrono::seconds{60});
+static_assert(md::refresh_ahead == std::chrono::seconds{30});
+static_assert(md::refresh_ahead < md::reuse_min_validity);
+static_assert(md::default_access_lifetime == std::chrono::seconds{900});
+static_assert(md::max_access_lifetime == std::chrono::seconds{86400});
+static_assert(md::auth_request_interval == std::chrono::milliseconds{1000});
+static_assert(md::revoke_timeout == std::chrono::seconds{5});
+static_assert(md::follows_page_limit == 100 && md::max_follows == 10000);
+static_assert(md::max_status_entries == 100000 && md::max_status_separators == 1000000);
+// Two separators per entry at the entry cap still fit under the separator cap (V24).
+static_assert(2 * md::max_status_entries < md::max_status_separators);
+static_assert(md::follows_row_label == "follows");
+
+// ---- follows plan T1: Secret is move-only, wiped, and never printable or comparable --------
+static_assert(!std::is_copy_constructible_v<md::Secret> && !std::is_copy_assignable_v<md::Secret>);
+static_assert(std::is_nothrow_move_constructible_v<md::Secret>);
+static_assert(std::is_nothrow_move_assignable_v<md::Secret>);
+static_assert(std::is_nothrow_default_constructible_v<md::Secret>);
+static_assert(std::is_nothrow_destructible_v<md::Secret>);
+// No implicit way in or out: only copy_of/adopt build one, only reveal() reads it.
+static_assert(!std::is_constructible_v<md::Secret, std::string>);
+static_assert(!std::is_constructible_v<md::Secret, std::string_view>);
+static_assert(!std::is_constructible_v<md::Secret, const char*>);
+static_assert(!std::is_convertible_v<md::Secret, std::string_view>);
+static_assert(!std::is_convertible_v<md::Secret, std::string>);
+static_assert(!std::equality_comparable<md::Secret>);
+static_assert(!std::formattable<md::Secret, char>);
+template <class T>
+concept streamable = requires(std::ostream& os, const T& value) { os << value; };
+static_assert(!streamable<md::Secret>);
+// The value types that hold secrets inherit the shape.
+static_assert(!std::is_copy_constructible_v<md::BearerToken> &&
+              std::is_nothrow_move_constructible_v<md::BearerToken>);
+static_assert(!std::is_constructible_v<md::BearerToken, md::Secret>); // only parse() validates
+static_assert(!std::equality_comparable<md::BearerToken> && !streamable<md::BearerToken>);
+static_assert(is_move_only_v<md::ClientCredentials> && is_move_only_v<md::CredentialsFile>);
+static_assert(is_move_only_v<md::Session> && is_move_only_v<md::TokenGrant>);
+static_assert(is_move_only_v<md::PromptReply> && is_move_only_v<md::LoginRequest>);
+
+// ---- follows plan T1: value types and ownership shapes -----------------------------------------
+static_assert(std::is_aggregate_v<md::PromptReply> && std::is_aggregate_v<md::UserDirs>);
+static_assert(std::is_aggregate_v<md::LockTiming> && std::is_aggregate_v<md::FileProblem>);
+static_assert(std::is_aggregate_v<md::ClientCredentials> && std::is_aggregate_v<md::Session>);
+static_assert(std::is_aggregate_v<md::CredentialsFile> && std::is_aggregate_v<md::TokenGrant>);
+static_assert(std::is_aggregate_v<md::RawAuthArgs> && std::is_aggregate_v<md::RawLoginArgs>);
+static_assert(std::is_aggregate_v<md::RawLogoutArgs> && std::is_aggregate_v<md::TokenErrorInfo>);
+static_assert(std::is_aggregate_v<md::AuthEndpoints> && std::is_aggregate_v<md::AuthFailure>);
+static_assert(std::is_aggregate_v<md::LoginRequest> && std::is_aggregate_v<md::AuthServices>);
+static_assert(std::is_aggregate_v<md::LoginNotes> && std::is_aggregate_v<md::LogoutOutcome>);
+static_assert(std::is_aggregate_v<md::FollowsSummary> && std::is_aggregate_v<md::FollowsPage>);
+static_assert(std::is_aggregate_v<md::StatusMap> && std::is_aggregate_v<md::FilteredFollows>);
+static_assert(std::is_aggregate_v<md::RawFollowsArgs> && std::is_aggregate_v<md::FollowsSettings>);
+static_assert(std::is_aggregate_v<md::FollowsCollection> &&
+              std::is_aggregate_v<md::FollowsFetchServices>);
+static_assert(std::is_same_v<md::FileResult<int>, std::expected<int, md::FileProblem>>);
+static_assert(std::is_same_v<md::AuthResult<int>, std::expected<int, md::AuthFailure>>);
+static_assert(is_interface_v<md::Prompter> && is_interface_v<md::TokenProvider>);
+static_assert(is_pinned_v<md::AuthClient>);
+static_assert(std::is_final_v<md::LoginSession> &&
+              std::is_base_of_v<md::TokenProvider, md::LoginSession>);
+static_assert(is_pinned_v<md::LoginSession> && !std::is_default_constructible_v<md::LoginSession>);
+// The lock and the directory own their descriptors: move-only, and only StateDir makes them.
+static_assert(is_move_only_v<md::SessionLock> &&
+              std::is_nothrow_move_assignable_v<md::SessionLock>);
+static_assert(std::is_nothrow_default_constructible_v<md::SessionLock>); // holds nothing
+static_assert(!std::is_constructible_v<md::SessionLock, md::UniqueFd>);
+static_assert(is_move_only_v<md::StateDir> && !std::is_default_constructible_v<md::StateDir>);
+static_assert(!std::is_constructible_v<md::StateDir, md::UniqueFd, std::filesystem::path>);
+// StatusFilter is only made by parse().
+static_assert(!std::is_default_constructible_v<md::StatusFilter>);
+static_assert(!std::is_constructible_v<md::StatusFilter, std::vector<md::ReadingStatus>>);
+// The additive members (with DMIs) keep every existing designated initializer valid.
+static_assert(std::is_same_v<decltype(md::HttpRequest::authorization), std::string>);
+static_assert(std::is_same_v<decltype(md::RawAuthArgs::credentials), std::string>); // V10
+static_assert(std::is_same_v<decltype(md::RawFollowsArgs::auth), md::RawAuthArgs>);
+static_assert(
+    std::is_same_v<decltype(md::FollowsSettings::filter), std::optional<md::StatusFilter>>);
+static_assert(std::is_same_v<decltype(md::FollowsSummary::statuses),
+                             std::optional<std::vector<std::string>>>);
+
+// ---- follows plan T1: frozen signatures (unevaluated: nothing is linked) ---------------------
+// secret.hpp
+static_assert(std::is_same_v<decltype(&md::secure_wipe), void (*)(std::string&) noexcept>);
+static_assert(std::is_same_v<decltype(&md::Secret::copy_of), md::Secret (*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::Secret::adopt), md::Secret (*)(std::string&&) noexcept>);
+static_assert(std::is_same_v<decltype(&md::Secret::reserve), void (md::Secret::*)(std::size_t)>);
+static_assert(
+    std::is_same_v<decltype(&md::Secret::append), void (md::Secret::*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::Secret::push_back), void (md::Secret::*)(char)>);
+static_assert(std::is_same_v<decltype(&md::Secret::clear), void (md::Secret::*)() noexcept>);
+static_assert(std::is_same_v<decltype(&md::Secret::empty), bool (md::Secret::*)() const noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::Secret::size), std::size_t (md::Secret::*)() const noexcept>);
+static_assert(std::is_same_v<decltype(&md::Secret::reveal),
+                             std::string_view (md::Secret::*)() const noexcept>);
+static_assert(std::is_same_v<decltype(&md::disable_core_dumps), md::DumpGuard (*)() noexcept>);
+// prompt.hpp
+static_assert(
+    std::is_same_v<decltype(&md::Prompter::notice), void (md::Prompter::*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::Prompter::ask),
+                             md::PromptReply (md::Prompter::*)(std::string_view, md::Echo)>);
+// session_store.hpp
+static_assert(std::is_same_v<decltype(&md::make_user_dirs),
+                             md::UserDirs (*)(std::optional<std::string_view>,
+                                              std::optional<std::string_view>,
+                                              std::optional<std::string_view>)>);
+static_assert(std::is_same_v<decltype(&md::state_dir_path),
+                             std::optional<std::filesystem::path> (*)(const md::UserDirs&)>);
+static_assert(std::is_same_v<decltype(&md::default_credentials_path),
+                             std::optional<std::filesystem::path> (*)(const md::UserDirs&)>);
+static_assert(std::is_same_v<decltype(&md::session_file_name),
+                             std::string_view (*)(md::SessionSlot) noexcept>);
+static_assert(
+    std::is_same_v<decltype(&md::read_private_file),
+                   md::FileResult<md::Secret> (*)(const std::filesystem::path&, std::size_t)>);
+static_assert(std::is_same_v<decltype(&md::StateDir::open),
+                             md::FileResult<md::StateDir> (*)(const std::filesystem::path&, bool)>);
+static_assert(std::is_same_v<decltype(&md::StateDir::lock),
+                             md::Result<md::SessionLock> (md::StateDir::*)(
+                                 md::Clock&, md::LockTiming, std::stop_token) const>);
+static_assert(
+    std::is_same_v<decltype(&md::StateDir::read), md::FileResult<std::optional<md::Secret>> (
+                                                      md::StateDir::*)(md::SessionSlot) const>);
+static_assert(
+    std::is_same_v<decltype(&md::StateDir::write),
+                   md::Result<void> (md::StateDir::*)(md::SessionSlot, const md::Secret&) const>);
+static_assert(std::is_same_v<decltype(&md::StateDir::remove),
+                             md::Result<bool> (md::StateDir::*)(md::SessionSlot) const>);
+static_assert(std::is_same_v<decltype(&md::StateDir::path),
+                             const std::filesystem::path& (md::StateDir::*)() const noexcept>);
+// auth.hpp
+static_assert(
+    std::is_same_v<decltype(&md::BearerToken::parse), md::Result<md::BearerToken> (*)(md::Secret)>);
+static_assert(std::is_same_v<decltype(&md::BearerToken::value),
+                             const md::Secret& (md::BearerToken::*)() const noexcept>);
+static_assert(std::is_same_v<decltype(&md::BearerToken::authorization),
+                             md::Secret (md::BearerToken::*)() const>);
+static_assert(std::is_same_v<decltype(&md::form_encode), md::Secret (*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::password_grant_body),
+                             md::Secret (*)(const md::ClientCredentials&, std::string_view,
+                                            const md::Secret&)>);
+static_assert(std::is_same_v<decltype(&md::refresh_grant_body),
+                             md::Secret (*)(const md::ClientCredentials&, const md::BearerToken&)>);
+static_assert(std::is_same_v<decltype(&md::revoke_body),
+                             md::Secret (*)(const md::ClientCredentials&, const md::BearerToken&)>);
+static_assert(std::is_same_v<decltype(&md::parse_credentials_file),
+                             md::Result<md::CredentialsFile> (*)(std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::load_credentials_file),
+                   md::Result<md::CredentialsFile> (*)(const std::filesystem::path&, bool)>);
+static_assert(std::is_same_v<decltype(&md::read_password_stdin), md::Result<md::Secret> (*)(int)>);
+static_assert(std::is_same_v<decltype(&md::check_raw_auth_args),
+                             md::Result<void> (*)(const md::RawAuthArgs&)>);
+static_assert(std::is_same_v<decltype(&md::check_auth_api_base),
+                             md::Result<void> (*)(const md::ApiBase&, std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::parse_session),
+                             md::Result<md::Session> (*)(std::string_view, std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::session_to_json), md::Secret (*)(const md::Session&)>);
+static_assert(std::is_same_v<decltype(&md::parse_token_response),
+                             md::Result<md::TokenGrant> (*)(std::string_view)>);
+// V2: classification takes no HTTP status.
+static_assert(
+    std::is_same_v<decltype(&md::classify_token_error),
+                   std::optional<md::TokenErrorInfo> (*)(md::GrantKind, std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::token_refusal_error),
+                   md::Error (*)(const md::TokenErrorInfo&, md::GrantKind, std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::auth_endpoints_for),
+                             std::optional<md::AuthEndpoints> (*)(const md::ApiBase&)>);
+static_assert(std::is_same_v<decltype(&md::AuthClient::request),
+                             md::AuthResult<md::TokenGrant> (md::AuthClient::*)(
+                                 md::GrantKind, const md::Secret&, std::stop_token)>);
+static_assert(
+    std::is_same_v<decltype(&md::AuthClient::revoke),
+                   md::Result<void> (md::AuthClient::*)(const md::Secret&, std::stop_token)>);
+static_assert(
+    std::is_same_v<decltype(&md::AuthClient::requests), int (md::AuthClient::*)() const noexcept>);
+static_assert(std::is_constructible_v<md::AuthClient, md::Transport&, md::Clock&, md::AuthEndpoints,
+                                      std::function<std::uint32_t(std::uint32_t)>, md::TraceSink*>);
+static_assert(std::is_same_v<decltype(&md::TokenProvider::authorization),
+                             md::AuthResult<md::Secret> (md::TokenProvider::*)(std::stop_token)>);
+static_assert(std::is_same_v<decltype(&md::TokenProvider::refresh_after_unauthorized),
+                             md::AuthResult<md::Secret> (md::TokenProvider::*)(std::stop_token)>);
+static_assert(std::is_same_v<decltype(&md::LoginSession::open),
+                             md::AuthResult<std::unique_ptr<md::LoginSession>> (*)(
+                                 md::LoginRequest, const md::AuthServices&, std::stop_token,
+                                 md::LoginNotes&)>);
+static_assert(
+    std::is_same_v<decltype(&md::LoginSession::close), void (md::LoginSession::*)() noexcept>);
+static_assert(std::is_same_v<decltype(&md::logout),
+                             md::Result<md::LogoutOutcome> (*)(
+                                 const md::ApiBase&, const md::UserDirs&, const md::AuthServices&,
+                                 md::LockTiming, std::stop_token)>);
+// api_client.hpp: the only request that can carry a token.
+static_assert(
+    std::is_same_v<decltype(&md::ApiClient::get_authorized),
+                   md::Result<md::HttpResponse> (md::ApiClient::*)(
+                       md::AuthorizedPath, std::size_t, const md::Secret&, std::stop_token)>);
+// batch.hpp
+static_assert(std::is_same_v<
+              decltype(static_cast<std::string (*)(const md::BatchResult&, std::string_view, bool,
+                                                   const md::FollowsSummary&)>(&md::batch_to_json)),
+              std::string (*)(const md::BatchResult&, std::string_view, bool,
+                              const md::FollowsSummary&)>);
+// follows.hpp
+static_assert(std::is_same_v<decltype(&md::reading_status_name),
+                             std::string_view (*)(md::ReadingStatus) noexcept>);
+static_assert(std::is_same_v<decltype(&md::parse_reading_status),
+                             std::optional<md::ReadingStatus> (*)(std::string_view) noexcept>);
+static_assert(std::is_same_v<decltype(&md::StatusFilter::parse),
+                             md::Result<md::StatusFilter> (*)(std::span<const std::string>)>);
+static_assert(std::is_same_v<decltype(&md::StatusFilter::contains),
+                             bool (md::StatusFilter::*)(md::ReadingStatus) const noexcept>);
+static_assert(std::is_same_v<decltype(&md::StatusFilter::names),
+                             std::vector<std::string> (md::StatusFilter::*)() const>);
+static_assert(std::is_same_v<decltype(&md::follows_request_url),
+                             std::string (*)(std::string_view, std::size_t)>);
+static_assert(
+    std::is_same_v<decltype(&md::status_map_request_url), std::string (*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::parse_follows_page),
+                             md::Result<md::FollowsPage> (*)(std::string_view)>);
+static_assert(std::is_same_v<decltype(&md::parse_status_map),
+                             md::Result<md::StatusMap> (*)(std::string_view)>);
+static_assert(
+    std::is_same_v<decltype(&md::filter_follows),
+                   md::FilteredFollows (*)(std::span<const md::MangaId>, const md::StatusMap&,
+                                           const md::StatusFilter&)>);
+static_assert(std::is_same_v<decltype(&md::validate_follows_args),
+                             md::Result<md::FollowsSettings> (*)(const md::RawFollowsArgs&)>);
+static_assert(std::is_same_v<decltype(&md::plan_follows),
+                             std::vector<md::BatchJob> (*)(std::span<const md::MangaId>,
+                                                           const md::FollowsSettings&)>);
+static_assert(std::is_same_v<decltype(&md::fetch_follows_collection),
+                             md::AuthResult<md::FollowsCollection> (*)(
+                                 const md::ApiBase&, const md::FollowsFetchServices&,
+                                 md::TokenProvider&, bool)>);
 
 /// A resolver written the way the app writes its own: the seam is implementable and dispatches
 /// through the base, and the choice owns its strings (nothing borrows `stem`).
@@ -1072,4 +1333,209 @@ TEST_CASE("The mdlist aggregates default-construct and take partial designated i
     CHECK(partial.batch.label == "list");
     CHECK(partial.batch.base == md::DownloadOptions{});
     CHECK(partial.list == md::ListId{});
+}
+
+// ---- follows plan T1 (test prefix "headers:"). Nothing below instantiates a Secret at run time:
+// this file checks the interface shape only (Secret's behaviour is tested in tests/unit/secret/,
+// follows plan T2), so Secret-holding types are checked only with the traits above.
+
+TEST_CASE("headers: Error and Failure map the follows categories to exit codes 8 and 9",
+          "[interfaces][follows]") {
+    CHECK(md::Error{.code = md::Errc::login_required}.exit_code() == md::exit_code::login_required);
+    CHECK(md::Error{.code = md::Errc::auth_rejected}.exit_code() == md::exit_code::auth_rejected);
+    const md::Failure failure{
+        md::Error{.code = md::Errc::auth_rejected, .message = "MangaDex refused the login"}};
+    CHECK(failure.exit_code() == 9);
+    CHECK(failure.code() == md::Errc::auth_rejected);
+    CHECK(failure.error() ==
+          md::Error{.code = md::Errc::auth_rejected, .message = "MangaDex refused the login"});
+    // The new codes stay inside the tool-specific range and clear of the reserved ones.
+    CHECK(md::exit_code::login_required > md::exit_code::mixed_failures);
+    CHECK(md::exit_code::auth_rejected < md::exit_code::internal);
+}
+
+TEST_CASE("headers: requests carry no authorization unless one is set", "[interfaces][follows]") {
+    const md::HttpRequest plain{};
+    CHECK(plain.authorization.empty());
+    CHECK(plain.body.empty());
+    // The additive member keeps the existing designated initializers valid around it.
+    const md::HttpRequest post{.method = md::HttpMethod::post,
+                               .url =
+                                   "file:///t/auth/realms/mangadex/protocol/openid-connect/token",
+                               .body = "grant_type=password",
+                               .content_type = "application/x-www-form-urlencoded",
+                               .max_body_bytes = md::max_token_response_bytes};
+    CHECK(post.authorization.empty());
+    CHECK(post.connect_timeout == std::chrono::milliseconds{15000});
+    const md::HttpRequest authorized{.url = "file:///t/api/manga/status",
+                                     .authorization = "Bearer x"};
+    CHECK(authorized.authorization == "Bearer x");
+    CHECK(authorized.method == md::HttpMethod::get);
+    CHECK(authorized.max_body_bytes == 0);
+}
+
+TEST_CASE("headers: the raw auth arguments default to no file, no stdin and prompts allowed",
+          "[interfaces][follows]") {
+    const md::RawAuthArgs raw{};
+    CHECK(raw.credentials.empty());
+    CHECK_FALSE(raw.credentials_given); // set from Option::count() after parse (V10)
+    CHECK_FALSE(raw.password_stdin);
+    CHECK_FALSE(raw.no_input);
+    const md::RawAuthArgs given{.credentials_given = true, .no_input = true};
+    CHECK(given.credentials.empty());
+    CHECK_FALSE(given.password_stdin);
+
+    const md::RawLoginArgs login{};
+    CHECK(login.api_base == md::default_api_base);
+    CHECK(login.auth.credentials.empty());
+    const md::RawLoginArgs fixture{.api_base = "file:///t"};
+    CHECK_FALSE(fixture.auth.credentials_given);
+    const md::RawLogoutArgs logout{};
+    CHECK(logout.api_base == md::default_api_base);
+}
+
+TEST_CASE("headers: the session-store aggregates default to the documented values",
+          "[interfaces][follows]") {
+    const md::UserDirs dirs{};
+    CHECK_FALSE(dirs.home.has_value());
+    CHECK_FALSE(dirs.xdg_config_home.has_value());
+    CHECK_FALSE(dirs.xdg_state_home.has_value());
+    const md::UserDirs home_only{.home = std::filesystem::path{"/home/u"}};
+    CHECK(home_only != dirs);
+    CHECK_FALSE(home_only.xdg_state_home.has_value());
+
+    const md::LockTiming timing{};
+    CHECK(timing.poll == std::chrono::milliseconds{250});
+    CHECK(timing.timeout == std::chrono::seconds{60});
+    const md::LockTiming quick{.timeout = std::chrono::seconds{1}};
+    CHECK(quick.poll == timing.poll);
+    CHECK(quick != timing);
+
+    const md::FileProblem problem{};
+    CHECK(problem.kind == md::FileProblemKind::io);
+    CHECK(problem.mode == 0);
+    CHECK(problem.reason.empty());
+    const md::FileResult<int> failed{
+        std::unexpect,
+        md::FileProblem{.kind = md::FileProblemKind::too_open, .mode = 0644, .reason = "too open"}};
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().kind == md::FileProblemKind::too_open);
+    CHECK(failed.error().mode == 0644);
+
+    // A default-constructed lock holds nothing; moving it keeps it that way.
+    md::SessionLock lock{};
+    CHECK_FALSE(lock.held());
+    const md::SessionLock moved{std::move(lock)};
+    CHECK_FALSE(moved.held());
+}
+
+TEST_CASE("headers: the auth aggregates default-construct and take partial designated init",
+          "[interfaces][follows]") {
+    const md::TokenErrorInfo info{};
+    CHECK(info.refusal == md::TokenRefusal::other);
+    CHECK(info.status == 0);
+    CHECK_FALSE(info.code.has_value());
+    CHECK_FALSE(info.description.has_value());
+    const md::TokenErrorInfo grant{.refusal = md::TokenRefusal::bad_credentials,
+                                   .code = std::string{"invalid_grant"}};
+    CHECK(grant.status == 0);
+    CHECK(grant != info);
+
+    const md::AuthEndpoints endpoints{};
+    CHECK(endpoints.issuer.empty());
+    CHECK(endpoints.token_url.empty());
+    CHECK(endpoints.revoke_url.empty());
+
+    const md::AuthFailure failure{};
+    CHECK(failure.kind == md::AuthFailureKind::local);
+    CHECK(failure.info == md::TokenErrorInfo{});
+    CHECK(failure.error == md::Error{});
+    const md::AuthFailure refused{.kind = md::AuthFailureKind::refused,
+                                  .info = grant,
+                                  .error = {.code = md::Errc::auth_rejected, .message = "no"}};
+    CHECK(refused.error.exit_code() == md::exit_code::auth_rejected);
+    const md::AuthResult<int> result{std::unexpect, refused};
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().info.refusal == md::TokenRefusal::bad_credentials);
+
+    const md::AuthServices services{};
+    CHECK(services.transport == nullptr);
+    CHECK(services.clock == nullptr);
+    CHECK_FALSE(static_cast<bool>(services.jitter));
+    CHECK(services.trace == nullptr);
+
+    const md::LoginNotes notes{};
+    CHECK(notes.warnings.empty());
+    CHECK(notes.username.empty());
+    CHECK(notes.how == md::LoginHow::saved);
+    CHECK_FALSE(notes.session_path.has_value());
+    CHECK_FALSE(notes.save_error.has_value());
+
+    const md::LogoutOutcome outcome{};
+    CHECK_FALSE(outcome.removed);
+    CHECK(outcome.path.empty());
+    CHECK_FALSE(outcome.warning.has_value());
+    const md::LogoutOutcome removed{.removed = true, .path = "/s/session.json"};
+    CHECK(removed != outcome);
+    CHECK_FALSE(removed.warning.has_value());
+}
+
+TEST_CASE("headers: the follows aggregates default-construct and take partial designated init",
+          "[interfaces][follows]") {
+    CHECK(md::BatchSource::follows != md::BatchSource::mdlist);
+    CHECK(md::BatchSource::follows != md::BatchSource::csv);
+
+    const md::FollowsSummary summary{};
+    CHECK(summary.username.empty());
+    CHECK(summary.titles == 0);
+    CHECK_FALSE(summary.statuses.has_value()); // JSON null without --status
+    CHECK(summary.selected == 0);
+    const md::FollowsSummary narrowed{.username = "fixture-user",
+                                      .titles = 4,
+                                      .statuses = std::vector<std::string>{"reading"},
+                                      .selected = 1};
+    CHECK(narrowed != summary);
+
+    const md::FollowsPage page{};
+    CHECK(page.titles.empty());
+    CHECK(page.total == 0);
+    const md::StatusMap map{};
+    CHECK(map.statuses.empty());
+    const md::FilteredFollows filtered{};
+    CHECK(filtered.titles.empty());
+    CHECK(filtered.follows == 0);
+    CHECK(filtered.unknown.empty());
+
+    const md::RawFollowsArgs raw{};
+    CHECK(raw.defaults.dir == ".");
+    CHECK(raw.defaults.manga.empty());
+    CHECK_FALSE(raw.defaults.title.has_value());
+    CHECK_FALSE(raw.fail_fast);
+    CHECK_FALSE(raw.dir_per_title);
+    CHECK(raw.status.empty());
+    CHECK_FALSE(raw.auth.credentials_given);
+    const md::RawFollowsArgs flagged{.dir_per_title = true, .status = {"reading"}};
+    CHECK(flagged.defaults.jobs == 8);
+    CHECK_FALSE(flagged.fail_fast);
+
+    const md::FollowsSettings settings{};
+    CHECK(settings.batch.source == md::BatchSource::csv); // validate_follows_args sets follows
+    CHECK_FALSE(settings.filter.has_value());
+    CHECK_FALSE(settings.dir_per_title);
+    const md::FollowsSettings partial{
+        .batch = {.label = std::string{md::follows_row_label}, .source = md::BatchSource::follows},
+        .dir_per_title = true};
+    CHECK(partial.batch.label == "follows");
+    CHECK(partial.batch.base == md::DownloadOptions{});
+    CHECK_FALSE(partial.auth.no_input);
+
+    const md::FollowsCollection collection{};
+    CHECK(collection.follows.empty());
+    CHECK_FALSE(collection.statuses.has_value());
+
+    const md::FollowsFetchServices services{};
+    CHECK(services.transport == nullptr);
+    CHECK(services.clock == nullptr);
+    CHECK_FALSE(static_cast<bool>(services.jitter));
+    CHECK(services.trace == nullptr);
 }

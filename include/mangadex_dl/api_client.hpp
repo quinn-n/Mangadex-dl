@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The MangaDex API client: pagination, size caps, rate limiting, retries, at-home servers and
-// MD@H reporting over an injected Transport and Clock. Frozen interface (download plan T1);
-// implemented in src/core/api_client.cpp.
+// MD@H reporting over an injected Transport and Clock. Frozen interface (download plan T1;
+// get_authorized follows plan T1); implemented in src/core/api_client.cpp.
 #pragma once
 
 #include "mangadex_dl/attributes.hpp"
@@ -13,8 +13,10 @@
 #include "mangadex_dl/net/retry.hpp"
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
+#include "mangadex_dl/secret.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -57,6 +59,13 @@ public:
 
 protected:
     TraceSink() = default;
+};
+
+/// The only two requests that may carry an Authorization header (follows plan). The URL is built
+/// from this enum inside the client, never from a caller's string.
+enum class AuthorizedPath {
+    user_follows_manga, ///< GET <api>/user/follows/manga?limit=100&offset=<offset>
+    manga_status,       ///< GET <api>/manga/status
 };
 
 struct ClientConfig {
@@ -110,6 +119,17 @@ public:
     /// mapping (Errc::network "<url>: <reason>"); a stop -> Errc::interrupted. Implemented in list
     /// plan T7.
     [[nodiscard]] Result<std::string> fetch_list_document(const ListId& id, std::stop_token stop);
+    /// GET <api>/user/follows/manga?limit=100&offset=<offset> or <api>/manga/status (offset
+    /// ignored) with Authorization = `authorization` (the whole value, "Bearer <t>"). The URL is
+    /// built here from the enum: no other request can carry a token. Errc::usage (no I/O) unless
+    /// endpoints.api is the official API or a file:// fixture. Retries as perform(); returns the
+    /// final response unmapped (2xx or not); a stop -> Errc::interrupted. `authorization` is
+    /// borrowed for the call only; every copy the client makes is wiped before it returns. The
+    /// -vv trace line is method, URL and status only, never the header value. Implemented in
+    /// follows plan T11.
+    [[nodiscard]] Result<HttpResponse> get_authorized(AuthorizedPath path, std::size_t offset,
+                                                      const Secret& authorization,
+                                                      std::stop_token stop);
 
 private:
     struct State;
