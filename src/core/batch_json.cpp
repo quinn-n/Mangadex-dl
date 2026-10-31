@@ -6,6 +6,7 @@
 // detail::report_json, so it is byte-identical to what `download --json` prints for that title.
 // The list plan's T5 adds the additive `list` object (mdlist only) right after `source`; a batch
 // document never carries it.
+#include "json_output.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/report.hpp"
 #include "report_json.hpp"
@@ -181,15 +182,12 @@ std::string batch_to_json(const BatchResult& result, std::string_view source, bo
     doc["titles"] = std::move(titles);
     doc["summary"] = summary_json(result);
 
-    // replace: FILE (or LIST), DIR, the dir cells, the list name and every report string are
-    // untrusted bytes; the strict handler would throw on invalid UTF-8, and replace applies at
-    // every depth. ensure_ascii=false keeps valid UTF-8 readable; C0 control characters (ESC
-    // included) are always escaped as \u00XX, so the document never carries a 7-bit escape
-    // sequence. DEL and the C1 controls pass through unescaped (list plan gate decision: a
-    // separate change escapes them in every --json document).
-    std::string text = doc.dump(2, ' ', false, Json::error_handler_t::replace);
-    text += '\n';
-    return text;
+    // FILE (or LIST), DIR, the dir cells, the list name and every report string are untrusted
+    // bytes. dump_document dumps with the replace handler, which applies at every depth (invalid
+    // UTF-8 becomes U+FFFD); nlohmann escapes the C0 controls (ESC included) and dump_document
+    // escapes DEL and the C1 controls (U+009B, the 8-bit CSI, included), so the document carries
+    // neither a 7-bit nor an 8-bit escape sequence.
+    return json_output::dump_document(doc);
 }
 
 } // namespace mangadex_dl

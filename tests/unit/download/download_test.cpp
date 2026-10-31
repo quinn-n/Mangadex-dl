@@ -300,6 +300,21 @@ public:
         return md::run_download(options, services, observer);
     }
 
+    /// The same, with DownloadServices::planned_in_run set (a batch/mdlist dry run's earlier
+    /// rows) and, optionally, DownloadServices::claimed.
+    [[nodiscard]] md::Result<md::RunReport>
+    run_planned(const md::DownloadOptions& options, RecordingObserver& observer,
+                std::function<std::optional<md::PlannedEpub>(std::string_view)> planned,
+                std::function<bool(std::string_view)> claimed = {}) {
+        md::DownloadServices services{};
+        services.transport = transport_.get();
+        services.clock = clock_.get();
+        services.user_agent = "mangadex-dl/test";
+        services.claimed = std::move(claimed);
+        services.planned_in_run = std::move(planned);
+        return md::run_download(options, services, observer);
+    }
+
     // URLs exactly as the client builds them in fixture mode.
     [[nodiscard]] std::string base_url() const { return "file://" + root_.string(); }
     [[nodiscard]] std::string api() const { return base_url() + "/api"; }
@@ -657,6 +672,151 @@ TEST_CASE("download --overwrite never replaces a path DownloadServices::claimed 
         CHECK(statuses(*result) == std::vector{md::EpubStatus::written, md::EpubStatus::written});
         CHECK(observer.warnings().empty());
     }
+}
+
+TEST_CASE("download --dry-run over a path an earlier row planned for another book",
+          "[download][dry-run][planned]") {
+    Harness h{mdx::clean_fixture()};
+    md::DownloadOptions dry = h.options();
+    dry.dry_run = true;
+    // What an earlier row planned at vol1: this title's own plan under another identifier.
+    RecordingObserver plain;
+    const auto planned = h.run(dry, plain);
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->epubs.size() == 2);
+    const md::PlannedEpub vol1_plan = planned->epubs[0].epub;
+    md::PlannedEpub other_book = vol1_plan;
+    other_book.identifier = "urn:mangadex:22222222-2222-4222-8222-222222222222:en:vol-1";
+    const std::string vol1 = planned->epubs[0].path;
+    const std::string vol2 = planned->epubs[1].path;
+    const std::string left_alone =
+        vol1 + ": left alone: holds a different book; use another DIR or --title";
+
+    // Records every question and its thread; the vector outlives every run.
+    std::vector<std::pair<std::string, std::thread::id>> asked{};
+    const std::function<std::optional<md::PlannedEpub>(std::string_view)> other_at_vol1 =
+        [log = &asked, path = vol1, book = other_book](std::string_view asked_path) {
+            log->emplace_back(std::string{asked_path}, std::this_thread::get_id());
+            return asked_path == path ? std::optional<md::PlannedEpub>{book} : std::nullopt;
+        };
+
+    SECTION("left alone as foreign, before DIR exists, and asked once per file") {
+        RecordingObserver observer;
+        const auto result = h.run_planned(dry, observer, other_at_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        const md::EpubOutcome& left = result->epubs[0];
+        CHECK(left.existing == md::ExistingKind::foreign);
+        CHECK_FALSE(left.replaced);
+        CHECK(left.pages == 0);
+        CHECK(left.epub == vol1_plan);
+        CHECK(left.error.empty());
+        CHECK(result->epubs[1] == planned->epubs[1]);
+        CHECK(observer.warnings() == std::vector<std::string>{left_alone});
+        CHECK(observer.begins().empty());
+        CHECK(observer.ends() == result->epubs);
+        CHECK(md::exit_code_for(*result) == 0);
+        CHECK_FALSE(std::filesystem::exists(h.out("out")));
+        REQUIRE(asked.size() == 2);
+        CHECK(asked[0].first == vol1);
+        CHECK(asked[1].first == vol2);
+        for (const auto& [path, thread] : asked) {
+            CHECK(thread == std::this_thread::get_id());
+        }
+    }
+    SECTION("the earlier row's record beats what DIR holds") {
+        std::filesystem::create_directory(h.out("out"));
+        write_file(vol1, "not an EPUB");
+        const std::function<std::optional<md::PlannedEpub>(std::string_view)> own_at_vol1 =
+            [path = vol1, book = vol1_plan](std::string_view asked_path) {
+                return asked_path == path ? std::optional<md::PlannedEpub>{book} : std::nullopt;
+            };
+        RecordingObserver observer;
+        const auto result = h.run_planned(dry, observer, own_at_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        // The earlier row's file holds this plan: up to date, no foreign warning.
+        CHECK(result->epubs[0].existing == md::ExistingKind::complete);
+        CHECK(result->epubs[0].pages == vol1_plan.planned_pages);
+        CHECK(result->epubs[0].epub == vol1_plan);
+        CHECK_FALSE(result->epubs[0].replaced);
+        CHECK(observer.warnings().empty());
+        CHECK(read_file(vol1) == "not an EPUB");
+    }
+    SECTION("never asked in a real run, nor with --overwrite") {
+        RecordingObserver real;
+        const auto written = h.run_planned(h.options(), real, other_at_vol1);
+        REQUIRE(written.has_value());
+        CHECK(statuses(*written) == std::vector{md::EpubStatus::written, md::EpubStatus::written});
+        CHECK(real.warnings().empty());
+
+        md::DownloadOptions overwrite = dry;
+        overwrite.overwrite = true;
+        RecordingObserver replacing;
+        const auto replaced = h.run_planned(overwrite, replacing, other_at_vol1);
+        REQUIRE(replaced.has_value());
+        CHECK(statuses(*replaced) == std::vector{md::EpubStatus::planned, md::EpubStatus::planned});
+        CHECK(replaced->epubs[0].replaced);
+        CHECK(replacing.warnings().empty());
+
+        // --overwrite with a claimed path: DownloadServices::claimed decides, as before.
+        const std::function<bool(std::string_view)> claims_vol1 =
+            [path = vol1](std::string_view asked_path) { return asked_path == path; };
+        RecordingObserver claimed;
+        const auto left = h.run_planned(overwrite, claimed, other_at_vol1, claims_vol1);
+        REQUIRE(left.has_value());
+        CHECK(statuses(*left) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        CHECK(left->epubs[0].existing == md::ExistingKind::foreign);
+        CHECK(claimed.warnings() == std::vector<std::string>{left_alone});
+        CHECK(asked.empty());
+    }
+    SECTION("an empty function, or no record, changes nothing") {
+        RecordingObserver empty;
+        const auto none = h.run_planned(dry, empty, {});
+        REQUIRE(none.has_value());
+        CHECK(*none == *planned);
+        RecordingObserver nothing;
+        const auto unknown = h.run_planned(
+            dry, nothing, [](std::string_view) { return std::optional<md::PlannedEpub>{}; });
+        REQUIRE(unknown.has_value());
+        CHECK(*unknown == *planned);
+        CHECK(nothing.warnings() == plain.warnings());
+        CHECK(nothing.verbose() == plain.verbose());
+    }
+}
+
+TEST_CASE("download --dry-run: another book's planned path is left alone despite a plan error",
+          "[download][dry-run][planned]") {
+    mdx::FixtureManga manga = mdx::clean_fixture();
+    mdx::FixtureChapter& huge = manga.chapters.at(2); // vol 2
+    huge.images.clear();
+    huge.hash.clear();
+    huge.pages = 6000; // over max_pages_per_chapter
+    Harness h{std::move(manga)};
+    md::DownloadOptions dry = h.options();
+    dry.dry_run = true;
+    RecordingObserver plain;
+    const auto planned = h.run(dry, plain);
+    REQUIRE(planned.has_value());
+    REQUIRE(statuses(*planned) == std::vector{md::EpubStatus::planned, md::EpubStatus::failed});
+    md::PlannedEpub other_book = planned->epubs[0].epub;
+    other_book.identifier = "urn:mangadex:22222222-2222-4222-8222-222222222222:en:vol-2";
+    const std::string vol2 = planned->epubs[1].path;
+
+    RecordingObserver observer;
+    const auto result =
+        h.run_planned(dry, observer, [path = vol2, book = other_book](std::string_view asked_path) {
+            return asked_path == path ? std::optional<md::PlannedEpub>{book} : std::nullopt;
+        });
+    REQUIRE(result.has_value());
+    // The real run leaves that row's file alone before it looks at the plan error.
+    CHECK(statuses(*result) == std::vector{md::EpubStatus::planned, md::EpubStatus::exists});
+    CHECK(result->epubs[1].existing == md::ExistingKind::foreign);
+    CHECK(result->epubs[1].error.empty());
+    CHECK(md::exit_code_for(*result) == 0);
+    CHECK(observer.warnings() ==
+          std::vector<std::string>{
+              vol2 + ": left alone: holds a different book; use another DIR or --title"});
 }
 
 TEST_CASE("download dry-run plans every file without creating or downloading anything",

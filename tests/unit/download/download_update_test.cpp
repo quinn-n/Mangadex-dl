@@ -22,6 +22,7 @@
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/report.hpp"
+#include "mangadex_dl/selection.hpp"
 #include "support/fs_test_util.hpp"
 #include "support/mdx_fixture.hpp"
 #include "support/temp_dir.hpp"
@@ -286,6 +287,23 @@ public:
         return md::run_download(options, services, observer);
     }
 
+    /// run(), with DownloadServices::planned_in_run set (a batch/mdlist dry run's earlier rows);
+    /// must succeed. Member by member, as run_title builds its services.
+    [[nodiscard]] md::RunReport
+    run_planned(std::string_view name, const md::DownloadOptions& options,
+                RecordingObserver& observer,
+                std::function<std::optional<md::PlannedEpub>(std::string_view)> planned) {
+        md::DownloadServices services{};
+        services.transport = tree(name).transport.get();
+        services.clock = clock_.get();
+        services.user_agent = "mangadex-dl/test";
+        services.planned_in_run = std::move(planned);
+        md::Result<md::RunReport> report = md::run_download(options, services, observer);
+        INFO((report ? std::string{} : report.error().message));
+        REQUIRE(report.has_value());
+        return std::move(*report);
+    }
+
     /// run() that must succeed.
     [[nodiscard]] md::RunReport run_ok(std::string_view name, const md::DownloadOptions& options,
                                        RecordingObserver& observer) {
@@ -473,6 +491,128 @@ struct InodeId {
 void check_no_temporaries(const std::filesystem::path& dir,
                           const std::vector<std::string>& expected) {
     CHECK(list_dir(dir) == expected);
+}
+
+// ---- dry runs over an earlier row's planned file (batch/mdlist) ---------------------------------
+
+/// One row of a multi-title run: the tree it downloads and the options it differs in.
+struct Row {
+    std::string tree{};
+    std::string volumes{"all"}; ///< --volumes
+    md::Layout layout = md::Layout::volumes;
+    std::vector<std::string> groups{}; ///< --group
+};
+
+/// What one row's run reported, and what its observer heard.
+struct RowRun {
+    md::RunReport report{};
+    std::vector<std::string> warnings{};
+    std::vector<std::string> verbose{}; ///< -v lines, without a real update's "updating ..." line
+};
+
+[[nodiscard]] md::DownloadOptions row_options(const Trees& t, const Row& row, bool dry_run) {
+    md::DownloadOptions options = t.options(row.tree);
+    md::Result<md::Selection> volumes = md::Selection::parse(row.volumes);
+    REQUIRE(volumes.has_value());
+    options.volumes = std::move(*volumes);
+    options.layout = row.layout;
+    options.groups = row.groups;
+    options.dry_run = dry_run;
+    return options;
+}
+
+[[nodiscard]] RowRun row_run(md::RunReport report, const RecordingObserver& observer) {
+    RowRun run{.report = std::move(report), .warnings = observer.warnings(), .verbose = {}};
+    for (std::string& line : observer.verbose1()) {
+        if (!line.starts_with("updating ")) { // a real update's own line (a dry run prints none)
+            run.verbose.push_back(std::move(line));
+        }
+    }
+    return run;
+}
+
+/// Every file in `dir` with its bytes; empty when `dir` does not exist.
+[[nodiscard]] std::map<std::string, std::string> dir_contents(const std::filesystem::path& dir) {
+    std::map<std::string, std::string> out{};
+    for (const std::string& name : fs_util::list_dir_if_exists(dir)) {
+        out.emplace(name, read_file(dir / name));
+    }
+    return out;
+}
+
+/// Runs rows[on_disk..] twice into one DIR: first as a batch/mdlist dry run, where each row's
+/// planned files are recorded (path -> EpubOutcome::epub, the latest record winning, as the
+/// runner records them) and handed to the later rows through DownloadServices::planned_in_run;
+/// then for real. rows[..on_disk] are run for real first, so both runs start from what they
+/// wrote. The dry runs must leave DIR exactly as it was. Returns {dry, real} per row run twice.
+[[nodiscard]] std::vector<std::pair<RowRun, RowRun>>
+dry_and_real(Trees& t, const std::vector<Row>& rows, std::size_t on_disk = 0) {
+    for (std::size_t i = 0; i < on_disk; ++i) {
+        static_cast<void>(t.run_ok(rows[i].tree, row_options(t, rows[i], false)));
+    }
+    const std::map<std::string, std::string> before = dir_contents(t.out());
+    CHECK(std::filesystem::exists(t.out()) == (on_disk > 0));
+
+    // Outlives every dry run below; the lookup borrows it through an explicit pointer.
+    std::map<std::string, md::PlannedEpub, std::less<>> recorded{};
+    std::vector<std::thread::id> asked_on{};
+    const std::function<std::optional<md::PlannedEpub>(std::string_view)> lookup =
+        [files = &recorded, threads = &asked_on](std::string_view path) {
+            threads->push_back(std::this_thread::get_id());
+            const auto found = files->find(path);
+            return found == files->end() ? std::nullopt
+                                         : std::optional<md::PlannedEpub>{found->second};
+        };
+    std::vector<RowRun> dry{};
+    for (std::size_t i = on_disk; i < rows.size(); ++i) {
+        RecordingObserver observer;
+        md::RunReport report =
+            t.run_planned(rows[i].tree, row_options(t, rows[i], true), observer, lookup);
+        for (const md::EpubOutcome& file : report.epubs) {
+            if (file.status == md::EpubStatus::planned) {
+                recorded.insert_or_assign(file.path, file.epub);
+            }
+        }
+        CHECK(observer.begins().empty());
+        dry.push_back(row_run(std::move(report), observer));
+    }
+    CHECK(dir_contents(t.out()) == before); // nothing was written, replaced or created
+    CHECK(std::filesystem::exists(t.out()) == (on_disk > 0));
+    for (const std::thread::id thread : asked_on) {
+        CHECK(thread == std::this_thread::get_id());
+    }
+
+    std::vector<std::pair<RowRun, RowRun>> out{};
+    for (std::size_t i = on_disk; i < rows.size(); ++i) {
+        RecordingObserver observer;
+        md::RunReport report = t.run_ok(rows[i].tree, row_options(t, rows[i], false), observer);
+        out.emplace_back(std::move(dry[i - on_disk]), row_run(std::move(report), observer));
+    }
+    return out;
+}
+
+/// The dry run reports what the real run did: planned for written, the rest alike.
+void check_same_row(const RowRun& dry, const RowRun& real) {
+    REQUIRE(dry.report.epubs.size() == real.report.epubs.size());
+    for (std::size_t i = 0; i < real.report.epubs.size(); ++i) {
+        const md::EpubOutcome& d = dry.report.epubs[i];
+        const md::EpubOutcome& r = real.report.epubs[i];
+        INFO("file: " << r.path);
+        CHECK(d.path == r.path);
+        CHECK(d.status ==
+              (r.status == md::EpubStatus::written ? md::EpubStatus::planned : r.status));
+        CHECK(d.existing == r.existing);
+        CHECK(d.replaced == r.replaced);
+        CHECK(d.new_chapters == r.new_chapters);
+        CHECK(d.reused_chapters == r.reused_chapters);
+        CHECK(d.epub == r.epub);
+        CHECK(d.pages == r.pages);
+        CHECK(d.error == r.error);
+    }
+    CHECK(dry.report.skipped == real.report.skipped);
+    CHECK(md::exit_code_for(dry.report) == md::exit_code_for(real.report));
+    CHECK(dry.warnings == real.warnings);
+    CHECK(dry.verbose == real.verbose);
 }
 
 } // namespace
@@ -1269,6 +1409,152 @@ TEST_CASE("download update: a dry run plans the update from the central director
     CHECK(foreign.epubs[1].existing == md::ExistingKind::foreign);
     CHECK(foreign_observer.warnings().size() == 1);
     CHECK(read_file(t.out() / clean_vol2) == "not an epub");
+}
+
+TEST_CASE("download update: a dry run over an earlier row's planned file decides as the real "
+          "run does",
+          "[download][update][dry-run][planned]") {
+    Trees t;
+    t.add("clean", mdx::clean_fixture());
+    t.add("grown", mdx::clean_grown_fixture());
+    t.add("regrouped", mdx::clean_regrouped_fixture());
+    t.add("served", mdx::clean_regrouped_served_fixture());
+    const std::string single{"Clean Title.epub"};
+    const std::string vol1 = (t.out() / clean_vol1).string();
+    const std::string vol2 = (t.out() / clean_vol2).string();
+
+    struct Case {
+        std::string_view name{};
+        Row first{};
+        Row second{};
+        std::vector<md::ExistingKind> existing{}; ///< the second row's files
+        std::vector<md::EpubStatus> real{};       ///< the second row's real statuses
+    };
+    const Case c =
+        GENERATE(Case{.name = "complete: the same volumes again",
+                      .first = {.tree = "clean"},
+                      .second = {.tree = "clean"},
+                      .existing = {md::ExistingKind::complete, md::ExistingKind::complete},
+                      .real = {md::EpubStatus::exists, md::EpubStatus::exists}},
+                 Case{.name = "incomplete: a single file grows by a volume",
+                      .first = {.tree = "clean", .volumes = "1", .layout = md::Layout::single},
+                      .second = {.tree = "clean", .volumes = "1-2", .layout = md::Layout::single},
+                      .existing = {md::ExistingKind::incomplete},
+                      .real = {md::EpubStatus::written}},
+                 Case{.name = "diverged: a single file of another volume",
+                      .first = {.tree = "clean", .volumes = "1", .layout = md::Layout::single},
+                      .second = {.tree = "clean", .volumes = "2", .layout = md::Layout::single},
+                      .existing = {md::ExistingKind::diverged},
+                      .real = {md::EpubStatus::exists}},
+                 Case{.name = "per file: Vol. 01 complete, Vol. 02 grown",
+                      .first = {.tree = "clean"},
+                      .second = {.tree = "grown"},
+                      .existing = {md::ExistingKind::complete, md::ExistingKind::incomplete},
+                      .real = {md::EpubStatus::exists, md::EpubStatus::written}},
+                 Case{.name = "kept: another group's releases of the held chapters",
+                      .first = {.tree = "clean"},
+                      .second = {.tree = "regrouped"},
+                      .existing = {md::ExistingKind::complete, md::ExistingKind::complete},
+                      .real = {md::EpubStatus::exists, md::EpubStatus::exists}},
+                 Case{.name = "re-pick: --group prefers the other group",
+                      .first = {.tree = "clean"},
+                      .second = {.tree = "served", .groups = {std::string{mdx::bravo_group_name}}},
+                      .existing = {md::ExistingKind::incomplete, md::ExistingKind::incomplete},
+                      .real = {md::EpubStatus::written, md::EpubStatus::written}});
+    INFO("case: " << c.name);
+
+    const std::vector<std::pair<RowRun, RowRun>> runs = dry_and_real(t, {c.first, c.second});
+    REQUIRE(runs.size() == 2);
+    // The first row plans and writes into an empty DIR.
+    check_same_row(runs[0].first, runs[0].second);
+    const auto& [dry, real] = runs[1];
+    CHECK(statuses(real.report) == c.real);
+    CHECK(existing(real.report) == c.existing);
+    check_same_row(dry, real);
+
+    // What each class prints, beyond parity.
+    if (c.name.starts_with("incomplete")) {
+        const md::EpubOutcome& update = dry.report.epubs.at(0);
+        CHECK(update.path == (t.out() / single).string());
+        CHECK(update.replaced);
+        CHECK(update.new_chapters == std::vector{ch(3)});
+        CHECK(update.reused_chapters == std::vector{ch(1), ch(2)});
+        CHECK(update.pages == 7);
+    } else if (c.name.starts_with("diverged")) {
+        CHECK(dry.warnings ==
+              std::vector{std::format("{}: MangaDex lists 1 chapter this file lacks (Ch. 3), but "
+                                      "the file holds 2 chapters MangaDex no longer lists (Ch. 1, "
+                                      "Ch. 2); left it alone (pass --overwrite to rebuild it "
+                                      "without them)",
+                                      (t.out() / single).string())});
+        CHECK(chapter_ids(dry.report.epubs.at(0).epub) == std::vector{ch(1), ch(2)});
+        CHECK(dry.report.epubs.at(0).pages == 5);
+    } else if (c.name.starts_with("kept")) {
+        CHECK(dry.verbose.size() == 3);
+        CHECK(dry.report.skipped.size() == 3);
+        CHECK(chapter_ids(dry.report.epubs.at(0).epub) == std::vector{ch(1), ch(2)});
+    } else if (c.name.starts_with("re-pick")) {
+        CHECK(std::ranges::count_if(dry.verbose, [](const std::string& line) {
+                  return line.contains("replacing the release");
+              }) == 3);
+    } else if (c.name.starts_with("complete")) {
+        CHECK(dry.report.epubs.at(0).path == vol1);
+        CHECK(dry.report.epubs.at(1).path == vol2);
+        CHECK(dry.report.epubs.at(0).pages == runs[0].first.report.epubs.at(0).pages);
+    }
+}
+
+TEST_CASE("download update: chained dry-run rows decide against the latest planned file",
+          "[download][update][dry-run][planned]") {
+    Trees t;
+    t.add("clean", mdx::clean_fixture());
+    t.add("grown", mdx::clean_grown_fixture());
+    const std::vector<Row> rows{
+        {.tree = "clean", .volumes = "1", .layout = md::Layout::single},
+        {.tree = "clean", .volumes = "1-2", .layout = md::Layout::single},
+        {.tree = "grown", .layout = md::Layout::single},
+    };
+    const bool from_disk = GENERATE(false, true);
+    INFO("the first row already on disk: " << from_disk);
+    // From disk: the second row's dry run assesses the real file (an update it records), the
+    // third decides against that record, never against the file on disk.
+    const std::vector<std::pair<RowRun, RowRun>> runs =
+        dry_and_real(t, rows, from_disk ? std::size_t{1} : std::size_t{0});
+    REQUIRE(runs.size() == (from_disk ? 2U : 3U));
+    for (const auto& [dry, real] : runs) {
+        check_same_row(dry, real);
+    }
+    const md::EpubOutcome& last = runs.back().first.report.epubs.at(0);
+    CHECK(last.status == md::EpubStatus::planned);
+    CHECK(last.existing == md::ExistingKind::incomplete);
+    CHECK(last.new_chapters == std::vector{ch(4)});
+    CHECK(last.reused_chapters == std::vector{ch(1), ch(2), ch(3)});
+    const md::EpubOutcome& middle = runs.at(runs.size() - 2).first.report.epubs.at(0);
+    CHECK(middle.status == md::EpubStatus::planned);
+    CHECK(middle.existing == md::ExistingKind::incomplete);
+    CHECK(middle.new_chapters == std::vector{ch(3)});
+}
+
+TEST_CASE("download update: a dry run fails a plan error over an earlier row's incomplete file",
+          "[download][update][dry-run][planned]") {
+    Trees t;
+    t.add("clean", mdx::clean_fixture());
+    mdx::FixtureManga huge_new = mdx::clean_grown_fixture();
+    huge_new.chapters.at(3).images.clear();
+    huge_new.chapters.at(3).hash.clear();
+    huge_new.chapters.at(3).pages = 6000;
+    t.add("huge-new", std::move(huge_new));
+    const std::vector<std::pair<RowRun, RowRun>> runs =
+        dry_and_real(t, {{.tree = "clean"}, {.tree = "huge-new"}});
+    REQUIRE(runs.size() == 2);
+    const auto& [dry, real] = runs[1];
+    check_same_row(dry, real);
+    CHECK(statuses(dry.report) == std::vector{md::EpubStatus::exists, md::EpubStatus::failed});
+    const md::EpubOutcome& failed = dry.report.epubs.at(1);
+    CHECK(failed.existing == md::ExistingKind::incomplete);
+    CHECK_THAT(failed.error, ContainsSubstring("6000 pages"));
+    CHECK(failed.new_chapters == std::vector{ch(4)});
+    CHECK(md::exit_code_for(dry.report) == 6);
 }
 
 // ---- layouts ------------------------------------------------------------------------------------

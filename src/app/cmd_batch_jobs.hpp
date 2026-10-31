@@ -48,7 +48,8 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 ///   directory, or download one of them on its own with 'mangadex-dl download <title> --title
 ///   ...'" (the only line for that file: the engine's "holds a different book" warning for it is
 ///   dropped), and the closing line says "item"/"items".
-/// Either way the -v start line is "<label>:<line>: <uuid>".
+/// Either way the -v start line is "<label>:<line>: <uuid>", and a dry run's collision line says
+/// "would already be written by" instead of "was already written by".
 ///
 /// A job with options.dir_per_title gets its directory below DIR from the run's TitleDirRegistry
 /// (first claim wins, in job order; a later title with the same name is moved aside with the

@@ -10,6 +10,7 @@
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/interrupt.hpp"
+#include "mangadex_dl/model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -168,6 +169,11 @@ struct RowNoun {
         return std::nullopt;
     }
     return std::nullopt; // only reachable through an out-of-range enum value
+}
+
+/// The registry's key for `path`: its lexically normal form, '/'-separated.
+[[nodiscard]] std::string registry_key(const std::filesystem::path& path) {
+    return path.lexically_normal().generic_string();
 }
 
 /// "line 4" / "lines 4, 9, 12" / "lines 1, ..., 10 and 3 more" (or "item"/"items").
@@ -350,7 +356,7 @@ std::optional<std::string> batch_closing_message(const BatchResult& result, bool
 }
 
 std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t line) {
-    std::string key = std::filesystem::path{std::move(path)}.lexically_normal().generic_string();
+    std::string key = registry_key(std::move(path));
     const auto [it, inserted] = by_path_.try_emplace(std::move(key), line);
     if (inserted || it->second == line) {
         return std::nullopt;
@@ -359,12 +365,25 @@ std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t l
 }
 
 std::optional<std::size_t> OutputRegistry::claimed_by(std::string_view path) const {
-    const std::string key = std::filesystem::path{path}.lexically_normal().generic_string();
+    const std::string key = registry_key(path);
     const auto it = by_path_.find(key);
     if (it == by_path_.end()) {
         return std::nullopt;
     }
     return it->second;
+}
+
+void OutputRegistry::record_planned(std::string path, PlannedEpub book) {
+    planned_.insert_or_assign(registry_key(std::move(path)), std::move(book));
+}
+
+std::optional<PlannedEpub> OutputRegistry::planned_at(std::string_view path) const {
+    const std::string key = registry_key(path);
+    const auto it = planned_.find(key);
+    if (it == planned_.end()) {
+        return std::nullopt;
+    }
+    return it->second; // a copy: nothing borrows the map past this call
 }
 
 } // namespace mangadex_dl

@@ -3,11 +3,13 @@
 // tests/unit/batch/batch_json_test.cpp: the `batch --json` document (batch plan T3b, AC8). The
 // document is asserted key by key after an order-preserving parse: exactly the listed keys, in
 // order, with their types and nulls; each row's `report` re-dumped standalone is byte-identical to
-// `download --json` for that report; invalid UTF-8 becomes U+FFFD; no ESC byte; the empty batch;
-// and (rev1) the parsed document holds no floating-point number anywhere.
+// `download --json` for that report; invalid UTF-8 becomes U+FFFD; no ESC, DEL or C1 byte; the
+// empty batch; and (rev1) the parsed document holds no floating-point number anywhere.
+#include "json_output.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
+#include "support/json_bytes.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -156,11 +158,11 @@ constexpr std::string_view replacement = "\xEF\xBF\xBD"; // U+FFFD
     return out;
 }
 
-/// The re-dump technique of fact-check V-C2: a subtree dumped standalone like report_to_json.
+/// The re-dump technique of fact-check V-C2: a subtree dumped standalone like report_to_json. It
+/// must go through dump_document: the parsed embedded report holds the real DEL and C1 bytes again,
+/// so a plain dump() would print them raw (json-c1 fact-check V18).
 [[nodiscard]] std::string redump(const OrderedJson& value) {
-    std::string text = value.dump(2, ' ', false, OrderedJson::error_handler_t::replace);
-    text += '\n';
-    return text;
+    return md::json_output::dump_document(value);
 }
 
 /// Counts the number_float nodes anywhere in `doc` (iterative, no recursion).
@@ -364,8 +366,8 @@ TEST_CASE("batch_to_json: each report is byte-identical to download's document",
     INFO("hostile title: " << hostile);
     // Invalid UTF-8 and an ESC in the title: download's document replaces/escapes them, and the
     // embedded copy must round-trip to the same bytes.
-    const md::RunReport report =
-        full_report(hostile ? std::string{"Bad \xff\xfe title \x1b[31m red"} : "Clean Title");
+    const md::RunReport report = full_report(
+        hostile ? std::string{"Bad \xff\xfe title \x1b[31m red \x7f\xc2\x9b[0m"} : "Clean Title");
     const md::BatchResult result = mixed_result(report);
     const OrderedJson doc = parse(md::batch_to_json(result, "titles.csv", false));
     const OrderedJson& embedded = doc.at("titles").at(0).at("report");
@@ -389,18 +391,32 @@ TEST_CASE("batch_to_json: invalid UTF-8 in source and dir gives valid JSON with 
     CHECK(doc.at("titles").at(0).at("error") == std::format("bad {} byte", replacement));
 }
 
-TEST_CASE("batch_to_json: never an ESC byte", "[batch][json]") {
-    const md::RunReport report = full_report("Evil \x1b[2J\x1b]0;title\x07 manga");
+TEST_CASE("batch_to_json: never an ESC, DEL or C1 byte", "[batch][json]") {
+    // C1: U+009B (the 8-bit CSI), U+009D (OSC), U+0085 (NEL), U+0080 and U+009F (the range ends).
+    const std::string title = "Evil \x1b[2J\x1b]0;title\x07 manga \x7f end";
+    const std::string source = "\x1b[32mlist\xc2\x9b"
+                               "1m.csv";
+    const std::string dir = "out/\x1b[31mred\xc2\x9d"
+                            "0;t\xc2\x85";
+    const std::string error = "\x1b[1mbold\x1b[0m\xc2\x80\xc2\x9f";
+    const md::RunReport report = full_report(title);
     md::BatchResult result = mixed_result(report);
-    result.titles.at(1).dir = "out/\x1b[31mred";
-    result.titles.at(1).error = "\x1b[1mbold\x1b[0m";
-    const std::string text = md::batch_to_json(result, "\x1b[32mlist.csv", false);
+    result.titles.at(1).dir = dir;
+    result.titles.at(1).error = error;
+    const std::string text = md::batch_to_json(result, source, false);
     CHECK(!text.contains('\x1b'));
     CHECK(!text.contains('\x07'));
+    CHECK(!md::test::has_raw_del_or_c1(text));
+    CHECK(text.contains("list\\u009b1m.csv"));
+    CHECK(text.contains("red\\u009d0;t\\u0085"));
+    CHECK(text.contains("\\u0080\\u009f"));
+    CHECK(text.contains("manga \\u007f end"));
     const OrderedJson doc = parse(text);
-    // The bytes survive as \u001b escapes.
-    CHECK(doc.at("source") == "\x1b[32mlist.csv");
-    CHECK(doc.at("titles").at(1).at("dir") == "out/\x1b[31mred");
+    // The bytes survive as \u001b / \u007f / \u0080..\u009f escapes.
+    CHECK(doc.at("source") == source);
+    CHECK(doc.at("titles").at(1).at("dir") == dir);
+    CHECK(doc.at("titles").at(1).at("error") == error);
+    CHECK(doc.at("titles").at(0).at("report").at("manga").at("title") == title);
 }
 
 TEST_CASE("batch_to_json: the empty batch", "[batch][json]") {
