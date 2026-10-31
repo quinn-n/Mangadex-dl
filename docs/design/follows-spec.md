@@ -9,6 +9,7 @@
   - **Q5:** two exit codes, 8 `login_required` and 9 `auth_rejected`.
   - **Q6:** flat by default; `--dir-per-title` opts in, as in `mdlist`.
 - **rev2** (2026-10-28): **QA1 resolved as (b).** `--status S` narrows the follows to the titles whose reading status is in S. A1 was reworked to match: the follows order is filtered, the label stays `follows:`, `all` is dropped, and the selection cap is removed. Changes are marked **rev2**.
+- **rev3** (2026-10-30): plan gate (user approved `follows-plan.md` rev1) and fact-check (`follows-factcheck.md`). The amendments in "rev3 amendments" below **supersede** any conflicting text later in this spec.
 - **Fact from the user's live test:** an anonymous `GET /list/{id}` for a private list answers **404** (mdlist exited 4). This **closes list-spec V1**. It matters only for the deferred "auth on `mdlist`" item.
 - Previous drafts: DRAFT 2026-10-28 (cli-designer). This is step 2 of "download the works I follow"; step 1 (`mdlist`) is merged ([`list-spec.md`](list-spec.md)).
 
@@ -53,6 +54,30 @@ This spec designs three commands, in separate subsections:
 - **Not confirmed (third-party code only):**
   - the `expires_in` and `refresh_expires_in` fields, and refresh-token rotation (mangadex-full-api stores the new `refresh_token` from each refresh);
   - "refresh token lasts about one month" (asyncdex docs).
+
+
+## rev3 amendments (supersede conflicting text below)
+
+Gate answers at the plan gate (2026-10-30): echo policy = hide every value on `follows`/`login`/`logout` (S7); no guard against a mistyped password becoming DIR (it is never echoed in an error). Each row names the section it amends.
+
+| # | Spec section | Change |
+|---|---|---|
+| S1 | Status filter → Parsing (`parse_status_map`), "Plus a separator cap of 1 000 000" | Reword to "**two** per entry at the entry cap (200 000), plus headroom; 1 000 000". (V24) |
+| S2 | Status filter → Keys, "A duplicate JSON key is malformed, if the parser surfaces it (VERIFY D8)" | Replace with "A duplicate JSON key is not detected: the parser keeps the **last** value (V23). Two keys that canonicalise to the same id are kept once, with the first value." Close D8 in the VERIFY list. |
+| S3 | Summary ("at most 10 000"), Behaviour phase 7.1, Large input, the All-outcomes row | Cap wording: "at most 10 000 follows, the window MangaDex documents for collection endpoints; more are refused, never truncated". Message: `you follow more than 10000 titles on MangaDex; refusing to truncate the list`. (V5) |
+| S4 | `logout` behaviour, step 2 | The revocation URL is the fixed `<issuer>/protocol/openid-connect/revoke`, with no discovery request. **Success is any HTTP 200, whatever the body**: Keycloak answers 200, even with a JSON error, for an invalid token. Only a 4xx, a 5xx or a transport error is a failed revoke and gets the warning. (V1, V3) |
+| S5 | Exit codes (rows 8, 9, the texts) and Auth requests → Token responses | Add: "**Classification uses the `error` code only, never the HTTP status** (Keycloak answers a wrong password with 401 up to 26.5.0 and 400 on main): `invalid_grant` on a password grant → 9 (password text); `invalid_grant` on a refresh grant → session ended (password fallback, else 8 "expired"); `invalid_client` → 9 (client text); `unauthorized_client` → 9 (approval text); any other `error` → 9 with `MangaDex refused the login (<code>)`; a 4xx without a parsable `error` → 3 `<url>: HTTP <n>`." (V2) |
+| S6 | Auth requests → Retries; AC6 | "At most **3 logical token requests** (password or refresh grants) per run; each may retry transport errors, 5xx and 429; the revoke is not counted." AC6: "never more than 3 token requests". (Spec issue 3) |
+| S7 | Semantic usage checks → `--title`, Secret-shaped extras | Full `--title` text (Spec issue 4). Replace the extras bullets with the T19 echo policy: the secret-shaped prefixes `--password*`, `--client-secret*`, `-p*` → the fixed message; single-dash words longer than 2 characters → counted, never echoed; other option-looking extras echoed cut at `=` (terminal_safe); bare words counted; any flag given `=value` → `<flag> takes no value`; a ConversionError on a value option → `<option>: invalid value (not shown)`; ValidationErrors of `--jobs`/`--layout`/`--color` etc. keep CLI11's text. The extras message is `<cmd> does not take these arguments: <names> (and N other words, not shown in case they hold a password)`, or `<cmd> does not take N more argument(s) (not shown in case they hold a password)`. |
+| S8 | Command surface → `--credentials FILE`, `--status` | `--credentials ''` → exit 2 `--credentials needs a file name`. The value is taken verbatim, so `--credentials --no-input` reads a file named `--no-input` (exit 1 if missing, the stock CLI11 behaviour). `--status` is bound one value per occurrence and split by the tool, not with `->delimiter(',')` (D7 closed). |
+| S9 | `mdlist` (list-spec "help" text, and any follows-spec mention) | The mdlist footer line becomes `To download the titles you follow, see 'mangadex-dl follows --help'.` |
+| S10 | Input & output → Prompts | An answer over 4096 bytes → exit 8 `the <field> you typed is longer than 4096 bytes`. Note: a canonical-mode terminal caps a line at 4095 bytes. |
+| S11 | `logout` | The malformed-session and insecure-directory rules (Spec issue 9). The help lists the hidden `--api-base` (not shown) **plus the inherited global flags** (V9c). |
+| S12 | Hermetic test story #2, #5; AC10, AC29, AC32 | Fixture statuses: a wrong password answers 401 `invalid_grant` by default, plus a 400 variant; refresh failures and `unauthorized_client` answer 400; a revoke of an unknown token answers 200 `{"error":"invalid_token"}`; a scripted status (for example 503) fails a revoke. AC29 and AC32 use generated `{{FIXTURES}}/<tree>/creds/{credentials-0644,password.txt}`. C9 is resolved: no driver change; positive paths use `--credentials` and `PRE_RUN login --credentials …`. |
+| S13 | Engine reuse | `Endpoints` unchanged; `auth_endpoints_for`; `ApiClient::get_authorized` instead of reusing `paginate`; `Prompter` is a core interface (`prompt.hpp`); `secret.hpp`, `session_store.hpp` are new headers. |
+| S14 | Secret hygiene, memory row | Adopted: `CURLOPT_POSTFIELDS` (libcurl keeps no copy of the body); `CURLOPT_VERBOSE` is never enabled (it would print the Bearer header); `PR_SET_DUMPABLE 0` plus `RLIMIT_CORE 0` confirmed compatible with ASan/LSan/UBSan/TSan and with `/proc/self/fd` publishing (V20, V21). |
+| S15 | Open questions → VERIFY list | Mark resolved: A1, A2 (partial: status varies, see S5), A7 (+ the S4 caveat), D1 (both `{}` and `[]` accepted), D2 (not sent), D7, D8, C1–C12. A3–A6, B1–B6, D3–D6 stay for the human ACs. |
+| S16 | login/logout | The help footers per Spec issue 12, worded by cli-ux. |
 
 ## Decisions at the design gate (user, 2026-10-28)
 
