@@ -37,13 +37,16 @@
 
 namespace mangadex_dl::test {
 
-/// A copy of what fetch() was asked (the stop token is not kept).
+/// A copy of what fetch() was asked (the stop token is not kept). Test-only: `body` and
+/// `authorization` are kept as plain copies (tests use fake values), so a test can assert what
+/// the code under test sent.
 struct RecordedRequest {
     HttpMethod method = HttpMethod::get;
     std::string url{};
     std::string body{};
     std::string content_type{};
     std::size_t max_body_bytes = 0;
+    std::string authorization{}; ///< the whole Authorization value; empty = no header
 
     friend bool operator==(const RecordedRequest&, const RecordedRequest&) = default;
 };
@@ -137,6 +140,7 @@ private:
                 .body = request.body,
                 .content_type = request.content_type,
                 .max_body_bytes = request.max_body_bytes,
+                .authorization = request.authorization,
             });
             hook = on_fetch_;
         }

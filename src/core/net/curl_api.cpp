@@ -358,6 +358,13 @@ CURLcode CurlApi::setopt_str(CURL* handle, CURLoption option, const char* value)
     return fns_.easy_setopt(handle, option, value);
 }
 
+CURLcode CurlApi::setopt_borrowed(CURL* handle, CURLoption option,
+                                  const char* value) const noexcept {
+    // libcurl reads CURLOPT_POSTFIELDS with va_arg(param, void *) and never writes through it;
+    // a pointer to (const) void has the same representation.
+    return fns_.easy_setopt(handle, option, static_cast<const void*>(value));
+}
+
 CURLcode CurlApi::setopt_ptr(CURL* handle, CURLoption option, void* value) const noexcept {
     return fns_.easy_setopt(handle, option, value);
 }

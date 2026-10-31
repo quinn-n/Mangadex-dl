@@ -145,8 +145,15 @@ public:
     [[nodiscard]] CURLcode setopt_off(CURL* handle, CURLoption option,
                                       curl_off_t value) const noexcept;
     /// `value` must be NUL-terminated; libcurl copies string options (CURLOPTTYPE_STRINGPOINT).
+    /// Not for CURLOPT_POSTFIELDS: libcurl keeps that pointer instead (use setopt_borrowed).
     [[nodiscard]] CURLcode setopt_str(CURL* handle, CURLoption option,
                                       const char* value) const noexcept;
+    /// Borrowed data (CURLOPT_POSTFIELDS): libcurl does NOT copy it, and keeps the pointer until
+    /// easy_reset (not just until easy_perform returns), so the data must stay valid and
+    /// unchanged until then. Set its size first (CURLOPT_POSTFIELDSIZE_LARGE), so libcurl never
+    /// calls strlen on it and an embedded NUL is sent as is.
+    [[nodiscard]] CURLcode setopt_borrowed(CURL* handle, CURLoption option,
+                                           const char* value) const noexcept;
     /// A borrowed pointer (userdata, buffers, lists): it must stay valid until easy_reset.
     [[nodiscard]] CURLcode setopt_ptr(CURL* handle, CURLoption option, void* value) const noexcept;
     /// HTTPHEADER and friends: a borrowed list that must stay valid until easy_reset.
