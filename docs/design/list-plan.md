@@ -693,6 +693,7 @@ Conventions for every task (inherited from batch-plan):
     - **`-v` start line:** `"{label}:{line}: {uuid}"` for both (Spec issue 7).
     - **Duplicate:** `"{prefix}same as {line|item} {k}; skipped"`.
     - **Collision advice:** csv unchanged; mdlist `"{prefix}{path} was already written by item {k}; download one of them on its own with 'mangadex-dl download <title> --title ...'"`.
+      - Superseded: the shipped line is `"{prefix}{path} was already written by item {k} (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'"` (list-spec rev2), and a dry run says `would already be written by` instead of `was already written by`, for csv too (list-spec rev4, batch-spec rev3).
     - **Resolver member:** a `final` `ConsoleTitleDirResolver : TitleDirResolver` holding `TitleDirRegistry*`.
       - `begin(item)` clears the last claim.
       - `resolve()` claims and records the name. When `taken_by` is set, it returns the warning `directory '<stem>' already holds item <k> (a title with the same name); using '<name>'`.
