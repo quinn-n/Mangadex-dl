@@ -22,6 +22,7 @@ OPTIONS:
   -j, --jobs N [8]                  Parallel image downloads, 1 to 8
       --no-report                   Skip MangaDex@Home reliability reports
       --fail-fast                   Stop at the first title that fails
+      --dir-per-title               Put each title in a subdirectory of DIR
       --version                     Print the version and exit
       --json                        Write machine-readable JSON to stdout
   -q, --quiet                       Only print errors
@@ -44,12 +45,18 @@ CSV file:
     manga,title,dir
     https://mangadex.org/title/<uuid>,,
     <uuid>,My Title,series/my-title
+  With --dir-per-title, each title goes into its own subdirectory, named like
+  its files: DIR/<title>/<title> - Vol. 01.epub. Later rows of the same title
+  (another title cell or lang) reuse that directory. A row's dir cell replaces
+  the name, so the row goes into DIR/<dir> exactly as without the flag.
 
 For a MangaDex list (MDList) instead of a file, see 'mangadex-dl mdlist --help'.
 
 Examples:
   Everything in the list, into ~/Manga:
     mangadex-dl batch titles.csv ~/Manga
+  The same, one folder per title:
+    mangadex-dl batch titles.csv ~/Manga --dir-per-title
   Show what would be written, without downloading anything:
     mangadex-dl batch titles.csv ~/Manga --dry-run
   A list from another command:

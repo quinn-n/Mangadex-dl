@@ -30,6 +30,7 @@ struct RawBatchArgs {
     std::string file{}; ///< FILE as typed; "-" = stdin
     RawDownloadArgs defaults{};
     bool fail_fast = false;
+    bool dir_per_title = false; ///< --dir-per-title; copied to BatchSettings::dir_per_title
 };
 
 /// Where a multi-title run's rows come from: the wording of row-scoped messages ("line"/"lines"
@@ -46,6 +47,10 @@ struct BatchSettings {
     DownloadOptions base{};     ///< validated CLI-level options (manga = nil placeholder)
     bool fail_fast = false;
     BatchSource source = BatchSource::csv;
+    /// batch --dir-per-title: plan_batch sets DownloadOptions::dir_per_title on every row whose
+    /// `dir` cell is empty or absent. mdlist leaves it false and keeps
+    /// MdlistSettings::dir_per_title. `base.dir_per_title` stays false either way.
+    bool dir_per_title = false;
 };
 
 /// Errc::usage: FILE empty; FILE looks like a manga id ("FILE looks like a MangaDex title; use
@@ -62,7 +67,10 @@ struct BatchJob {
     std::string sub_dir{};                     ///< the validated `dir` cell, empty when none
 };
 
-/// Merge (non-empty cell > CLI value), per-cell validation, dedupe. Errors accumulate.
+/// Merge (non-empty cell > CLI value), per-cell validation, dedupe. Errors accumulate. With
+/// `settings.dir_per_title`, a row's `options.dir_per_title` is true exactly when its `dir` cell
+/// is empty or absent: a non-empty cell replaces the per-title directory. The dedupe compares the
+/// whole options, so that flag takes part in it.
 [[nodiscard]] ListResult<std::vector<BatchJob>> plan_batch(const TitleList& list,
                                                            const BatchSettings& settings);
 

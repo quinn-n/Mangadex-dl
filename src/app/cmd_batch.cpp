@@ -49,12 +49,18 @@ constexpr std::string_view batch_footer{
     "    manga,title,dir\n"
     "    https://mangadex.org/title/<uuid>,,\n"
     "    <uuid>,My Title,series/my-title\n"
+    "  With --dir-per-title, each title goes into its own subdirectory, named like\n"
+    "  its files: DIR/<title>/<title> - Vol. 01.epub. Later rows of the same title\n"
+    "  (another title cell or lang) reuse that directory. A row's dir cell replaces\n"
+    "  the name, so the row goes into DIR/<dir> exactly as without the flag.\n"
     "\n"
     "For a MangaDex list (MDList) instead of a file, see 'mangadex-dl mdlist --help'.\n"
     "\n"
     "Examples:\n"
     "  Everything in the list, into ~/Manga:\n"
     "    mangadex-dl batch titles.csv ~/Manga\n"
+    "  The same, one folder per title:\n"
+    "    mangadex-dl batch titles.csv ~/Manga --dir-per-title\n"
     "  Show what would be written, without downloading anything:\n"
     "    mangadex-dl batch titles.csv ~/Manga --dry-run\n"
     "  A list from another command:\n"
@@ -117,6 +123,8 @@ public:
         bind_selection_options(sub, args_.defaults);
         bind_run_options(sub, args_.defaults);
         sub.add_flag("--fail-fast", args_.fail_fast, "Stop at the first title that fails");
+        sub.add_flag("--dir-per-title", args_.dir_per_title,
+                     "Put each title in a subdirectory of DIR");
         sub.footer(batch_help_footer());
     }
 

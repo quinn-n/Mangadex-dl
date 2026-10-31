@@ -52,8 +52,14 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 /// "would already be written by" instead of "was already written by".
 ///
 /// A job with options.dir_per_title gets its directory below DIR from the run's TitleDirRegistry
-/// (first claim wins, in job order; a later title with the same name is moved aside with a
-/// warning), and its JSON `dir` is DIR/<name> once a name was claimed.
+/// (first claim wins, in job order; a later title with the same name is moved aside with the
+/// warning "directory '<stem>' already holds <noun> <k> (a title with the same name); using
+/// '<name>'", where <noun> is "line" for csv and "item" for mdlist), and its JSON `dir` is
+/// DIR/<name> once a name was claimed. With `settings.dir_per_title` (batch --dir-per-title
+/// only), the first '/'-segment of every non-duplicate job's non-empty `sub_dir` is reserved for
+/// its manga before the first row runs, in job order: another manga's derived row that would take
+/// it is moved aside with "directory '<stem>' is used by the 'dir' of line <k>; using '<name>'",
+/// <k> being the first reserving line, whatever the row order and results.
 ///
 /// `list` (mdlist only) adds the --json `list` object; nullopt keeps the batch document.
 ///

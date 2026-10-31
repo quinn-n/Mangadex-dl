@@ -1083,3 +1083,40 @@ TEST_CASE("The mdlist aggregates default-construct and take partial designated i
     CHECK(partial.batch.base == md::DownloadOptions{});
     CHECK(partial.list == md::ListId{});
 }
+
+// ---- batch-dir-per-title plan T1: additive members and the reservation signature -------------
+// The additive members (last, with DMIs) keep every existing designated initializer valid.
+static_assert(std::is_same_v<decltype(md::RawBatchArgs::dir_per_title), bool>);
+static_assert(std::is_same_v<decltype(md::BatchSettings::dir_per_title), bool>);
+static_assert(std::is_same_v<decltype(md::TitleDirClaim::reserved), bool>);
+static_assert(std::is_same_v<decltype(&md::TitleDirRegistry::reserve),
+                             void (md::TitleDirRegistry::*)(std::string_view, const md::MangaId&,
+                                                            std::size_t)>);
+// Still default-constructible without throwing, with the reservations map.
+static_assert(std::is_nothrow_default_constructible_v<md::TitleDirRegistry>);
+
+TEST_CASE("The batch --dir-per-title members default to off and take partial designated init",
+          "[interfaces][batch]") {
+    const md::RawBatchArgs raw{};
+    CHECK_FALSE(raw.dir_per_title);
+    const md::RawBatchArgs flagged{.file = "-", .dir_per_title = true};
+    CHECK(flagged.file == "-");
+    CHECK_FALSE(flagged.fail_fast);
+    CHECK(flagged.dir_per_title);
+
+    const md::BatchSettings settings{};
+    CHECK_FALSE(settings.dir_per_title);
+    CHECK_FALSE(settings.base.dir_per_title);
+    const md::BatchSettings per_title{.label = "x", .dir_per_title = true};
+    CHECK(per_title.label == "x");
+    CHECK(per_title.source == md::BatchSource::csv);
+    CHECK(per_title.dir_per_title);
+    CHECK_FALSE(per_title.base.dir_per_title);
+
+    const md::TitleDirClaim claim{};
+    CHECK_FALSE(claim.reserved);
+    CHECK(md::TitleDirClaim{.name = "T", .taken_by = 1, .reserved = true} !=
+          md::TitleDirClaim{.name = "T", .taken_by = 1});
+    CHECK(md::TitleDirClaim{.name = "T", .taken_by = 1} ==
+          md::TitleDirClaim{.name = "T", .taken_by = 1, .reserved = false});
+}

@@ -343,3 +343,62 @@ cli_e2e_case(NAME mdlist-json-dir-per-title-clicolor-force
              EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
              EXPECT_STDOUT_REGEX "\"dir\": \"out/Clean Title\",.*\"path\": \"out/Clean Title/Clean Title - Vol\\. 01\\.epub\","
              EXPECT_ABSENT out)
+
+# ---- batch --dir-per-title: the same edges with each title in DIR/<its name>/ (AC34-AC38) -----------
+# The batch cases above, plus the flag. clean.csv's one title lands in DIR/Clean Title/.
+set(_edge_batch_dpt_dry_clean_args batch --dry-run --dir-per-title ${_edge_batch_clean_api}
+    ${_edge_batch_in}/clean.csv)
+
+# --json never carries ANSI, even with CLICOLOR_FORCE=1; `dir` is the title's own directory and the
+# report's paths sit under it. A dry run creates nothing.
+cli_e2e_case(NAME batch-json-dir-per-title-clicolor-force
+             ARGS batch --json --dry-run --dir-per-title ${_edge_batch_clean_api}
+                  ${_edge_batch_in}/clean.csv out
+             ENV CLICOLOR_FORCE=1
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+             EXPECT_STDOUT_REGEX "\"dir\": \"out/Clean Title\",.*\"path\": \"out/Clean Title/Clean Title - Vol\\. 01\\.epub\","
+             EXPECT_ABSENT out)
+
+# Write errors: stdout on /dev/full is exit 1 and one `write error` line with the errno text.
+cli_e2e_case(NAME batch-dir-per-title-dev-full
+             ARGS ${_edge_batch_dpt_dry_clean_args} out
+             STDOUT_FILE /dev/full
+             EXPECT_EXIT 1 EXPECT_STDERR_REGEX "^mangadex-dl: write error: No space left on device\n$"
+             EXPECT_ABSENT out)
+
+# SIGPIPE policy A: the bulk title's planned paths, now under DIR/<name>/, die quietly by SIGPIPE.
+set(_edge_batch_dpt_bulk_args ${_edge_batch_bulk_args} --dir-per-title)
+set(_edge_batch_dpt_bulk_line_re "^out/Bulk Title[^\n/]*/Bulk Title[^\n/]* - Ch\\. 001\\.epub\n$")
+cli_e2e_case(NAME batch-dir-per-title-sigpipe ARGS ${_edge_batch_dpt_bulk_args} PIPE_HEAD 1
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "${_edge_batch_dpt_bulk_line_re}"
+             EXPECT_STDERR_EMPTY EXPECT_ABSENT out)
+cli_e2e_case(NAME batch-dir-per-title-sigpipe-parent-ignores ARGS ${_edge_batch_dpt_bulk_args}
+             PIPE_HEAD 1 PARENT_IGNORES_SIGPIPE
+             EXPECT_PIPE_RESULT SIGPIPE EXPECT_STDOUT_REGEX "${_edge_batch_dpt_bulk_line_re}"
+             EXPECT_STDERR_EMPTY EXPECT_ABSENT out)
+
+# UTF-8: an invalid-UTF-8 DIR still gives valid --json (its bytes replaced, the title's name appended);
+# a UTF-8 DIR reaches stdout verbatim under C.UTF-8 and under C.
+cli_e2e_case(NAME batch-dir-per-title-invalid-utf8-dir-json
+             ARGS batch --json --dry-run --dir-per-title ${_edge_batch_clean_api}
+                  ${_edge_batch_in}/clean.csv "{{INVALID_UTF8}}"
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 0 EXPECT_JSON EXPECT_NO_ANSI EXPECT_STDERR_EMPTY
+             EXPECT_STDOUT_REGEX "\"dir\": \"[^\"\n/]+/Clean Title\",")
+set(_edge_batch_dpt_zoe_paths_re
+    "^Zoë/Clean Title/Clean Title - Vol\\. 01\\.epub\nZoë/Clean Title/Clean Title - Vol\\. 02\\.epub\n$")
+cli_e2e_case(NAME batch-dir-per-title-utf8-dir
+             ARGS ${_edge_batch_dpt_dry_clean_args} "Zoë"
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_batch_dpt_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+cli_e2e_case(NAME batch-dir-per-title-utf8-dir-lc-c
+             ARGS ${_edge_batch_dpt_dry_clean_args} "Zoë"
+             ENV LC_ALL=C LANG=C
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_edge_batch_dpt_zoe_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT "Zoë")
+
+# stdin: /dev/null is an empty list, flag or not (exit 0 + the warning, nothing created).
+cli_e2e_case(NAME batch-dir-per-title-stdin-null ARGS batch --dir-per-title - out STDIN NULL
+             EXPECT_EXIT 0 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: <stdin>: lists no titles\n$"
+             EXPECT_ABSENT out)
