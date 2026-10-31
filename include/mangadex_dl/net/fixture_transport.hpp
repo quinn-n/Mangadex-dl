@@ -39,6 +39,7 @@ namespace mangadex_dl {
 ///   401. An `api/user/…` GET without a token is 401.
 /// - Leak tripwire: a non-empty authorization on any other URL is TransportErrc::local
 ///   "fixture: Authorization sent to <url>" (the URL, never the token).
+/// - GETs under `auth/` answer 404 (fixture files are never served).
 ///
 /// Errc::failure when `root` cannot be opened as a directory.
 [[nodiscard]] Result<std::unique_ptr<Transport>> make_fixture_transport(std::filesystem::path root);
