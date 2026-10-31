@@ -156,14 +156,16 @@ public:
         }
 
         // The observer copies the RowContext, prefix included (nothing borrows `prefix`); it
-        // borrows the registry (mdlist) and only reads it, before warn_collisions writes to it.
+        // and the engine borrow the registry and only read it, before warn_collisions writes to
+        // it.
         TitleRun run = run_title(
             job.options, job.raw, *backend_, *agent_, *io_, *policy_,
             RowContext{.prefix = prefix,
                        .position = position,
                        .total = total,
                        .exists_notice = false,
-                       .claimed = settings_->source == BatchSource::mdlist ? registry_ : nullptr},
+                       .claimed = settings_->source == BatchSource::mdlist ? registry_ : nullptr,
+                       .planned = registry_},
             title_dir);
 
         RowOutcome outcome{.exit_code = run.exit_code, .error = std::move(run.closing_error)};
@@ -221,27 +223,34 @@ private:
         return std::format("{}:{}: ", settings_->label, job.line);
     }
 
-    /// The collision line for `path`, which line/item `earlier` already claimed.
+    /// The collision line for `path`, which line/item `earlier` already claimed: "was already
+    /// written by" in a real run, "would already be written by" in a dry run.
     [[nodiscard]] std::string collision_message(const std::string& prefix, const std::string& path,
                                                 std::size_t earlier) const {
+        const std::string_view written =
+            settings_->base.dry_run ? "would already be written" : "was already written";
         switch (settings_->source) {
         case BatchSource::csv:
             break;
         case BatchSource::mdlist:
-            return std::format("{}{} was already written by item {} (another title with the same "
-                               "name); pass --dir-per-title to give each title its own "
-                               "directory, or download one of them on its own with '{} download "
-                               "<title> --title ...'",
-                               prefix, path, earlier, tool_name);
+            return std::format("{}{} {} by item {} (another title with the same name); pass "
+                               "--dir-per-title to give each title its own directory, or "
+                               "download one of them on its own with '{} download <title> "
+                               "--title ...'",
+                               prefix, path, written, earlier, tool_name);
         }
-        return std::format("{}{} was already written by line {}; give one of them a 'title' column",
-                           prefix, path, earlier);
+        return std::format("{}{} {} by line {}; give one of them a 'title' column", prefix, path,
+                           written, earlier);
     }
 
     /// Every file this row produced (written, planned or already there) is claimed for its
     /// line; a path an earlier row claimed gets one warning. Failed files produced nothing.
     /// mdlist: this is the only line for such a path (the observer dropped the engine's "holds a
     /// different book" warning for it, RowContext::claimed); batch also keeps the engine's.
+    /// A dry run without --overwrite also records each planned file (the plan, or an update's
+    /// final plan; the latest row wins), so a later row decides that path as the real run will
+    /// find it (RowContext::planned). With --overwrite the real run replaces, so nothing is
+    /// recorded. A record keeps the file's chapter list until the run ends.
     void warn_collisions(const BatchJob& job, const std::string& prefix, const RunReport& report) {
         for (const EpubOutcome& file : report.epubs) {
             switch (file.status) {
@@ -251,6 +260,9 @@ private:
                 if (const std::optional<std::size_t> earlier =
                         registry_->claim(file.path, job.line)) {
                     print_warning(*io_, *policy_, collision_message(prefix, file.path, *earlier));
+                }
+                if (file.status == EpubStatus::planned && !job.options.overwrite) {
+                    registry_->record_planned(file.path, file.epub);
                 }
                 break;
             case EpubStatus::failed:

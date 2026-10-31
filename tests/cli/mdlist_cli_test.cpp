@@ -933,6 +933,94 @@ TEST_CASE("mdlist: flat, a second title with the same name gets one line per fil
     }
 }
 
+TEST_CASE("mdlist: flat --dry-run, a second title with the same name: what the real run prints",
+          "[cli][mdlist][collision][dry-run]") {
+    const Tree tree{CleanTwin{}};
+    const std::string id = list(0x45);
+    tree.add_list(mdx::FixtureList{
+        .id = id, .name = "Twins", .manga_ids = {std::string{clean_id}, std::string{twin_id}}});
+    const fs::path out = tree.path("out");
+    const md::RawMdlistArgs real = tree.args(id, out);
+    md::RawMdlistArgs dry = real;
+    dry.defaults.dry_run = true;
+    // One line per file of item 2 (the observer drops the engine's "holds a different book").
+    const auto collisions = [&out](std::string_view written) {
+        std::string lines{};
+        for (const std::string_view file : {clean_vol1, clean_vol2}) {
+            lines += std::format(
+                "mangadex-dl: warning: list:2: {}: {} {} by item 1 (another title with the same "
+                "name); pass --dir-per-title to give each title its own directory, or download "
+                "one of them on its own with 'mangadex-dl download <title> --title ...'\n",
+                twin_id, (out / file).string(), written);
+        }
+        return lines;
+    };
+
+    SECTION("item 2's files would be left alone: what the real run then prints") {
+        const Captured r = run_command(dry);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == collisions("would already be written"));
+        CHECK(!r.err.contains("left alone"));
+        CHECK(!fs::exists(out));
+
+        // The real run on the same, still fresh, DIR.
+        const Captured written = run_command(real);
+        CHECK(written.exit_code == r.exit_code);
+        CHECK(written.out == r.out);
+        CHECK(written.err == collisions("was already written"));
+    }
+    SECTION("--json: item 2's files exist as foreign, as in the real run") {
+        const Captured r = run_command(dry, {.globals = {.json = true}});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == collisions("would already be written"));
+        CHECK(!fs::exists(out));
+        const Captured written = run_command(real, {.globals = {.json = true}});
+        CHECK(written.exit_code == 0);
+        CHECK(written.err == collisions("was already written"));
+
+        const Json doc = parse_document(r.out);
+        const Json real_doc = parse_document(written.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!real_doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        const Json& dry_epubs = doc.at("titles").at(1).at("report").at("epubs");
+        const Json& real_epubs = real_doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(dry_epubs.size() == 2);
+        REQUIRE(real_epubs.size() == 2);
+        for (std::size_t i = 0; i < 2; ++i) {
+            CHECK(dry_epubs.at(i).at("status") == "exists");
+            CHECK(dry_epubs.at(i).at("existing") == "foreign");
+            CHECK(dry_epubs.at(i).at("replaced") == false);
+            CHECK(dry_epubs.at(i) == real_epubs.at(i));
+        }
+        const Json& files = doc.at("summary").at("files");
+        CHECK(files.at("planned") == 2);
+        CHECK(files.at("exists") == 2);
+    }
+    SECTION("-v: no 'would write' for item 2's files, no 'left alone'; -q: nothing") {
+        const Captured r = run_command(dry, {.globals = {.verbose = 1}});
+        CHECK(r.exit_code == 0);
+        INFO("stderr: " << r.err);
+        const std::vector<std::string> lines = lines_of(r.err);
+        const auto item2 =
+            std::ranges::find(lines, std::format("mangadex-dl: list:2: {}", twin_id));
+        REQUIRE(item2 != lines.end());
+        const auto would_write = [](const std::string& line) {
+            return line.starts_with("mangadex-dl: would write ");
+        };
+        CHECK(std::ranges::none_of(item2, lines.end(), would_write));
+        CHECK(std::ranges::count_if(lines, would_write) == 2); // item 1's two files
+        CHECK(!r.err.contains("left alone"));
+
+        const Captured quiet = run_command(dry, {.globals = {.quiet = true}});
+        CHECK(quiet.exit_code == 0);
+        CHECK(quiet.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(quiet.err.empty());
+        CHECK(!fs::exists(out));
+    }
+}
+
 TEST_CASE("mdlist: flat --overwrite, a second title with the same name never replaces the "
           "first one's files",
           "[cli][mdlist][collision][overwrite]") {
@@ -942,12 +1030,17 @@ TEST_CASE("mdlist: flat --overwrite, a second title with the same name never rep
         .id = id, .name = "Twins", .manga_ids = {std::string{clean_id}, std::string{twin_id}}});
     const fs::path out = tree.path("out");
     std::string collisions{};
+    std::string dry_collisions{};
     for (const std::string_view file : {clean_vol1, clean_vol2}) {
-        collisions += std::format(
-            "mangadex-dl: warning: list:2: {}: {} was already written by item 1 (another title "
-            "with the same name); pass --dir-per-title to give each title its own directory, or "
-            "download one of them on its own with 'mangadex-dl download <title> --title ...'\n",
-            twin_id, (out / file).string());
+        for (const auto& [lines, written] :
+             {std::pair{&collisions, "was already written"},
+              std::pair{&dry_collisions, "would already be written"}}) {
+            *lines += std::format(
+                "mangadex-dl: warning: list:2: {}: {} {} by item 1 (another title with the same "
+                "name); pass --dir-per-title to give each title its own directory, or download "
+                "one of them on its own with 'mangadex-dl download <title> --title ...'\n",
+                twin_id, (out / file).string(), written);
+        }
     }
     // Item 1's own bytes: the clean title alone (L1), in another directory.
     const fs::path ref = tree.path("ref");
@@ -1028,12 +1121,12 @@ TEST_CASE("mdlist: flat --overwrite, a second title with the same name never rep
         const Captured r = run_command(dry);
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
-        CHECK(r.err == collisions);
+        CHECK(r.err == dry_collisions);
         CHECK(!fs::exists(out));
 
         const Captured json = run_command(dry, {.globals = {.json = true}});
         CHECK(json.exit_code == 0);
-        CHECK(json.err == collisions);
+        CHECK(json.err == dry_collisions);
         const Json doc = parse_document(json.out);
         REQUIRE(!doc.is_discarded());
         for (const Json& epub : doc.at("titles").at(0).at("report").at("epubs")) {
@@ -1060,7 +1153,7 @@ TEST_CASE("mdlist: flat --overwrite, a second title with the same name never rep
                   return line.starts_with("mangadex-dl: would replace ");
               }) == 2);
         CHECK(std::ranges::count_if(lines, [](const std::string& line) {
-                  return line.contains("was already written by item 1");
+                  return line.contains("would already be written by item 1");
               }) == 2);
         CHECK(!r.err.contains("left alone"));
         CHECK(holds(out / clean_vol1, vol1));

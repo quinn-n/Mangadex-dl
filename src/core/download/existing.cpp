@@ -17,14 +17,17 @@
 #include "fs/errno_text.hpp"
 #include "mangadex_dl/book_manifest.hpp"
 #include "mangadex_dl/download.hpp"
+#include "mangadex_dl/epub.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/existing_epub.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
 #include "mangadex_dl/fs/read_source.hpp"
 #include "mangadex_dl/image.hpp"
+#include "mangadex_dl/mangadex_api.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
 #include "mangadex_dl/update_plan.hpp"
+#include "mangadex_dl/zip.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -249,6 +252,34 @@ std::vector<Chapter> held_chapters(const HeldBook& held) {
         out.push_back(chapter_from(record));
     }
     return out;
+}
+
+HeldBook simulated_held(const PlannedEpub& book, ImageQuality quality) {
+    HeldBook held{};
+    held.manifest.identifier = book.identifier;
+    held.manifest.chapters.reserve(book.chapters.size());
+    held.pages.reserve(book.chapters.size());
+    std::size_t next_page = 0; // 0-based page index across the book, as the writer counts
+    for (const Chapter& chapter : book.chapters) {
+        // max(pages, 0), then the caps a real file holds to (see the header). next_page never
+        // exceeds zip_max_entries, so the subtraction cannot wrap.
+        const auto planned = static_cast<std::size_t>(std::max(chapter.pages, 0));
+        const std::size_t count =
+            std::min({planned, max_pages_per_chapter, zip_max_entries - next_page});
+        ManifestChapter record = manifest_chapter_from(chapter, quality);
+        std::vector<HeldEntry> entries{};
+        record.images.reserve(count);
+        entries.reserve(count);
+        for (std::size_t page = 0; page < count; ++page) {
+            std::string name = page_image_entry(next_page + page, MediaType::jpeg);
+            entries.push_back(HeldEntry{.name = name});
+            record.images.push_back(std::move(name));
+        }
+        next_page += count;
+        held.manifest.chapters.push_back(std::move(record));
+        held.pages.push_back(std::move(entries));
+    }
+    return held;
 }
 
 std::string foreign_warning(std::string_view path, const InspectFailure& failure) {

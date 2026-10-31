@@ -15,6 +15,11 @@ rev2 (feature-board fixes, chosen by the user) 2026-10-27. These are message cha
 rev3 (bug fix, chosen by the user) 2026-10-27, `mdlist`-only, with `batch` and `download` byte-identical (`batch` gets the same fix later, separately):
 - Flat mode with `--overwrite`: a path an earlier item of the same run claimed (written, planned or left alone as `exists`) is never replaced. The later item leaves it alone exactly as without `--overwrite` (status `exists`, existing `foreign`, only the collision line), in a dry run too, so stdout lists each path once. `--overwrite` still replaces files from earlier runs and every path not claimed in this run. The engine asks the run's `OutputRegistry` through `DownloadServices::claimed` before `--overwrite` replaces a file.
 
+rev4 (dry-run parity, with `batch`) 2026-10-28:
+- Flat mode `--dry-run` without `--overwrite`: a file an earlier item of the same run reported as planned counts as written, so a later item whose file has that path (another title with the same name) is reported exactly as the real run will report it: status `exists`, existing `foreign`, only the collision line. stdout lists each path once, `--json` carries those statuses (no new keys), `summary.files` moves with them, and exit codes equal the real run's.
+- In every dry run (`--overwrite` too) the collision line reads "would already be written by item 2" instead of "was already written by item 2". Real runs are byte-identical. `--overwrite --dry-run` is otherwise unchanged (rev3).
+- A `--dry-run` without `--overwrite` (flat or `--dir-per-title`) keeps each planned file's chapter list in memory for the run, roughly 60 KB per typical title (about what `--json` already keeps).
+
 Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`download-spec.md`](download-spec.md),
 [`skip-existing-spec.md`](skip-existing-spec.md) (re-runs).
 
@@ -159,7 +164,7 @@ Exit status:
   - **List-level lines** have no item prefix: `mangadex-dl: error: list <list-uuid> not found on MangaDex …`.
   - **Wording that names a row** uses "item" where `batch` says "line". Every `batch` string stays byte-identical.
     - Duplicate: `list:5: <uuid>: same as item 2; skipped`.
-    - Cross-item collision (flat mode): `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'` (rev2: it replaces the engine's "left alone: holds a different book" line for that file).
+    - Cross-item collision (flat mode): `list:4: <uuid>: <path> was already written by item 2 (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'` (rev2: it replaces the engine's "left alone: holds a different book" line for that file). rev4: in a dry run it reads `list:<n>: <uuid>: <path> would already be written by item <k> (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'`.
     - **A1**, directory name taken (with `--dir-per-title`; a warning, not shown with `-q`): `list:4: <uuid>: directory '<name>' already holds item 2 (a title with the same name); using '<name> [1a2b3c4d]'`.
     - **A1**, the title's own directory is unusable (an error; the item fails alone): `list:4: <uuid>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`. This is `check_row_dir`'s existing wording plus the rev2 remedy.
     - Closing line, one only, even with `-q`/`--json`; the item list is capped at 10 as in `batch`:
@@ -274,7 +279,7 @@ Exit status:
   - 3 consecutive exit-3 items stop the run; a global local error stops it; a bad `io.out` stops it;
   - the runner's read-only pre-flight checks DIR itself (empty sub-dir) before each item.
   - **A1:** the title's own directory is checked inside the engine, after the plan (see "Per-title subdirectories").
-- **File-name collisions (flat mode):** all titles go flat into DIR, using MangaDex's titles. Two different titles that sanitise to the same name collide. The first item to claim a path owns it (`OutputRegistry`). The later item's file is "foreign" to it and left alone, with the collision warning in place of `download`'s (rev2). The item status is unchanged (as in `batch`). Nothing is overwritten, even with `--overwrite` (rev3: the engine asks the registry before replacing a file; files from earlier runs are still replaced); the registry is keyed on the path. A re-run in the same order behaves the same. With `--dir-per-title`, directory disambiguation (below) prevents this case.
+- **File-name collisions (flat mode):** all titles go flat into DIR, using MangaDex's titles. Two different titles that sanitise to the same name collide. The first item to claim a path owns it (`OutputRegistry`). The later item's file is "foreign" to it and left alone, with the collision warning in place of `download`'s (rev2). The item status is unchanged (as in `batch`). Nothing is overwritten, even with `--overwrite` (rev3: the engine asks the registry before replacing a file; files from earlier runs are still replaced); the registry is keyed on the path. A re-run in the same order behaves the same. rev4: a `--dry-run` without `--overwrite` counts a path an earlier item planned as written, so the later item is left alone (`exists`, `foreign`) as in the real run, with the dry collision line. With `--dir-per-title`, directory disambiguation (below) prevents this case.
 - **Interrupt:**
   - during the list fetch: Errc::interrupted, nothing printed on stdout, nothing created, no JSON, then 130/143;
   - inside an item, or between items: exactly as in `batch` (no partial or temp files, no further items, no JSON, no closing line).
@@ -283,7 +288,7 @@ Exit status:
   - running the same command again downloads titles added to the list since the last run (subject to the CDN caveat above), and updates grown files as `download` does;
   - titles removed from the list are not touched (their files stay);
   - no state is kept between runs.
-- **Large input:** at most one 16 MiB response, at most 10 000 titles. Memory per item is as in `download`.
+- **Large input:** at most one 16 MiB response, at most 10 000 titles. Memory per item is as in `download`; rev4: a `--dry-run` without `--overwrite` also keeps each planned file's chapter list until the run ends.
 
 ## Per-title subdirectories (`--dir-per-title`, A1)
 

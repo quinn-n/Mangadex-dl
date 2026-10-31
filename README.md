@@ -384,7 +384,21 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   begins with `titles.csv:4: <uuid>`. When stderr is a terminal, the progress line gains the
   title's position: `(2/15) [1/2] Vol. 1: 3/5 pages`. The "N files are already up to date" note
   is printed once, at the end. Two rows that would write the same file get a warning naming both
-  lines.
+  lines (`titles.csv:3: <path> was already written by line 2; give one of them a 'title' column`;
+  with `--dry-run`, `would already be written by line 2`).
+- **`--dry-run` prints what the real run will print**, apart from the two caveats below.
+  Without `--overwrite`, when a later row would write a file an earlier row already planned, the
+  dry run treats that file as already written. A different book there (another title with the
+  same name, or the same title in another language) is left alone, with
+  `<path>: left alone: holds a different book; use another DIR or --title` and the warning above.
+  The same book is decided as a real re-run decides it: up to date (counted in the "N files are
+  already up to date" note), updated (the path is listed again, as the real update lists it),
+  or left alone as diverged, with the real warning. With `--overwrite`, each row lists the
+  path, because each row replaces it. Two things only a real run can know: exact
+  page counts (a dry run takes them from MangaDex's chapter list, the real run from the image
+  server) and damaged pages in an existing file. A `--dry-run` without `--overwrite` keeps each
+  planned file's chapter list in memory until it ends, roughly 60 KB per typical title (about
+  what `--json` keeps; about 60 MB for 1 000 titles).
 - A full success prints nothing on stderr. Otherwise the batch ends with one closing line, even
   with `-q` or `--json`, for example
   `mangadex-dl: error: 2 of 15 titles did not complete (lines 4, 9); run the same command again to retry them`
@@ -499,6 +513,12 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
   Nothing is overwritten, even with `--overwrite`: in one run, a later item never replaces a
   file an earlier item wrote (`--overwrite` still replaces files left by earlier runs). The fix
   is `--dir-per-title`, which gives the two titles different directories (below).
+  `--dry-run` prints what the real run will print: it assumes the earlier item's file is there,
+  so the later item's file is left alone with only the warning, which then reads
+  `list:<n>: <uuid>: <path> would already be written by item <k> (another title with the same name); pass --dir-per-title to give each title its own directory, or download one of them on its own with 'mangadex-dl download <title> --title ...'`.
+  As in `batch`, page counts come from MangaDex's chapter list, damaged pages in an existing
+  file are found only by a real run, and a `--dry-run` without `--overwrite` keeps each planned
+  file's chapter list in memory until it ends.
 - **`--dir-per-title`** puts each title in its own subdirectory, named exactly like its files and
   made safe the same way: `DIR/<title>/<title> - Vol. 01.epub`. The directory is created only
   when the title has a file to write, and never with `--dry-run`.
