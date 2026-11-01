@@ -433,6 +433,11 @@ public:
     [[nodiscard]] AuthResult<Secret> authorization(std::stop_token stop) override;
     [[nodiscard]] AuthResult<Secret> refresh_after_unauthorized(std::stop_token stop) override;
 
+    /// Returns and clears the warnings raised after open() returned (a session that could not
+    /// be saved after a refresh in authorization() or refresh_after_unauthorized()), in the
+    /// wording of open()'s save warning. Raw lines; the app sanitizes them. Empty after close().
+    [[nodiscard]] std::vector<std::string> take_late_warnings();
+
     /// Wipes every secret and releases the lock. Idempotent.
     void close() noexcept;
 
