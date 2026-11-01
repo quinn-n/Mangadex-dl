@@ -93,6 +93,20 @@ struct LoginPhase {
     LoginNotes notes{};
 };
 
+/// Prints a failed login (or a failed authorized request that used the session) and returns its
+/// exit code. stdout is never written, and every line is terminal_safe:
+/// - Errc::interrupted prints nothing (main() re-raises the signal);
+/// - Errc::usage prints the message and `Run 'mangadex-dl <command> --help' ...` (exit 2);
+/// - `request` gets with_remedy (the network remedy on exit 3);
+/// - `refused` prints, with -v and only when the refusal carries a validated `error` code, what
+///   the login server answered (`the MangaDex login server answered HTTP <n> with <code>:
+///   <description>`), then the message. A refusal without a code (the API's own second 401) is
+///   not the login server's answer and gets no such note;
+/// - `content` and `local` print the message.
+/// `command` is a subcommand name from the code, never user input.
+[[nodiscard]] int report_auth_failure(Io& io, const OutputPolicy& policy,
+                                      const AuthFailure& failure, std::string_view command);
+
 /// Whether the session file was written (for `login`, which reports this itself).
 enum class SaveOutcome {
     saved,    ///< no save_error

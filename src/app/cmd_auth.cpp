@@ -113,47 +113,20 @@ void print_login_warnings(Io& io, const OutputPolicy& policy, const LoginNotes& 
 /// (validated by classify_token_error) and its untrusted `error_description` (already cut to 200
 /// bytes; print_note makes it terminal_safe, and it is a format argument, never the format).
 void print_refusal_detail(Io& io, const OutputPolicy& policy, const TokenErrorInfo& info) {
-    if (policy.verbose < 1) {
+    // Only a refusal that carries an `error` code is the login server's answer: the API's own
+    // second 401 on the collection has none.
+    if (policy.verbose < 1 || !info.code.has_value()) {
         return;
     }
     std::string line{"the MangaDex login server answered"};
     if (info.status > 0) {
         line += std::format(" HTTP {}", info.status);
     }
-    if (info.code.has_value()) {
-        line += std::format(" with {}", *info.code);
-    }
+    line += std::format(" with {}", *info.code);
     if (info.description.has_value()) {
         line += std::format(": {}", *info.description);
     }
     print_note(io, policy, line);
-}
-
-/// A failed LoginSession::open (or a step before it): the message, and the exit code.
-[[nodiscard]] int login_failure(Io& io, const OutputPolicy& policy, const AuthFailure& failure,
-                                std::string_view command) {
-    const Error& error = failure.error;
-    if (error.code == Errc::interrupted) {
-        return error.exit_code(); // silent: main() re-raises the signal
-    }
-    if (error.code == Errc::usage) {
-        return usage_failure(io, error, command);
-    }
-    switch (failure.kind) {
-    case AuthFailureKind::request:
-        print_error(io, policy, with_remedy(error));
-        return error.exit_code();
-    case AuthFailureKind::refused:
-        print_refusal_detail(io, policy, failure.info);
-        print_error(io, policy, error.message);
-        return error.exit_code();
-    case AuthFailureKind::content:
-    case AuthFailureKind::local:
-        print_error(io, policy, error.message);
-        return error.exit_code();
-    }
-    print_error(io, policy, error.message); // only reachable through an out-of-range enum value
-    return error.exit_code();
 }
 
 /// The credentials file and the path its messages name: `--credentials FILE` (explicit: a missing
@@ -224,6 +197,32 @@ Result<RawAuthArgs> parse_auth_args_for_testing(std::span<const std::string> arg
     }
     record_auth_options(raw, *credentials);
     return raw;
+}
+
+int report_auth_failure(Io& io, const OutputPolicy& policy, const AuthFailure& failure,
+                        std::string_view command) {
+    const Error& error = failure.error;
+    if (error.code == Errc::interrupted) {
+        return error.exit_code(); // silent: main() re-raises the signal
+    }
+    if (error.code == Errc::usage) {
+        return usage_failure(io, error, command);
+    }
+    switch (failure.kind) {
+    case AuthFailureKind::request:
+        print_error(io, policy, with_remedy(error));
+        return error.exit_code();
+    case AuthFailureKind::refused:
+        print_refusal_detail(io, policy, failure.info);
+        print_error(io, policy, error.message);
+        return error.exit_code();
+    case AuthFailureKind::content:
+    case AuthFailureKind::local:
+        print_error(io, policy, error.message);
+        return error.exit_code();
+    }
+    print_error(io, policy, error.message); // only reachable through an out-of-range enum value
+    return error.exit_code();
 }
 
 UserDirs user_dirs(const EnvSnapshot& env) {
@@ -341,7 +340,7 @@ std::expected<LoginPhase, int> run_login_phase(const RawAuthArgs& args, const Ap
         if (session.error().error.code != Errc::interrupted) {
             print_login_warnings(io, policy, notes, mode);
         }
-        return std::unexpected(login_failure(io, policy, session.error(), command));
+        return std::unexpected(report_auth_failure(io, policy, session.error(), command));
     }
 
     print_login_warnings(io, policy, notes, mode);
