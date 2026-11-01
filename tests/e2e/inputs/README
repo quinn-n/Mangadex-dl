@@ -59,7 +59,8 @@ Generated MangaDex fixtures ({{FIXTURES}})
 The MangaDex data is NOT committed. The `e2e.fixtures` CTest fixture (FIXTURES_SETUP e2e_fixtures,
 required by every cli_e2e_case) runs the test-only `mangadex_dl_fixture_gen <build>/e2e-fixtures`
 (tests/e2e/fixtures/fixture_gen.cpp), which writes twelve trees (one per mdx::all_fixtures() entry)
-from the canned fixtures in tests/support/mdx_fixture.hpp, replacing any previous copy:
+from the canned fixtures in tests/support/mdx_fixture.hpp, plus the eleven follows trees described
+at the end of this section, replacing any previous copy:
 
   {{FIXTURES}}/clean        11111111-1111-4111-8111-111111111111  "Clean Title": vol 1 (ch 1-2),
                             vol 2 (ch 3), en, one group, PNG/GIF pages, a cover per volume; no skips,
@@ -135,6 +136,89 @@ digits> (mdx::list_id(n)); pass one as LIST, bare or as https://mangadex.org/lis
       ff  (no tree)                         no document anywhere: an unknown list (HTTP 404, exit 4)
 
 The clean-* variants serve no list.
+
+Follows trees for `mangadex-dl follows`, `login` and `logout` (tests/e2e/cases/{follows,login,
+logout}.cmake and the `follows-*` / `login-*` cases in _edge.cmake), written by fixture_gen from
+mdx::follows_fixtures() (tests/support/mdx_follows_fixture.hpp) next to the twelve trees above.
+Each one is a title tree from above (same documents) plus the follows collection, an optional
+reading-status map, the fake accounts and generated credentials files. Every value in them is
+fake: `fixture-...` names and `...-not-a-secret` secrets, the constants of
+tests/support/mdx_auth_fixture.hpp and mdx_follows_fixture.hpp. Nothing credential-shaped is
+committed, because git keeps only modes 0644 and 0755; the creds/ files exist only in the
+generated trees.
+
+  id    tree                      title tree  follows (API order)          status map
+  F1    follows-clean             clean       1111...                      none
+  F2    follows-unknown           clean       1111..., 6666... (not        none
+                                              found: exit 4)
+  F3    follows-empty             clean       none (one empty page,        none
+                                              total 0)
+  F4    follows-twice             clean       1111... twice (item 2 is a   none
+                                              duplicate)
+  F5    follows-bad-id            clean       1111..., `../x` (a           none
+                                              malformed page: exit 3)
+  F6    follows-bulk              bulk        3333... on page 1, 6666...   none
+                                              on page 2 (page size 1)
+  F7    follows-nochapters        nochapters  5555... (exit 5), 6666...    none
+                                              (exit 4): exit 7
+  FS1   follows-status            clean       6666..., 1111..., 7777...,   1111...: reading,
+                                              8888...                      6666...: completed,
+                                                                           7777...: paused (an
+                                                                           unknown status),
+                                                                           9999...: reading (not
+                                                                           followed); 8888...: none
+  FS2   follows-status-empty      clean       1111...                      `statuses: []`
+  FS3a  follows-status-bad-value  clean       1111...                      one value is a number
+                                                                           (malformed: exit 3)
+  FS3b  follows-status-bad-key    clean       1111...                      one key is `../x`
+                                                                           (malformed: exit 3)
+
+Without a status map (the F trees), GET /manga/status is a 404: a run that asks for it fails.
+7777..., 8888... and 9999... are 77777777-7777-4777-8777-777777777777 and so on; no tree serves a
+manga document for them (or for 6666...).
+
+Point the tool at one with `--api-base file://{{FIXTURES}}/<tree>`. Extra files in a follows tree
+(<root> = {{FIXTURES}}/<tree>):
+
+  <root>/api/user/follows/manga/offset-<k>.json      GET /user/follows/manga?limit=100&offset=<k>
+                                                     (k = 0, 100, ...; k = 0, 1 in follows-bulk)
+  <root>/api/manga/status.json                       GET /manga/status (FS trees only)
+  <root>/auth/password/<username>.json               the password grant (Keycloak stand-in)
+  <root>/auth/refresh/<token>.json                   one refresh grant
+  <root>/auth/revoke/<token>.json                    one revoke answer
+  <root>/auth/access/<token>.json                    an access token the two follows URLs accept
+  <root>/creds/                                      the generated credentials files, below (0700)
+
+The two follows URLs need `Authorization: Bearer <token>` with an access file; no other URL may
+carry one (the fixture transport fails such a request). Every account is on the fixture client
+(fixture-client) and has the password fixture-password-not-a-secret:
+
+  fixture-user              the default chain: access 1 + refresh 1, a refresh gives access 2 +
+                            refresh 2, a second refresh ends the session; a wrong password is
+                            401 invalid_grant; revokes answer 200
+  fixture-user-400          the same chain; a wrong password is 400 invalid_grant
+  fixture-user-unapproved   the password grant is 400 unauthorized_client (an unapproved client)
+  fixture-user-revoke-503   its own tokens (fixture-access-revoke-503, fixture-refresh-revoke-503;
+                            refreshing ends the session); revoking that refresh token is 503,
+                            so `logout` warns
+
+<root>/creds/, written with exact modes (openat + fchmod, whatever the umask). The credentials
+files are `key = value` lines; each holds client_id and client_secret, plus:
+
+  credentials                      0600  fixture-user and its password (all four keys)
+  credentials-client               0600  fixture-user, no password (prompt or --password-stdin)
+  credentials-wrong-password       0600  fixture-user, a wrong password (9)
+  credentials-wrong-password-400   0600  fixture-user-400, a wrong password (9, via a 400)
+  credentials-unapproved           0600  fixture-user-unapproved and its password (9)
+  credentials-revoke-503           0600  fixture-user-revoke-503 and its password
+  credentials-0644                 0644  the same as credentials, but too open: refused (1)
+  password.txt                     0600  the password and a newline (STDIN for --password-stdin)
+  password-wrong.txt               0600  a wrong password and a newline
+
+Seeding a session: a PRE_RUN has stdin /dev/null and no TTY, so it can never be prompted. A case
+that needs a saved login runs `PRE_RUN login --credentials {{FIXTURES}}/<tree>/creds/credentials
+--api-base file://{{FIXTURES}}/<tree>` (same tree as the case; the session lives in the case's
+fresh XDG_STATE_HOME), then the command without --credentials.
 
 Rules the fixtures follow (and tests may rely on):
 - JSON shapes are MangaDex's (docs/design/download-factcheck.md, cluster F), with a few extra fields
