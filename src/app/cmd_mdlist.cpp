@@ -5,23 +5,21 @@
 #include "cmd_download_options.hpp"
 #include "cmd_download_output.hpp"
 #include "cmd_download_run.hpp"
+#include "cmd_trace.hpp"
 #include "command.hpp"
 #include "exit_help.hpp"
 #include "io.hpp"
-#include "mangadex_dl/api_client.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/mdlist.hpp"
-#include "mangadex_dl/version.hpp"
 
 #include <CLI/CLI.hpp>
 
 #include <cstddef>
 #include <format>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <ostream> // IWYU pragma: keep (std::print(std::ostream&, ...) is declared here)
 #include <print>
@@ -63,32 +61,6 @@ constexpr std::string_view mdlist_footer{
     "Symlinks inside DIR are followed: don't point DIR at a directory that others\n"
     "can write to. Each title costs several API requests: a long list is a long run.\n"
     "\n"};
-
-/// The -vv request trace of the list fetch: `mangadex-dl: <line>` on stderr, terminal_safe and
-/// uncolored, exactly like the engine's own trace lines. Silent unless -vv without -q.
-///
-/// Threads: TraceSink requires trace() to be thread-safe, so every line is written under the
-/// mutex (the list fetch itself calls it on the calling thread only: its client has no reporter).
-/// Lifetime: `io` is borrowed (the caller's, it outlives the sink); fetch_custom_list keeps no
-/// pointer to the sink past its return.
-class StderrTrace final : public TraceSink {
-public:
-    StderrTrace(Io& io, const OutputPolicy& policy) noexcept
-        : io_(&io), enabled_(policy.verbose >= 2 && !policy.quiet) {}
-
-    void trace(std::string line) override {
-        if (!enabled_) {
-            return;
-        }
-        const std::scoped_lock lock{mutex_};
-        std::print(io_->err, "{}: {}\n", tool_name, terminal_safe(line));
-    }
-
-private:
-    Io* io_ = nullptr; ///< borrowed, never null
-    bool enabled_ = false;
-    std::mutex mutex_{};
-};
 
 /// One usage error plus the hint: exit 2, nothing on stdout.
 [[nodiscard]] int usage_failure(Io& io, const Error& error) {
