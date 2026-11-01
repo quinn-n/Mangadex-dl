@@ -311,7 +311,9 @@ public:
     /// A 4xx with a classifiable body -> {refused, info}; a 4xx without one, or 5xx/429 retries
     /// exhausted, or a transport failure -> {request, "<url>: …"}; a malformed 2xx -> content;
     /// over the cap -> {content, Errc::network "more than 3 MangaDex login requests in one run;
-    /// refusing to continue"}; a stop -> {request, Errc::interrupted}.
+    /// refusing to continue"}; a stop -> {request, Errc::interrupted}, except that a 2xx grant that
+    /// arrives with a stop pending is still returned: the caller persists it (a rotated refresh
+    /// token must never be lost), then honours the stop.
     [[nodiscard]] AuthResult<TokenGrant> request(GrantKind grant, const Secret& body,
                                                  std::stop_token stop);
 
