@@ -263,8 +263,9 @@ private:
 
     /// Every file this row produced (written, planned or already there) is claimed for its
     /// line; a path an earlier row claimed gets one warning. Failed files produced nothing.
-    /// mdlist: this is the only line for such a path (the observer dropped the engine's "holds a
-    /// different book" warning for it, RowContext::claimed); batch also keeps the engine's.
+    /// mdlist and follows: this is the only line for such a path (the observer dropped the
+    /// engine's "holds a different book" warning for it, RowContext::claimed); batch also keeps
+    /// the engine's.
     void warn_collisions(const BatchJob& job, const std::string& prefix, const RunReport& report) {
         for (const EpubOutcome& file : report.epubs) {
             switch (file.status) {
@@ -292,6 +293,39 @@ private:
     ConsoleTitleDirResolver resolver_;
     std::size_t up_to_date_ = 0;
 };
+
+/// run_batch_jobs's body. `to_json(result, dry_run)` builds the --json document; it is called
+/// at most once, before this returns, and is never stored.
+template <class ToJson>
+[[nodiscard]] int run_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
+                           const Backend& backend, const std::string& agent, Io& io,
+                           const OutputPolicy& policy, const ToJson& to_json) {
+    const bool dry_run = settings.base.dry_run;
+    // Lifetime: declared in borrow order (registry -> dirs -> runner), after the caller's
+    // handlers, agent and backend, so each lives until run_batch below has returned. Each row's
+    // DownloadServices, reporter, pool and bridge are created and joined inside run_title.
+    OutputRegistry registry{};
+    TitleDirRegistry dirs{};
+    ConsoleTitleRunner runner{settings, backend, agent, io, policy, registry, dirs};
+    const BatchResult result = run_batch(jobs, runner, settings.fail_fast);
+
+    if (result.stop == BatchStop::interrupted) {
+        // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
+        return batch_exit_code(result);
+    }
+    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
+        print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
+    }
+    if (const std::optional<std::string> closing =
+            batch_closing_message(result, dry_run, settings.source)) {
+        print_error(io, policy, *closing); // even with -q and --json
+    }
+    if (policy.json) {
+        // Built whole, written once, never colored.
+        std::print(io.out, "{}", to_json(result, dry_run));
+    }
+    return batch_exit_code(result);
+}
 
 } // namespace
 
@@ -322,31 +356,22 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message) {
 int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
                    const Backend& backend, const std::string& agent, Io& io,
                    const OutputPolicy& policy, const std::optional<ListSummary>& list) {
-    const bool dry_run = settings.base.dry_run;
-    // Lifetime: declared in borrow order (registry -> dirs -> runner), after the caller's
-    // handlers, agent and backend, so each lives until run_batch below has returned. Each row's
-    // DownloadServices, reporter, pool and bridge are created and joined inside run_title.
-    OutputRegistry registry{};
-    TitleDirRegistry dirs{};
-    ConsoleTitleRunner runner{settings, backend, agent, io, policy, registry, dirs};
-    const BatchResult result = run_batch(jobs, runner, settings.fail_fast);
+    // The lambda borrows `settings` and `list`, both alive for the whole call; it never escapes.
+    return run_jobs(jobs, settings, backend, agent, io, policy,
+                    [&settings, &list](const BatchResult& result, bool dry_run) {
+                        return batch_to_json(result, settings.file, dry_run, list);
+                    });
+}
 
-    if (result.stop == BatchStop::interrupted) {
-        // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
-        return batch_exit_code(result);
-    }
-    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
-        print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
-    }
-    if (const std::optional<std::string> closing =
-            batch_closing_message(result, dry_run, settings.source)) {
-        print_error(io, policy, *closing); // even with -q and --json
-    }
-    if (policy.json) {
-        // Built whole, written once, never colored.
-        std::print(io.out, "{}", batch_to_json(result, settings.file, dry_run, list));
-    }
-    return batch_exit_code(result);
+int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
+                   const Backend& backend, const std::string& agent, Io& io,
+                   const OutputPolicy& policy, const FollowsSummary& follows) {
+    // The lambda borrows `settings` and `follows`, both alive for the whole call; it never
+    // escapes.
+    return run_jobs(jobs, settings, backend, agent, io, policy,
+                    [&settings, &follows](const BatchResult& result, bool dry_run) {
+                        return batch_to_json(result, settings.file, dry_run, follows);
+                    });
 }
 
 } // namespace mangadex_dl::app
