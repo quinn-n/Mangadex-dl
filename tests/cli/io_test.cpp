@@ -3,24 +3,64 @@
 // (sigpipe-parent-ignores), but no portable shell can hand it a *blocked* one, so the unblock half
 // of SIGPIPE policy A is exercised here, in-process. RecordingStdioBuf is driven over its own FILE*
 // (never the real std::cout), one path per test; the installed binary covers finish_stdout itself
-// (e2e.edge.dev-full-update, e2e.edge.dev-full-bulk).
+// (e2e.edge.dev-full-update, e2e.edge.dev-full-bulk). process_io() with fd 0 closed runs here
+// with the test process's own fd 0 closed for the test and put back afterwards.
 #include "app/io.hpp"
 #include "app/recording_stdio_buf.hpp"
+#include "mangadex_dl/auth.hpp"
+#include "mangadex_dl/error.hpp"
+#include "mangadex_dl/fs/output_dir.hpp"
+#include "mangadex_dl/secret.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
+#include <iterator>
 #include <memory>
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 
+#include <fcntl.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers): sigaction and pthread_sigmask are POSIX <signal.h>
 #include <signal.h>
+#include <unistd.h>
 
 namespace {
+
+/// True when `fd` is not an open descriptor: dup2(fd, fd) returns fd while it is open and fails
+/// with EBADF once it is closed, with no side effect either way.
+[[nodiscard]] bool is_closed(int fd) noexcept { return ::dup2(fd, fd) == -1 && errno == EBADF; }
+
+/// Closes the test process's fd 0 for its lifetime and puts the original back on scope exit (a
+/// failed REQUIRE included). The original is kept on a duplicate (above 2 while 0-2 are open). A
+/// stdin that was already closed stays closed; one that cannot be duplicated is left open, and the
+/// test then fails its is_closed REQUIRE instead of losing stdin.
+class StdinClosedGuard {
+public:
+    StdinClosedGuard() noexcept : saved_{::dup(STDIN_FILENO)} {
+        if (saved_ >= 0) {
+            static_cast<void>(::close(STDIN_FILENO));
+        }
+    }
+    ~StdinClosedGuard() {
+        if (saved_ >= 0) {
+            static_cast<void>(::dup2(saved_, STDIN_FILENO));
+            static_cast<void>(::close(saved_));
+        }
+    }
+    StdinClosedGuard(const StdinClosedGuard&) = delete;
+    StdinClosedGuard& operator=(const StdinClosedGuard&) = delete;
+    StdinClosedGuard(StdinClosedGuard&&) = delete;
+    StdinClosedGuard& operator=(StdinClosedGuard&&) = delete;
+
+private:
+    int saved_ = -1;
+};
 
 /// Saves the calling thread's signal mask and the SIGPIPE disposition, and restores both on scope
 /// exit, so a test that changes them leaves the test process as it found it.
@@ -161,4 +201,31 @@ TEST_CASE("restore_default_sigpipe unblocks a blocked, ignored SIGPIPE and reset
     struct sigaction action_now{};
     REQUIRE(sigaction(SIGPIPE, nullptr, &action_now) == 0);
     CHECK(action_now.sa_handler == SIG_DFL);
+}
+
+TEST_CASE("process_io: a closed fd 0 is stdin_fd -1, even once a later open reuses descriptor 0",
+          "[io][stdin]") {
+    const StdinClosedGuard closed; // declared first: destroyed after `reused` below
+    REQUIRE(is_closed(STDIN_FILENO));
+
+    const mangadex_dl::app::Io io = mangadex_dl::app::process_io();
+    CHECK(io.stdin_fd == -1);
+    CHECK_FALSE(io.stdin_tty);
+
+    // What the tool does next (the fixture transport's root, a lock file, a socket): the lowest
+    // free descriptor is 0. Here it is a pipe of the tool's own that holds a password-shaped line;
+    // "stdin" must still be the closed-stdin usage error, never these bytes.
+    std::array<int, 2> ends{-1, -1};
+    REQUIRE(::pipe2(ends.data(), O_CLOEXEC) == 0);
+    const mangadex_dl::UniqueFd reused{ends[0]};
+    mangadex_dl::UniqueFd writer{ends[1]};
+    REQUIRE(reused.get() == STDIN_FILENO);
+    const std::string_view line = "fixture-password-not-a-secret\n";
+    REQUIRE(::write(writer.get(), line.data(), line.size()) == std::ssize(line));
+    writer.reset(); // EOF after the line
+    const mangadex_dl::Result<mangadex_dl::Secret> password =
+        mangadex_dl::read_password_stdin(io.stdin_fd);
+    REQUIRE_FALSE(password.has_value());
+    CHECK(password.error().code == mangadex_dl::Errc::usage);
+    CHECK(password.error().message == "--password-stdin was given, but stdin held no password");
 }

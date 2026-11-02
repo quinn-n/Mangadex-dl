@@ -44,7 +44,8 @@ struct Io {
     mangadex_dl::Prompter* prompter = nullptr;
 };
 
-/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0, no
+/// The real process: std::cout/std::cerr, isatty(0/1/2), environment snapshot, stdin_fd 0 (-1 when
+/// fd 0 is closed: checked first, before anything opens a descriptor that could reuse 0), no
 /// injected prompter. On the first call it also installs a RecordingStdioBuf
 /// (recording_stdio_buf.hpp) over `stdout` as std::cout's buffer, for finish_stdout(). That buffer
 /// is a function-local static, so it is destroyed only during static destruction, and its owner
