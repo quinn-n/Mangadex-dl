@@ -16,9 +16,10 @@ cli_e2e_case(NAME help ARGS login --help
 # Fixture mode (`--api-base file://{{FIXTURES}}/follows-clean`; the accounts and the creds/ files
 # are in tests/e2e/inputs/README). login writes nothing to stdout, also with --json. Every stderr
 # regex is anchored at both ends, so it also proves that no prompt and no value from a credentials
-# file or the command line is printed. An interrupt at a prompt and a held session lock are covered
-# at the cli tier (login_cli_test.cpp; the driver can neither signal nor hold a lock), and so is
-# typing at a real prompt (cli-tester, the human).
+# file or the command line is printed. An interrupt at a prompt (login_cli_test.cpp) and a session
+# lock held elsewhere (auth_phase_test.cpp, "auth phase: a session lock held elsewhere ...") are
+# covered at the cli tier, because the driver can neither signal nor hold a lock. Typing at a real
+# prompt is left to cli-tester and the human.
 
 string(ASCII 27 _login_esc)
 set(_login_api --api-base file://{{FIXTURES}}/follows-clean)

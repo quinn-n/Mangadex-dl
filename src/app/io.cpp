@@ -215,7 +215,7 @@ Io process_io() {
     return Io{
         .out = std::cout,
         .err = std::cerr,
-        .stdin_tty = ::isatty(STDIN_FILENO) == 1,
+        .stdin_tty = stdin_fd >= 0 && ::isatty(stdin_fd) == 1,
         .stdout_tty = ::isatty(STDOUT_FILENO) == 1,
         .stderr_tty = ::isatty(STDERR_FILENO) == 1,
         .env = read_env(),

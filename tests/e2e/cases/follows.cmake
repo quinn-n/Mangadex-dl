@@ -132,7 +132,7 @@ cli_e2e_case(NAME no-client
 cli_e2e_case(NAME creds-0644
              ARGS follows out --credentials ${_follows_creds}/credentials-0644 ${_follows_clean_api}
              EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
-             EXPECT_STDERR_REGEX "^mangadex-dl: error: credentials file '${_follows_fx_re}/follows-clean/creds/credentials-0644' is readable or writable by others \\(mode 0644\\); run 'chmod 600 '?${_follows_fx_re}/follows-clean/creds/credentials-0644'?'\n$"
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: credentials file '${_follows_fx_re}/follows-clean/creds/credentials-0644' is readable or writable by others \\(mode 0644\\); run 'chmod 600 ${_follows_fx_re}/follows-clean/creds/credentials-0644'\n$"
              EXPECT_ABSENT out ${_follows_session})
 # An explicit --credentials path that does not exist is an error, never a fallback to prompts.
 cli_e2e_case(NAME creds-missing

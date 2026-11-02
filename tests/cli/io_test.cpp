@@ -37,12 +37,15 @@ namespace {
 [[nodiscard]] bool is_closed(int fd) noexcept { return ::dup2(fd, fd) == -1 && errno == EBADF; }
 
 /// Closes the test process's fd 0 for its lifetime and puts the original back on scope exit (a
-/// failed REQUIRE included). The original is kept on a duplicate (above 2 while 0-2 are open). A
-/// stdin that was already closed stays closed; one that cannot be duplicated is left open, and the
-/// test then fails its is_closed REQUIRE instead of losing stdin.
+/// failed REQUIRE included). The original is kept on a CLOEXEC duplicate numbered 3 or above, so
+/// it never takes the place of a closed fd 1 or 2 and no child the test spawns inherits it. A stdin
+/// that was already closed stays closed; one that cannot be duplicated is left open, and the test
+/// then fails its is_closed REQUIRE instead of losing stdin.
 class StdinClosedGuard {
 public:
-    StdinClosedGuard() noexcept : saved_{::dup(STDIN_FILENO)} {
+    StdinClosedGuard() noexcept
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl is variadic in C
+        : saved_{::fcntl(STDIN_FILENO, F_DUPFD_CLOEXEC, STDERR_FILENO + 1)} {
         if (saved_ >= 0) {
             static_cast<void>(::close(STDIN_FILENO));
         }
