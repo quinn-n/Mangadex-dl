@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The "Exit status:" help footer, shared by the root `--help`, `download --help`, `batch --help`
-// and `mdlist --help` (and so by the help2man page). Built from exit_codes.hpp so the documented
-// numbers can't drift from the code.
+// The "Exit status:" help footer, shared by the root `--help` and the `--help` of every
+// subcommand (download, batch, mdlist, follows, login, logout), and so by the help2man page. Built
+// from exit_codes.hpp so the documented numbers can't drift from the code.
 #pragma once
 
 #include "mangadex_dl/exit_codes.hpp"
@@ -22,12 +22,14 @@ namespace mangadex_dl::app {
                        "  {:<3} title or list not found on MangaDex (a private list counts)\n"
                        "  {:<3} no downloadable chapters matched the language and selection\n"
                        "  {:<3} incomplete: at least one output file failed\n"
-                       "  {:<3} batch/mdlist: titles failed in more than one way (see per-title "
-                       "results)\n"
+                       "  {:<3} several titles failed in different ways (see per-title results)\n"
+                       "  {:<3} follows/login: not logged in, or the saved login expired\n"
+                       "  {:<3} follows/login: MangaDex rejected the login details\n"
                        "  {:<3} internal error (a bug: please report it)",
                        exit_code::success, exit_code::failure, exit_code::usage, exit_code::network,
                        exit_code::not_found, exit_code::no_chapters, exit_code::incomplete,
-                       exit_code::mixed_failures, exit_code::internal);
+                       exit_code::mixed_failures, exit_code::login_required,
+                       exit_code::auth_rejected, exit_code::internal);
 }
 
 } // namespace mangadex_dl::app

@@ -54,7 +54,7 @@ TEST_CASE("the root help footer documents every exit code, 3-7 included", "[cli]
     REQUIRE(r.exit_code == 0);
     CHECK(r.out.contains("Exit status:\n"));
     // One row per code, in exit_codes.hpp order: "  <code padded to 3> <meaning>".
-    for (const int code : {0, 1, 2, 3, 4, 5, 6, 7, 70}) {
+    for (const int code : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 70}) {
         INFO("exit code " << code);
         CHECK(r.out.contains(std::format("\n  {:<3} ", code)));
     }
@@ -63,7 +63,9 @@ TEST_CASE("the root help footer documents every exit code, 3-7 included", "[cli]
     CHECK(r.out.contains("no downloadable chapters"));
     CHECK(r.out.contains("incomplete"));
     CHECK(r.out.contains(
-        "\n  7   batch/mdlist: titles failed in more than one way (see per-title results)\n"));
+        "\n  7   several titles failed in different ways (see per-title results)\n"));
+    CHECK(r.out.contains("\n  8   follows/login: not logged in, or the saved login expired\n"));
+    CHECK(r.out.contains("\n  9   follows/login: MangaDex rejected the login details\n"));
     CHECK(r.err.empty());
 }
 
@@ -82,6 +84,7 @@ TEST_CASE("an unknown subcommand is a usage error: exit 2, nothing on stdout", "
     CHECK(r.exit_code == 2);
     CHECK(r.out.empty());
     CHECK(r.err ==
-          "mangadex-dl: error: unknown command 'hello' (commands: download, batch, mdlist)\n"
+          "mangadex-dl: error: unknown command 'hello' (commands: download, batch, mdlist, "
+          "follows, login, logout)\n"
           "Run 'mangadex-dl --help' for more information.\n");
 }

@@ -2,8 +2,7 @@
 //
 // tests/cli/login_cli_test.cpp: the `login` and `logout` commands (follows plan T17), in-process
 // through run_login_command / run_logout_command (over a recording fixture backend), report_login,
-// and the registered Commands through run_login_logout_for_testing (registration in cli.cpp is
-// T19's).
+// and the registered Commands through the whole CLI (run_cli: cli.cpp's run(), its own backend).
 //
 // Covers AC21 (an interrupt at the password prompt), AC22 (login's half: a session that can't be
 // saved is exit 1), AC23 (a fixture login and logout never touch session.json), AC24 (login with
@@ -56,6 +55,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -306,14 +306,11 @@ struct Outcome {
     return Outcome{.exit_code = rc, .out = out.str(), .err = err.str()};
 }
 
-/// The registered Commands (run_login_logout_for_testing), with the harness's environment.
-[[nodiscard]] Outcome registered(const Harness& h, const std::vector<std::string>& args) {
-    std::ostringstream out{};
-    std::ostringstream err{};
-    app::Io io = make_io(h, out, err, Setup{});
-    const int rc = app::run_login_logout_for_testing(
-        args, app::GlobalOptions{.color = app::ColorMode::never}, io);
-    return Outcome{.exit_code = rc, .out = out.str(), .err = err.str()};
+/// The registered Commands through the whole CLI (run_cli: cli.cpp's run(), which builds its own
+/// backend), with the harness's environment, no terminal and a closed stdin.
+[[nodiscard]] Outcome registered(const Harness& h, std::initializer_list<std::string> args) {
+    const md::test::Captured run = md::test::run_cli(args, Tty{}, h.env());
+    return Outcome{.exit_code = run.exit_code, .out = run.out, .err = run.err};
 }
 
 /// login's arguments for the harness's fixture base, with `--credentials <creds/name>` when given.

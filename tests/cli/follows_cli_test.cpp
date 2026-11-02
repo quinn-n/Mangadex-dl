@@ -67,7 +67,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1375,54 +1374,110 @@ TEST_CASE("follows cli: the help footer explains the login and --status, fits 80
     }
 }
 
-// ---- the option binding ------------------------------------------------------------------------
+// ---- the registered command (cli.cpp's run()) ---------------------------------------------------
+
+namespace {
+
+/// The whole CLI (run_cli: cli.cpp's run(), which builds its own fixture Backend for the API
+/// base), with the harness's environment, `tty` and a closed stdin.
+[[nodiscard]] Captured run_registered(const Harness& h, std::initializer_list<std::string> args,
+                                      Tty tty = {}) {
+    return md::test::run_cli(args, tty, h.env());
+}
+
+} // namespace
+
+TEST_CASE("follows cli: the registered command downloads with --credentials, then without",
+          "[cli][follows][parse]") {
+    const Harness h{};
+    const fs::path out = h.path("out");
+    const Captured first =
+        run_registered(h, {"follows", out.string(), "--credentials",
+                           h.creds("credentials").string(), "--api-base", h.api_base()});
+    CHECK(first.exit_code == 0);
+    CHECK(first.out == path_lines(out, {clean_vol1, clean_vol2}));
+    CHECK(first.err.empty());
+    CHECK(fs::is_regular_file(out / clean_vol1));
+    CHECK(fs::is_regular_file(h.session_file()));
+    check_no_secret(first);
+
+    // No --credentials and no default credentials file: the saved login is reused.
+    REQUIRE(!fs::exists(h.default_credentials()));
+    const fs::path again = h.path("again");
+    const Captured second =
+        run_registered(h, {"follows", again.string(), "--api-base", h.api_base(), "-v"});
+    CHECK(second.exit_code == 0);
+    CHECK(second.out == path_lines(again, {clean_vol1, clean_vol2}));
+    CHECK_THAT(second.err,
+               StartsWith("mangadex-dl: logged in to MangaDex as fixture-user (saved login)\n"));
+    CHECK(fs::is_regular_file(again / clean_vol2));
+    check_no_secret(second);
+}
 
 TEST_CASE("follows cli: the options as CLI11 binds them", "[cli][follows][parse]") {
-    const auto parse = [](std::initializer_list<std::string> words) {
-        const std::vector<std::string> args{words};
-        return app::parse_follows_args_for_testing(args);
-    };
+    const Harness h{};
+    const std::string creds = h.creds("credentials").string();
+    const std::string base = h.api_base();
 
-    SECTION("defaults") {
-        const md::Result<md::RawFollowsArgs> raw = parse({});
-        REQUIRE(raw.has_value());
-        CHECK(raw->defaults.dir == ".");
-        CHECK(raw->status.empty());
-        CHECK(!raw->fail_fast);
-        CHECK(!raw->dir_per_title);
-        CHECK(!raw->auth.credentials_given);
-        CHECK(!raw->auth.password_stdin);
-        CHECK(!raw->auth.no_input);
+    SECTION("DIR defaults to '.'") {
+        const Captured r =
+            run_registered(h, {"follows", "--dry-run", "--credentials", creds, "--api-base", base});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(".", {clean_vol1, clean_vol2}));
+        CHECK(r.err.empty());
     }
-    SECTION("--status: one value per occurrence, commas kept for StatusFilter::parse") {
-        const md::Result<md::RawFollowsArgs> raw =
-            parse({"--status", "reading", "out", "--status", "on_hold,dropped"});
-        REQUIRE(raw.has_value());
-        CHECK(raw->defaults.dir == "out"); // --status never swallows the positional
-        CHECK(raw->status == std::vector<std::string>{"reading", "on_hold,dropped"});
+    SECTION("--dir-per-title and --dry-run") {
+        const fs::path out = h.path("out");
+        const Captured r =
+            run_registered(h, {"follows", out.string(), "--dir-per-title", "--dry-run",
+                               "--credentials", creds, "--api-base", base});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out / "Clean Title", {clean_vol1, clean_vol2}));
+        CHECK(!fs::exists(out));
     }
-    SECTION("the flags and the auth options") {
-        const md::Result<md::RawFollowsArgs> raw =
-            parse({"out", "--fail-fast", "--dir-per-title", "--credentials", "", "--password-stdin",
-                   "--no-input", "--dry-run", "--layout", "chapters"});
-        REQUIRE(raw.has_value());
-        CHECK(raw->fail_fast);
-        CHECK(raw->dir_per_title);
-        CHECK(raw->auth.credentials_given); // given, though empty: exit 2 later (V10)
-        CHECK(raw->auth.credentials.empty());
-        CHECK(raw->auth.password_stdin);
-        CHECK(raw->auth.no_input);
-        CHECK(raw->defaults.dry_run);
-        CHECK(raw->defaults.layout == "chapters");
+    SECTION("--credentials '' is given, but empty -> 2 (V10)") {
+        const Captured r = run_registered(h, {"follows", "--credentials", "", "--api-base", base});
+        CHECK(r.exit_code == 2);
+        CHECK(r.out.empty());
+        CHECK(r.err == "mangadex-dl: error: --credentials needs a file name\n" + std::string{hint});
     }
     SECTION("--credentials takes the next word verbatim") {
-        const md::Result<md::RawFollowsArgs> raw = parse({"--credentials", "--no-input"});
-        REQUIRE(raw.has_value());
-        CHECK(raw->auth.credentials == "--no-input");
-        CHECK(!raw->auth.no_input);
+        const Captured r =
+            run_registered(h, {"follows", "--credentials", "--no-input", "--api-base", base});
+        CHECK(r.exit_code == 1);
+        CHECK(r.out.empty());
+        CHECK(r.err == "mangadex-dl: error: credentials file '--no-input' does not exist\n");
+    }
+    SECTION("--no-input never prompts, even on a terminal -> 8") {
+        const Captured r = run_registered(h, {"follows", "--no-input", "--api-base", base},
+                                          Tty{.stdin_tty = true, .stderr_tty = true});
+        CHECK(r.exit_code == 8);
+        CHECK(r.out.empty());
+        // stderr is a terminal here, so `error:` is colored.
+        CHECK_THAT(r.err, ContainsSubstring("error:\x1b[0m no MangaDex API client is set up; "));
+    }
+    SECTION("--password-stdin reads stdin (closed here) -> 2") {
+        const Captured r = run_registered(
+            h, {"follows", "--password-stdin", "--credentials", creds, "--api-base", base});
+        CHECK(r.exit_code == 2);
+        CHECK(r.err == "mangadex-dl: error: --password-stdin was given, but stdin held no "
+                       "password\n" +
+                           std::string{hint});
+    }
+    SECTION("--fail-fast stops after the first failed title") {
+        const Harness status{mdx::follows_status_fixture()};
+        const Captured r = md::test::run_cli(
+            {"follows", status.path("out").string(), "--fail-fast", "--json", "--credentials",
+             status.creds("credentials").string(), "--api-base", status.api_base()},
+            Tty{}, status.env());
+        CHECK(r.exit_code == 4); // 6666… (item 1) is not on the fixture
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        CHECK(statuses(doc) ==
+              std::vector<std::string>{"not_found", "not_run", "not_run", "not_run"});
     }
     SECTION("no --title and no --password option") {
-        CHECK(!parse({"--title", "x"}).has_value());
-        CHECK(!parse({"--password", "x"}).has_value());
+        CHECK(run_registered(h, {"follows", "--title", "x"}).exit_code == 2);
+        CHECK(run_registered(h, {"follows", "--password", "x"}).exit_code == 2);
     }
 }

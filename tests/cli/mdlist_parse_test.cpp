@@ -220,13 +220,14 @@ TEST_CASE("mdlist --help documents LIST, DIR, the list footer and exit rows 4 an
                          "missing)\n"));
     CHECK(r.out.contains("\nLIST:\n  A public MangaDex custom list (MDList): its UUID, or its "
                          "address on the\n"));
-    CHECK(r.out.contains("  To download the titles you follow, add them to a public MDList.\n"));
+    CHECK(
+        r.out.contains("  To download the titles you follow, see 'mangadex-dl follows --help'.\n"));
     CHECK(r.out.contains("    mangadex-dl mdlist <uuid> ~/Manga --dir-per-title\n"));
     CHECK(r.out.contains("Symlinks inside DIR are followed"));
     CHECK(r.out.contains("\nExit status:\n"));
     CHECK(r.out.contains("\n  4   title or list not found on MangaDex (a private list counts)\n"));
     CHECK(r.out.contains(
-        "\n  7   batch/mdlist: titles failed in more than one way (see per-title results)\n"));
+        "\n  7   several titles failed in different ways (see per-title results)\n"));
     CHECK(!r.out.contains("--api-base")); // hidden: a test and loopback seam, not a user option
     CHECK(!r.out.contains("--title"));    // one title for every item would collide (V7c)
     CHECK(!r.out.contains('\x1b'));
@@ -279,7 +280,8 @@ TEST_CASE("mdlist: the root help lists mdlist, and download and batch point at i
     // One line, like its siblings: the one-liner fits the 44-column right column.
     CHECK(root.out.contains(
         "\n  batch                             Download every title listed in a CSV file\n"
-        "  mdlist                            Download every title in a public MDList\n\n"));
+        "  mdlist                            Download every title in a public MDList\n"
+        "  follows "));
     check_fits_80_columns(root.out);
 
     const Captured download = run_args({"download", "--help"});

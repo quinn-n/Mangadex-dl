@@ -19,7 +19,6 @@
 #include "mangadex_dl/auth.hpp"
 
 #include <memory>
-#include <span>
 #include <string>
 
 namespace CLI {
@@ -84,13 +83,5 @@ namespace mangadex_dl::app {
 
 /// Adds `logout` to `parent`, like register_login.
 [[nodiscard]] std::unique_ptr<Command> register_logout(CLI::App& parent, Command*& selected);
-
-/// Tests only (until cli.cpp registers the commands): a throwaway root CLI::App with only `login`
-/// and `logout` registered, parsing `args` (no argv[0]; args[0] is the subcommand), then the
-/// selected Command's run(io, globals). --help prints to io.out and is exit 0; any other CLI11
-/// parse error is exit 2 with CLI11's stock text on io.err, which may echo an argument's value
-/// (the value-free mapping for these commands is cli.cpp's, T19): never show it to a user.
-[[nodiscard]] int run_login_logout_for_testing(std::span<const std::string> args,
-                                               const GlobalOptions& globals, Io& io);
 
 } // namespace mangadex_dl::app

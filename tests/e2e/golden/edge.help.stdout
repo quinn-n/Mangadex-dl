@@ -17,6 +17,11 @@ SUBCOMMANDS:
   download                          Download a MangaDex title as EPUB files
   batch                             Download every title listed in a CSV file
   mdlist                            Download every title in a public MDList
+  follows                           Download every title you follow on MangaDex
+                                    (needs a login)
+  login                             Log in to MangaDex and save the login for
+                                    follows
+  logout                            Remove the saved MangaDex login
 
 Exit status:
   0   success
@@ -26,5 +31,7 @@ Exit status:
   4   title or list not found on MangaDex (a private list counts)
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
-  7   batch/mdlist: titles failed in more than one way (see per-title results)
+  7   several titles failed in different ways (see per-title results)
+  8   follows/login: not logged in, or the saved login expired
+  9   follows/login: MangaDex rejected the login details
   70  internal error (a bug: please report it)

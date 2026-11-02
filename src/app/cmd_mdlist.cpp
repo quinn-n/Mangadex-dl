@@ -42,7 +42,7 @@ constexpr std::string_view mdlist_footer{
     "  title goes into its own subdirectory, named like its files:\n"
     "  DIR/<title>/<title> - Vol. 01.epub.\n"
     "\n"
-    "  To download the titles you follow, add them to a public MDList.\n"
+    "  To download the titles you follow, see 'mangadex-dl follows --help'.\n"
     "\n"
     "Examples:\n"
     "  Every title in a list, into ~/Manga:\n"

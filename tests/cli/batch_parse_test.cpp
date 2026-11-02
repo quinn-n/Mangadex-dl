@@ -225,7 +225,7 @@ TEST_CASE("batch --help documents FILE, DIR, the CSV format and exit 7, without 
     CHECK(r.out.contains("Symlinks inside DIR are followed"));
     CHECK(r.out.contains("\nExit status:\n"));
     CHECK(r.out.contains(
-        "\n  7   batch/mdlist: titles failed in more than one way (see per-title results)\n"));
+        "\n  7   several titles failed in different ways (see per-title results)\n"));
     CHECK(!r.out.contains("--api-base"));   // hidden: a test and loopback seam, not a user option
     CHECK(!r.out.contains("--title TEXT")); // a per-row column only, not an option
     CHECK(!r.out.contains('\x1b'));
@@ -239,7 +239,7 @@ TEST_CASE(
     CHECK(root.exit_code == 0);
     CHECK(root.err.empty());
     CHECK(root.out.contains("\n  batch "));
-    CHECK(root.out.contains("\n  7   batch/mdlist: "));
+    CHECK(root.out.contains("\n  7   several titles failed in different ways "));
     check_fits_80_columns(root.out);
 
     const Captured download = run_args({"download", "--help"});
@@ -251,7 +251,7 @@ TEST_CASE(
         "For many titles at once, see 'mangadex-dl batch --help' (a CSV file)\n"
         "or 'mangadex-dl mdlist --help' (a MangaDex list).\n\n"
         "Exit status:\n"));
-    CHECK(download.out.contains("\n  7   batch/mdlist: "));
+    CHECK(download.out.contains("\n  7   several titles failed in different ways "));
     check_fits_80_columns(download.out);
 }
 

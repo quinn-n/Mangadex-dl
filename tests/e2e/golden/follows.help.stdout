@@ -1,0 +1,91 @@
+Download every title you follow on MangaDex (needs a login)
+
+
+mangadex-dl follows [OPTIONS] [DIR]
+
+
+POSITIONALS:
+  DIR [.]                           Output directory (created if missing)
+
+OPTIONS:
+  -h, --help                        Print this help message and exit
+      --volumes SPEC [all]          Volumes: all, none or a list like 1,3-5,8-
+      --loose-chapters SPEC [all]   Chapters with no volume (SPEC as --volumes)
+      --layout WORD [volumes]       Split into: volumes, chapters or single file
+  -l, --lang CODE [en]              Language to download (e.g. en, pt-br)
+      --group NAME|UUID             Preferred group; repeat in priority order
+      --data-saver                  Download compressed images (smaller files)
+      --direction WORD [auto]       Page order: auto (by origin), rtl or ltr
+      --overwrite                   Re-download files even if up to date
+  -n, --dry-run                     List the files to write; download nothing
+  -j, --jobs N [8]                  Parallel image downloads, 1 to 8
+      --no-report                   Skip MangaDex@Home reliability reports
+      --fail-fast                   Stop at the first title that fails
+      --dir-per-title               Put each title in a subdirectory of DIR
+      --status WORD,...             Only follows with these reading statuses
+      --credentials FILE            Read login details from FILE
+      --password-stdin              Read the password from stdin
+      --no-input                    Never prompt; fail if a login is needed
+      --version                     Print the version and exit
+      --json                        Write machine-readable JSON to stdout
+  -q, --quiet                       Only print errors
+  -v, --verbose                     Print more detail to stderr (repeatable)
+      --color WORD [auto]           Color stderr: auto, always or never
+
+LOGIN:
+  Reading your follows needs a MangaDex login through a personal API client.
+  Create one at https://mangadex.org/settings (API Clients); a new client
+  may need approval by MangaDex staff before it works. The first run in a
+  terminal asks for the client id and secret, your username and password,
+  logs in, and saves the login (never the password) to
+  $XDG_STATE_HOME/mangadex-dl/session.json (~/.local/state/mangadex-dl/ by
+  default), readable only by you. Later runs, cron jobs included, reuse it
+  until MangaDex ends the session; then run 'mangadex-dl login' again.
+
+  The details can also come from a private file (chmod 600):
+  $XDG_CONFIG_HOME/mangadex-dl/credentials (~/.config/mangadex-dl/ by
+  default) or --credentials FILE, one 'key = value' per line with the keys
+  client_id, client_secret, username and, optionally, password.
+  Never put a password on the command line.
+
+READING STATUS:
+  --status narrows the titles you follow to those whose reading status is
+  one of: reading, on_hold, plan_to_read, dropped, re_reading, completed.
+  Give several separated by commas, or repeat --status. Followed titles
+  without a reading status are left out. The titles keep the order of your
+  follows.
+
+  Only the lists of titles are fetched with your login; the titles
+  themselves are downloaded anonymously, one after another, as with mdlist.
+
+Examples:
+  Log in once, then download everything you follow into ~/Manga:
+    mangadex-dl login
+    mangadex-dl follows ~/Manga
+  Only what you are reading or plan to read, one folder per title:
+    mangadex-dl follows ~/Manga --status reading,plan_to_read --dir-per-title
+  In a script, with the password from a password manager:
+    pass show mangadex | mangadex-dl follows ~/Manga --password-stdin
+  Show what would be written, without downloading anything:
+    mangadex-dl follows ~/Manga --dry-run
+
+Running the same command again skips files that already hold every chapter,
+rebuilds files MangaDex has added chapters to, and downloads titles you have
+followed since the last run.
+
+Symlinks inside DIR are followed: don't point DIR at a directory that others
+can write to. Each title costs several API requests: many follows make a long
+run.
+
+Exit status:
+  0   success
+  1   runtime failure (including a failed write to stdout)
+  2   usage error
+  3   network or API failure (connection, TLS, timeout, server error)
+  4   title or list not found on MangaDex (a private list counts)
+  5   no downloadable chapters matched the language and selection
+  6   incomplete: at least one output file failed
+  7   several titles failed in different ways (see per-title results)
+  8   follows/login: not logged in, or the saved login expired
+  9   follows/login: MangaDex rejected the login details
+  70  internal error (a bug: please report it)

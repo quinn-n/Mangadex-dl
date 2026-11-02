@@ -36,12 +36,10 @@
 #include <expected>
 #include <format>
 #include <memory>
-#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace mangadex_dl::app {
 namespace {
@@ -390,41 +388,6 @@ std::unique_ptr<Command> register_logout(CLI::App& parent, Command*& selected) {
     command->bind(*sub);
     sub->callback([slot = &selected, self = command.get()] { *slot = self; });
     return command;
-}
-
-int run_login_logout_for_testing(std::span<const std::string> args, const GlobalOptions& globals,
-                                 Io& io) {
-    std::vector<const char*> argv{};
-    argv.reserve(args.size() + 1);
-    argv.push_back("mangadex-dl");
-    for (const std::string& arg : args) {
-        argv.push_back(arg.c_str());
-    }
-    if (!std::in_range<int>(argv.size())) {
-        print_usage_line(io, "too many arguments");
-        return exit_code::usage;
-    }
-    // Lifetime: CLI11 holds pointers into `selected` and into every Command. Both are declared
-    // before `app`, so they are destroyed after it, and they live until dispatch below returns.
-    Command* selected = nullptr;
-    std::vector<std::unique_ptr<Command>> commands{};
-    CLI::App app{"login and logout (tests only)", "mangadex-dl"};
-    app.require_subcommand(1);
-    // Before add_subcommand (subcommands copy the formatter), as cli.cpp's configure_help: the
-    // footers are pre-aligned text.
-    app.get_formatter()->enable_footer_formatting(false);
-    commands.push_back(register_login(app, selected));
-    commands.push_back(register_logout(app, selected));
-    try {
-        app.parse(static_cast<int>(argv.size()), argv.data());
-    } catch (const CLI::ParseError& error) {
-        const int rc = app.exit(error, io.out, io.err);
-        return rc == 0 ? exit_code::success : exit_code::usage;
-    }
-    if (selected == nullptr) {
-        return exit_code::internal;
-    }
-    return selected->run(io, globals);
 }
 
 } // namespace mangadex_dl::app

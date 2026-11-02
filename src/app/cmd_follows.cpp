@@ -118,8 +118,8 @@ constexpr std::string_view follows_footer{
     return usage_hint(io, follows_command);
 }
 
-/// Binds every `follows` option to `args` (a Command member, or a test's local that outlives
-/// parse()), in help order: DIR, the shared selection and run options (byte-identical to
+/// Binds every `follows` option to `args` (the Command's member, which outlives parse() and
+/// dispatch), in help order: DIR, the shared selection and run options (byte-identical to
 /// mdlist's), --fail-fast, --dir-per-title, --status, then the auth options. Returns the
 /// `--credentials` option (borrowed from `sub`).
 [[nodiscard]] CLI::Option* bind_follows_options(CLI::App& sub, RawFollowsArgs& args) {
@@ -381,33 +381,6 @@ int run_follows_command(const RawFollowsArgs& args, const GlobalOptions& globals
 }
 
 std::string follows_help_footer() { return std::string{follows_footer} + exit_status_footer(); }
-
-Result<RawFollowsArgs> parse_follows_args_for_testing(std::span<const std::string> args) {
-    std::vector<const char*> argv{};
-    argv.reserve(args.size() + 1);
-    argv.push_back("follows");
-    for (const std::string& arg : args) {
-        argv.push_back(arg.c_str());
-    }
-    if (!std::in_range<int>(argv.size())) {
-        return std::unexpected(Error{.code = Errc::usage, .message = "too many arguments"});
-    }
-    // `raw` and `app` are locals that outlive parse(); the Option* is borrowed from `app`.
-    RawFollowsArgs raw{};
-    CLI::App app{"follows options (tests only)"};
-    const CLI::Option* const credentials = bind_follows_options(app, raw);
-    if (credentials == nullptr) { // CLI11 throws rather than return null; never dereference one
-        return std::unexpected(
-            Error{.code = Errc::failure, .message = "internal error: no --credentials option"});
-    }
-    try {
-        app.parse(static_cast<int>(argv.size()), argv.data());
-    } catch (const CLI::ParseError& error) {
-        return std::unexpected(Error{.code = Errc::usage, .message = error.what()});
-    }
-    record_auth_options(raw.auth, *credentials);
-    return raw;
-}
 
 std::unique_ptr<Command> register_follows(CLI::App& parent, Command*& selected) {
     auto command = std::make_unique<FollowsCommand>();

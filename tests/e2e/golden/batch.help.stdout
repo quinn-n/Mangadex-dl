@@ -71,5 +71,7 @@ Exit status:
   4   title or list not found on MangaDex (a private list counts)
   5   no downloadable chapters matched the language and selection
   6   incomplete: at least one output file failed
-  7   batch/mdlist: titles failed in more than one way (see per-title results)
+  7   several titles failed in different ways (see per-title results)
+  8   follows/login: not logged in, or the saved login expired
+  9   follows/login: MangaDex rejected the login details
   70  internal error (a bug: please report it)

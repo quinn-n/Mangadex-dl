@@ -17,11 +17,9 @@
 #include "cmd_download_run.hpp"
 #include "command.hpp"
 #include "io.hpp"
-#include "mangadex_dl/error.hpp"
 #include "mangadex_dl/follows.hpp"
 
 #include <memory>
-#include <span>
 #include <string>
 
 namespace CLI {
@@ -53,16 +51,8 @@ namespace mangadex_dl::app {
 /// columns, no trailing newline.
 [[nodiscard]] std::string follows_help_footer();
 
-/// Tests only: a throwaway CLI::App with only `follows`'s options, bound as register_follows
-/// binds them, parsing `args` (no argv[0]) and recording credentials_given as the Command does.
-/// A CLI11 parse error -> Errc::usage with CLI11's what() verbatim, which may echo an argument's
-/// value: never show that message to a user (cli.cpp maps parse errors without values, T19).
-[[nodiscard]] Result<RawFollowsArgs>
-parse_follows_args_for_testing(std::span<const std::string> args);
-
 /// Adds `follows` to `parent`. The returned Command owns the bound variables: keep it alive until
 /// dispatch has returned. Its callback stores the Command in `selected` when `follows` is chosen.
-/// Not registered in cli.cpp yet (follows plan T19).
 [[nodiscard]] std::unique_ptr<Command> register_follows(CLI::App& parent, Command*& selected);
 
 } // namespace mangadex_dl::app

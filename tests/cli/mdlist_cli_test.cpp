@@ -1257,7 +1257,8 @@ TEST_CASE("mdlist: the help footer explains LIST, fits 80 columns and ends with 
     const std::string footer = app::mdlist_help_footer();
     CHECK(footer.starts_with("LIST:\n  A public MangaDex custom list (MDList): its UUID, or its "));
     CHECK(footer.contains("    mangadex-dl mdlist <uuid> ~/Manga --dir-per-title\n"));
-    CHECK(footer.contains("  To download the titles you follow, add them to a public MDList.\n"));
+    CHECK(footer.contains(
+        "  To download the titles you follow, see 'mangadex-dl follows --help'.\n"));
     CHECK(footer.ends_with(app::exit_status_footer()));
     CHECK(!footer.ends_with('\n'));
     for (const std::string& line : lines_of(footer)) {
