@@ -435,3 +435,49 @@ cli_e2e_case(NAME tty-no-input-no-color
              TTY ENV NO_COLOR=1 EXPECT_EXIT 8 EXPECT_NO_ANSI
              EXPECT_STDOUT_REGEX "^mangadex-dl: error: ${_follows_not_logged_in_re}\n$"
              EXPECT_ABSENT out ${_follows_session})
+
+# ---- rev3 S19: --credentials for another account than the saved login ---------------------------------
+# PRE_RUN saves fixture-user's login; the file names fixture-user-revoke-503 (its own tokens). By
+# default that run logs in with the file for this run only: one warning, the saved login byte for
+# byte unchanged (EXPECT_UNCHANGED). With --switch-account it is replaced, and the warning says so
+# (only once the new login is saved). A dry run, so nothing is downloaded.
+set(_follows_other_creds ${_follows_creds}/credentials-revoke-503)
+string(REGEX REPLACE "([][.+*?^$()|\\\\])" "\\\\\\1" _follows_other_creds_re
+       "${CLI_E2E_FIXTURES_DIR}/follows-clean/creds/credentials-revoke-503")
+cli_e2e_case(NAME other-account-run-only
+             PRE_RUN ${_follows_seed_args}
+             ARGS follows out --dry-run --credentials ${_follows_other_creds} ${_follows_clean_api}
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_follows_clean_paths_re}"
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: using ${_follows_other_creds_re} for this run only; the saved login for fixture-user at [^\n]*/state/mangadex-dl/fixture-session\\.json is unchanged \\(pass --switch-account to replace it\\)\n$"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out
+             EXPECT_UNCHANGED ${_follows_session})
+cli_e2e_case(NAME other-account-run-only-quiet
+             PRE_RUN ${_follows_seed_args}
+             ARGS follows out --dry-run -q --credentials ${_follows_other_creds} ${_follows_clean_api}
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_follows_clean_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT out
+             EXPECT_UNCHANGED ${_follows_session})
+# -v after the switch: the replaced warning, then the login note names the new account.
+cli_e2e_case(NAME switch-account
+             PRE_RUN ${_follows_seed_args}
+             ARGS follows out --dry-run -v --switch-account --credentials ${_follows_other_creds}
+                  ${_follows_clean_api}
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_follows_clean_paths_re}"
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: the saved login for fixture-user at [^\n]*/state/mangadex-dl/fixture-session\\.json is replaced by the login from ${_follows_other_creds_re}\nmangadex-dl: logged in to MangaDex as fixture-user-revoke-503 \\(password\\)\n"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out
+             EXPECT_FILES ${_follows_session})
+# The saved account itself with --switch-account: nothing changes (the saved token is reused).
+cli_e2e_case(NAME switch-account-same
+             PRE_RUN ${_follows_seed_args}
+             ARGS follows out --dry-run --switch-account ${_follows_clean_c}
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_follows_clean_paths_re}" EXPECT_STDERR_EMPTY
+             EXPECT_ABSENT out
+             EXPECT_UNCHANGED ${_follows_session})
+# --switch-account without --credentials: exit 2 before anything is opened.
+cli_e2e_case(NAME usage-switch-account
+             ARGS follows out --switch-account ${_follows_clean_api}
+             EXPECT_EXIT 2 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: --switch-account needs --credentials\n${_follows_hint_re}$"
+             EXPECT_ABSENT out ${_follows_session})

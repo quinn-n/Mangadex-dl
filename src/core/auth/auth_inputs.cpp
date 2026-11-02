@@ -8,9 +8,16 @@
 // read to EOF, never more than cap + 1 bytes consumed), but reads into one buffer sized up front
 // instead of growing a std::string: growth would leave copies of the password in freed memory.
 // That buffer is wiped on every path, and only the first line leaves it, as a Secret.
+//
+// The read is interruptible (rev3 S18): the SIGINT/SIGTERM handlers use SA_RESTART, so a blocking
+// read() on a stalled pipe would restart and never see Ctrl-C. Each step therefore poll()s for at
+// most 100 ms (poll() is never restarted after a handler) and checks interrupt_requested() before
+// every wait, as TerminalPrompter does (src/app/cmd_auth_prompt.cpp); read() is called only once
+// poll() reports the descriptor ready, and EAGAIN (a non-blocking stdin) just waits again.
 #include "mangadex_dl/attributes.hpp"
 #include "mangadex_dl/auth.hpp"
 #include "mangadex_dl/error.hpp"
+#include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/options.hpp"
 #include "mangadex_dl/secret.hpp"
 
@@ -24,6 +31,7 @@
 #include <system_error>
 #include <utility>
 
+#include <sys/poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -31,11 +39,16 @@
 namespace mangadex_dl {
 namespace {
 
-inline constexpr std::string_view no_password_text =
-    "--password-stdin was given, but stdin held no password";
+/// The longest wait before interrupt_requested() is checked again (rev3 S18: at least every
+/// 100 ms).
+inline constexpr int poll_interval_ms = 100;
 
 [[nodiscard]] Error no_password() {
-    return Error{.code = Errc::usage, .message = std::string{no_password_text}};
+    return Error{.code = Errc::usage, .message = std::string{no_password_stdin_text}};
+}
+
+[[nodiscard]] Error interrupted() {
+    return Error{.code = Errc::interrupted, .message = "interrupted"};
 }
 
 /// Errc::failure "cannot read stdin: <why>" (read_bounded_fd's wording).
@@ -73,6 +86,63 @@ private:
     return std::unexpected(cannot_read_stdin("not a regular file, pipe or terminal"));
 }
 
+/// Is `event` set in a pollfd's `revents`? (The flags are signed shorts and ints.)
+[[nodiscard]] constexpr bool has_event(short revents, int event) noexcept {
+    return (static_cast<unsigned>(revents) & static_cast<unsigned>(event)) != 0U;
+}
+
+/// Is `error` (an errno value) worth another wait?
+[[nodiscard]] constexpr bool retryable(int error) noexcept {
+    return error == EINTR || error == EAGAIN;
+}
+
+/// What one read_step did.
+enum class Step {
+    read,  ///< `count` bytes arrived
+    end,   ///< end of input
+    again, ///< nothing yet: check for an interrupt, then wait again
+};
+
+struct StepResult {
+    Step step = Step::again;
+    std::size_t count = 0; ///< bytes read (Step::read only)
+};
+
+/// One poll() of at most poll_interval_ms, then at most one read() into `unread` (never empty).
+[[nodiscard]] Result<StepResult> read_step(int fd, std::span<char> unread) {
+    pollfd entry{.fd = fd, .events = POLLIN, .revents = 0};
+    const int ready = ::poll(&entry, 1, poll_interval_ms);
+    if (ready < 0) {
+        const int err = errno;
+        if (retryable(err)) {
+            return StepResult{};
+        }
+        return std::unexpected(cannot_read_stdin_errno(err));
+    }
+    if (ready == 0) {
+        return StepResult{};
+    }
+    if (has_event(entry.revents, POLLNVAL)) {
+        return std::unexpected(no_password()); // not an open descriptor: a closed stdin
+    }
+    // POLLIN, POLLHUP or POLLERR: read() tells which (buffered bytes come before the end).
+    const ::ssize_t count = ::read(fd, unread.data(), unread.size());
+    if (count < 0) {
+        const int err = errno;
+        if (retryable(err)) {
+            return StepResult{};
+        }
+        if (err == EBADF) {
+            return std::unexpected(no_password());
+        }
+        return std::unexpected(cannot_read_stdin_errno(err));
+    }
+    if (count == 0) {
+        return StepResult{.step = Step::end};
+    }
+    return StepResult{.step = Step::read, .count = static_cast<std::size_t>(count)};
+}
+
 } // namespace
 
 Result<Secret> read_password_stdin(int fd) {
@@ -97,25 +167,27 @@ Result<Secret> read_password_stdin(int fd) {
     std::string buffer(limit, '\0');
     const WipeOnExit wipe{buffer};
     std::size_t got = 0;
-    while (got < limit) {
+    bool ended = false;
+    while (!ended && got < limit) {
+        if (interrupt_requested()) {
+            return std::unexpected(interrupted());
+        }
         // got <= max_password_stdin_bytes here, so at least one byte is asked for, and never more
         // than cap + 1 bytes are consumed in total.
-        const std::span<char> unread = std::span<char>{buffer}.subspan(got);
-        const ::ssize_t count = ::read(fd, unread.data(), unread.size());
-        if (count < 0) {
-            const int err = errno;
-            if (err == EINTR) {
-                continue;
-            }
-            if (err == EBADF) {
-                return std::unexpected(no_password());
-            }
-            return std::unexpected(cannot_read_stdin_errno(err));
+        const Result<StepResult> step = read_step(fd, std::span<char>{buffer}.subspan(got));
+        if (!step) {
+            return std::unexpected(step.error());
         }
-        if (count == 0) {
+        switch (step->step) {
+        case Step::read:
+            got += step->count;
+            break;
+        case Step::end:
+            ended = true;
+            break;
+        case Step::again:
             break;
         }
-        got += static_cast<std::size_t>(count);
     }
     if (got == 0 || got > max_password_stdin_bytes) {
         return std::unexpected(no_password());
@@ -139,6 +211,10 @@ Result<void> check_raw_auth_args(const RawAuthArgs& raw) {
     if (raw.credentials_given && raw.credentials.empty()) {
         return std::unexpected(
             Error{.code = Errc::usage, .message = "--credentials needs a file name"});
+    }
+    if (raw.switch_account && !raw.credentials_given) {
+        return std::unexpected(
+            Error{.code = Errc::usage, .message = "--switch-account needs --credentials"});
     }
     return {};
 }

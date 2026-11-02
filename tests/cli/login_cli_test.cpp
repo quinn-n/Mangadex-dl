@@ -513,18 +513,53 @@ TEST_CASE("login cli: a state directory that is a file -> 1, said once (AC22)", 
                       "{} is not usable: it is not a directory\n",
                       h.session_file().string(), h.state_dir().string()));
     CHECK(read_file(h.state_dir()) == "not a directory");
-    CHECK(h.requests() == std::vector<std::string>{h.token_url()});
+    CHECK(h.requests().empty()); // rev3 S20: stopped before the token request
     run.check_no_secret();
 }
 
-TEST_CASE("login cli: without a home directory the login is not saved -> 1", "[login cli]") {
+TEST_CASE("login cli: without a home directory -> 1 before any prompt or request (rev3 S20)",
+          "[login cli]") {
     const Harness h{};
+    // Terminals and a prompter, and only the client in the file: without S20 it would ask for
+    // the password first.
+    FakePrompter prompter{};
+    prompter.answer(mdx::fixture_password);
     const Outcome run =
-        run_login(h, login_args(h, "credentials"), Setup{.env = app::EnvSnapshot{}});
+        run_login(h, login_args(h, "credentials-client"),
+                  Setup{.tty = terminals, .prompter = &prompter, .env = app::EnvSnapshot{}});
     CHECK(run.exit_code == 1);
     CHECK(run.out.empty());
     CHECK(run.err == "mangadex-dl: error: could not save the MangaDex login: there is no home "
                      "directory (HOME is not set to an absolute path)\n");
+    CHECK(prompter.events().empty());
+    CHECK(h.requests().empty());
+}
+
+TEST_CASE("login cli: a state directory others can access -> 1 before any prompt or request "
+          "(rev3 S20)",
+          "[login cli]") {
+    const Harness h{};
+    h.seed(h.session(mdx::fixture_refresh_1, mdx::fixture_access_1));
+    const std::string before = read_file(h.session_file());
+    fs::permissions(h.state_dir(), fs::perms::all, fs::perm_options::replace);
+    FakePrompter prompter{};
+    prompter.answer(mdx::fixture_password);
+    const Outcome run = run_login(h, login_args(h, "credentials-client"),
+                                  Setup{.tty = terminals, .prompter = &prompter});
+    fs::permissions(h.state_dir(), fs::perms::owner_all, fs::perm_options::replace);
+    CHECK(run.exit_code == 1);
+    CHECK(run.out.empty());
+    const std::string why = std::format("the directory {} is not usable: other users can access it "
+                                        "(mode 0777)",
+                                        h.state_dir().string());
+    CHECK(run.err == std::format("mangadex-dl: warning: ignoring the saved login at {}: {}\n"
+                                 "mangadex-dl: error: could not save the MangaDex login to {}: "
+                                 "{}\n",
+                                 h.session_file().string(), why, h.session_file().string(), why));
+    CHECK(prompter.events().empty());
+    CHECK(h.requests().empty());
+    CHECK(read_file(h.session_file()) == before);
+    run.check_no_secret();
 }
 
 TEST_CASE("login cli: report_login for a saved, an unsynced and a failed save", "[login cli]") {
@@ -979,4 +1014,40 @@ TEST_CASE("login cli: the help footers fit 80 columns and end with the exit-stat
                ContainsSubstring("Nothing is written to stdout, also with --json."));
     CHECK_THAT(app::logout_help_footer(),
                ContainsSubstring("Nothing is written to stdout, also with --json."));
+}
+
+// ---- rev3 S19: login --credentials for another account --------------------------------------
+
+TEST_CASE("login cli: --credentials for another account replaces the saved login, with a warning "
+          "(rev3 S19)",
+          "[login cli]") {
+    const Harness h{};
+    h.seed(h.session(mdx::fixture_refresh_1, mdx::fixture_access_1));
+    const fs::path other = h.creds("credentials-revoke-503");
+    const Outcome run = run_login(h, login_args(h, "credentials-revoke-503"));
+    CHECK(run.exit_code == 0);
+    CHECK(run.out.empty());
+    CHECK(run.err ==
+          std::format("mangadex-dl: warning: the saved login at {} is for another account than "
+                      "the one in {}; logging in with {} replaces it if the login works\n"
+                      "mangadex-dl: logged in to MangaDex as {}; the login is saved in {}\n",
+                      h.session_file().string(), other.string(), other.string(),
+                      mdx::fixture_user_revoke_503, h.session_file().string()));
+    CHECK(h.read_back().username == mdx::fixture_user_revoke_503);
+    CHECK(h.requests() == std::vector<std::string>{h.token_url()}); // the old login is not revoked
+    run.check_no_secret();
+}
+
+TEST_CASE("login cli: a refused login for another account leaves the saved login (rev3 S19)",
+          "[login cli]") {
+    const Harness h{};
+    h.seed(h.session(mdx::fixture_refresh_1, mdx::fixture_access_1));
+    const std::string before = read_file(h.session_file());
+    const Outcome run = run_login(h, login_args(h, "credentials-wrong-password-400"));
+    CHECK(run.exit_code == 9);
+    CHECK(run.out.empty());
+    CHECK_THAT(run.err, StartsWith("mangadex-dl: warning: the saved login at "));
+    CHECK_THAT(run.err, ContainsSubstring("mangadex-dl: error: MangaDex rejected the username or "
+                                          "password for fixture-user-400 (invalid_grant)"));
+    CHECK(read_file(h.session_file()) == before);
 }

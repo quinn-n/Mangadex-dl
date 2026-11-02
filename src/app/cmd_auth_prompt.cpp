@@ -15,9 +15,15 @@
 // 4. the saved termios is restored (RAII, on every path, exceptions included), then a newline is
 //    written, because the user's Enter was not echoed.
 // ISIG stays on, so Ctrl-C still raises SIGINT while echo is off.
+//
+// read_password_from_terminal (--password-stdin on a terminal, rev3 S18) reuses the same pieces in
+// the same order: the reservation, EchoOff (before anything is written), the hint, read_line,
+// then the restore. Its hint ends with a newline, so it writes nothing after the read.
 #include "cmd_auth_prompt.hpp"
 
 #include "cmd_download_output.hpp"
+#include "mangadex_dl/auth.hpp"
+#include "mangadex_dl/error.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/prompt.hpp"
 #include "mangadex_dl/secret.hpp"
@@ -25,6 +31,7 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <expected>
 #include <ios>
 #include <optional>
 #include <ostream>
@@ -116,6 +123,8 @@ public:
 
     /// True when the terminal's ECHO flag is confirmed off.
     [[nodiscard]] bool echo_off() const noexcept { return echo_off_; }
+    /// False when tcgetattr failed: `fd` is not a terminal, and nothing was changed.
+    [[nodiscard]] bool is_terminal() const noexcept { return engaged_; }
 
 private:
     int fd_ = -1;
@@ -230,7 +239,57 @@ void write_text(std::ostream& out, std::string_view text) {
     }
 }
 
+[[nodiscard]] Error no_password() {
+    return Error{.code = Errc::usage, .message = std::string{no_password_stdin_text}};
+}
+
+/// What read_line's status means for --password-stdin on a terminal. `line` is the kept answer.
+[[nodiscard]] Result<Secret> password_result(PromptStatus status, Secret& line) {
+    switch (status) {
+    case PromptStatus::answered:
+        if (line.reveal().contains('\0') || line.size() > max_password_stdin_bytes) {
+            return std::unexpected(no_password()); // the pipe rules: a NUL is no password
+        }
+        return std::move(line);
+    case PromptStatus::empty:
+    case PromptStatus::too_long:
+        return std::unexpected(no_password());
+    case PromptStatus::interrupted:
+        return std::unexpected(Error{.code = Errc::interrupted, .message = "interrupted"});
+    case PromptStatus::unavailable:
+        break;
+    }
+    return std::unexpected(
+        Error{.code = Errc::failure, .message = "cannot read stdin: the terminal can't be read"});
+}
+
 } // namespace
+
+Result<Secret> read_password_from_terminal(int fd, std::ostream& err) {
+    if (fd < 0) {
+        return read_password_stdin(fd); // a closed stdin: its own message
+    }
+    // Allocated before the terminal is touched (see the top of the file).
+    std::string hint{password_stdin_terminal_hint};
+    hint.push_back('\n');
+    Secret line{};
+    line.reserve(kept_bytes_cap);
+    std::optional<EchoOff> quiet{};
+    quiet.emplace(fd);
+    if (!quiet->is_terminal()) {
+        quiet.reset();
+        return read_password_stdin(fd); // not a terminal after all: the pipe and file rules
+    }
+    if (!quiet->echo_off()) {
+        return std::unexpected(Error{.code = Errc::failure,
+                                     .message = "cannot read stdin: the terminal's echo can't be "
+                                                "turned off"}); // ~EchoOff restores
+    }
+    write_text(err, hint);
+    const PromptStatus status = read_line(fd, line);
+    quiet.reset(); // echo back on before the caller writes anything
+    return password_result(status, line);
+}
 
 TerminalPrompter::TerminalPrompter(int fd, std::ostream& err) noexcept : fd_(fd), err_(&err) {}
 

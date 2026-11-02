@@ -120,8 +120,10 @@ constexpr std::string_view follows_footer{
 
 /// Binds every `follows` option to `args` (the Command's member, which outlives parse() and
 /// dispatch), in help order: DIR, the shared selection and run options (byte-identical to
-/// mdlist's), --fail-fast, --dir-per-title, --status, then the auth options. Returns the
-/// `--credentials` option (borrowed from `sub`).
+/// mdlist's), --fail-fast, --dir-per-title, --status, the auth options, then --switch-account
+/// (follows only, rev3 S19; "needs --credentials" is checked after parse, by check_raw_auth_args,
+/// because CLI11's needs() would word it "requires"). Returns the `--credentials` option
+/// (borrowed from `sub`).
 [[nodiscard]] CLI::Option* bind_follows_options(CLI::App& sub, RawFollowsArgs& args) {
     // Help text: each description fits the 44-column right column on one line.
     sub.add_option("DIR", args.defaults.dir, "Output directory (created if missing)")
@@ -139,7 +141,11 @@ constexpr std::string_view follows_footer{
         ->expected(1)
         ->allow_extra_args(false)
         ->multi_option_policy(CLI::MultiOptionPolicy::TakeAll);
-    return bind_auth_options(sub, args.auth);
+    CLI::Option* const credentials = bind_auth_options(sub, args.auth);
+    sub.add_flag("--switch-account", args.auth.switch_account,
+                 "With --credentials for another account, log in as that account and replace the "
+                 "saved login");
+    return credentials;
 }
 
 /// The collection fetch over the shared backend, with the session as the token provider: its

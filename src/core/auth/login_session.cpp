@@ -6,8 +6,13 @@
 //
 // open():
 //   endpoints (nullopt -> usage, no I/O) -> state directory (create, 0700) -> the session lock
-//   -> read and parse the slot (fixture slot iff a fixture API base) -> drop it, with a warning,
-//   if it names another client or account than the credentials file -> the token:
+//   -> read and parse the slot (fixture slot iff a fixture API base) -> password mode without a
+//   usable store fails here (rev3 S20: before any prompt or request) -> a saved login naming
+//   another client or account than the credentials file (rev3 S19) is dropped: password mode
+//   replaces it once the login worked; reuse mode logs in with the file's details for this run
+//   only (persisting is off, and the lock and the directory are let go at once, so the saved
+//   login stays byte-for-byte as it was), or with switch_account replaces it and says so only
+//   once the new login is saved -> the token:
 //     reuse:    a saved access token valid for reuse_min_validity -> 0 requests (how = saved);
 //               else a refresh grant, if there is a refresh token not known to be expired;
 //               a refresh answered invalid_grant (the session ended) -> the password grant;
@@ -188,6 +193,24 @@ enum class Field {
     return std::format("ignoring the saved login at {}: {}", session_path.string(), why);
 }
 
+/// How a saved login differs from the credentials file (rev3 S19).
+enum class Mismatch {
+    none,
+    client,  ///< another client_id
+    account, ///< the same client (or none in the file), another username
+};
+
+[[nodiscard]] std::string_view mismatch_noun(Mismatch mismatch) noexcept {
+    switch (mismatch) {
+    case Mismatch::client:
+        return "API client";
+    case Mismatch::none:
+    case Mismatch::account:
+        break;
+    }
+    return "account";
+}
+
 /// Where a FileProblem with the state directory means a saved login may exist but can't be used
 /// (rather than "there is nowhere to save one").
 [[nodiscard]] bool hides_saved_login(FileProblemKind kind) noexcept {
@@ -233,6 +256,11 @@ struct SessionState {
     std::filesystem::path credentials_path{}; ///< for messages only
     LoginHow how = LoginHow::saved;
     std::vector<std::string> late_warnings{}; ///< raised after open(); see take_late_warnings()
+    /// rev3 S19, reuse without switch_account: the credentials file names another account than the
+    /// saved login, so nothing is ever written (persist() returns at once, without a warning).
+    bool run_only = false;
+    /// rev3 S19, reuse with switch_account: the warning added once the new login is saved.
+    std::optional<std::string> replaced_warning{};
 };
 
 /// The spec's save warning.
@@ -246,12 +274,29 @@ struct SessionState {
         "could not save the MangaDex login: {}; the next run will need the password again", why);
 }
 
+/// rev3 S20: `login` without a usable state directory, in the wording `login` reports a failed
+/// save with: `could not save the MangaDex login[ to <path>]: <why>` (exit 1).
+[[nodiscard]] AuthFailure no_store_failure(const SessionState& s) {
+    const std::string why = s.no_store_reason.empty()
+                                ? std::string{"the state directory is not usable"}
+                                : s.no_store_reason;
+    if (s.session_path.has_value()) {
+        return local_failure(Errc::failure,
+                             std::format("could not save the MangaDex login to {}: {}",
+                                         s.session_path->string(), why));
+    }
+    return local_failure(Errc::failure, std::format("could not save the MangaDex login: {}", why));
+}
+
 /// Writes the session in memory. Precondition for StateDir::write: the SessionLock is held (the
 /// stale-temp sweep relies on it), which `dir` being engaged guarantees. A failure is recorded in
 /// `notes` as save_error plus the spec's warning, or, after open() (`notes` null), as a late
 /// warning; it is never retried or rolled back, also when the new file is already in place
 /// ("saved, but cannot sync the state directory").
 void persist(SessionState& s, LoginNotes* notes) {
+    if (s.run_only) {
+        return; // rev3 S19: this run's login is never saved, and that is not a failure
+    }
     std::string why{};
     const bool have_store = s.dir.has_value() && s.lock.held();
     if (have_store) {
@@ -578,24 +623,58 @@ void apply_grant(SessionState& s, TokenGrant grant, GrantKind kind) {
     return std::optional<Session>{std::move(*saved)};
 }
 
+/// Whether `saved` names another client or account than the credentials file.
+[[nodiscard]] Mismatch mismatch_of(const CredentialsFile& file, const Session& saved) noexcept {
+    if (file.client_id.has_value() && *file.client_id != saved.client_id) {
+        return Mismatch::client;
+    }
+    if (file.username.has_value() && *file.username != saved.username) {
+        return Mismatch::account;
+    }
+    return Mismatch::none;
+}
+
+/// A saved login for another client or account than the credentials file (rev3 S19), which the
+/// caller then drops: the warning (or, for a switch, the warning kept for later) and, for a
+/// run-only login, the store let go at once. `session_path` is the saved login's.
+void handle_mismatch(SessionState& s, const std::filesystem::path& session_path, Mismatch mismatch,
+                     const Session& saved, LoginMode mode, bool switch_account, LoginNotes& notes) {
+    const std::string credentials = s.credentials_path.empty() ? std::string{"the credentials file"}
+                                                               : s.credentials_path.string();
+    const std::string_view account = utf8_prefix(saved.username, max_username_display_bytes);
+    if (mode == LoginMode::password) {
+        notes.warnings.push_back(std::format(
+            "the saved login at {} is for another {} than the one in {}; logging in with {} "
+            "replaces it if the login works",
+            session_path.string(), mismatch_noun(mismatch), credentials, credentials));
+        return;
+    }
+    if (switch_account) {
+        s.replaced_warning =
+            std::format("the saved login for {} at {} is replaced by the login from {}", account,
+                        session_path.string(), credentials);
+        return;
+    }
+    notes.warnings.push_back(std::format("using {} for this run only; the saved login for {} at {} "
+                                         "is unchanged (pass --switch-account to replace it)",
+                                         credentials, account, session_path.string()));
+    // Nothing will be written: let the lock go now (before the directory, as ~State does), so
+    // another run that uses the saved login is not kept waiting by this one.
+    s.run_only = true;
+    s.lock = SessionLock{};
+    s.dir.reset();
+}
+
 /// The details in the Q1 order (the credentials file > the saved session) and the saved tokens.
-/// A saved session for another client or account than the credentials file is dropped with a
-/// warning first.
+/// A saved session for another client or account than the credentials file is dropped first
+/// (handle_mismatch).
 void seed_session(SessionState& s, CredentialsFile& file, std::optional<Session> saved,
-                  LoginNotes& notes) {
+                  LoginMode mode, bool switch_account, LoginNotes& notes) {
     if (saved.has_value() && s.session_path.has_value()) {
-        const std::string credentials = s.credentials_path.empty()
-                                            ? std::string{"the credentials file"}
-                                            : s.credentials_path.string();
-        if (file.client_id.has_value() && *file.client_id != saved->client_id) {
-            notes.warnings.push_back(ignore_warning(
-                *s.session_path,
-                std::format("it is for another API client than the one in {}", credentials)));
-            saved.reset();
-        } else if (file.username.has_value() && *file.username != saved->username) {
-            notes.warnings.push_back(ignore_warning(
-                *s.session_path,
-                std::format("it is for another account than the one in {}", credentials)));
+        if (const Mismatch mismatch = mismatch_of(file, *saved); mismatch != Mismatch::none) {
+            // A copy: handle_mismatch changes `s`, so it gets no reference into it.
+            const std::filesystem::path session_path = *s.session_path;
+            handle_mismatch(s, session_path, mismatch, *saved, mode, switch_account, notes);
             saved.reset();
         }
     }
@@ -666,7 +745,13 @@ LoginSession::open(LoginRequest request, const AuthServices& services,
     if (!saved) {
         return std::unexpected(std::move(saved).error());
     }
-    seed_session(s, request.credentials, std::move(*saved), notes);
+    if (request.mode != LoginMode::reuse && !s.dir.has_value()) {
+        // rev3 S20: `login` exists to save the login; without a usable store it stops before any
+        // prompt or request, with the save failure's wording.
+        return std::unexpected(no_store_failure(s));
+    }
+    seed_session(s, request.credentials, std::move(*saved), request.mode, request.switch_account,
+                 notes);
 
     const std::int64_t now = unix_now(*s.clock);
     if (request.mode == LoginMode::reuse && s.session.access_token.has_value() &&
@@ -686,6 +771,11 @@ LoginSession::open(LoginRequest request, const AuthServices& services,
             return std::unexpected(interrupted_failure());
         }
     }
+    if (s.replaced_warning.has_value() && !notes.save_error.has_value()) {
+        // rev3 S19: said only once the new login worked and was saved.
+        notes.warnings.push_back(std::move(*s.replaced_warning));
+    }
+    s.replaced_warning.reset();
     notes.username = s.session.username;
     notes.how = s.how;
     return std::make_unique<LoginSession>(Key{}, std::move(state));

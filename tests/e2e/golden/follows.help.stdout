@@ -26,6 +26,9 @@ OPTIONS:
       --credentials FILE            Read login details from FILE
       --password-stdin              Read the password from stdin
       --no-input                    Never prompt; fail if a login is needed
+      --switch-account              With --credentials for another account, log
+                                    in as that account and replace the saved
+                                    login
       --version                     Print the version and exit
       --json                        Write machine-readable JSON to stdout
   -q, --quiet                       Only print errors

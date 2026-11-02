@@ -123,15 +123,17 @@ enum class SaveOutcome {
 ///     `Run 'mangadex-dl <command> --help' ...`) before any file, stdin or request is touched;
 ///     then guard_secrets(), before any secret is read;
 ///  2. --password-stdin, if given, is read from io.stdin_fd (always, even if a session would make
-///     it unnecessary): an empty one is exit 2, a read error exit 1;
+///     it unnecessary): with io.stdin_tty through read_password_from_terminal (echo off, the
+///     hint line first), else read_password_stdin. An empty one is exit 2, a read error exit 1,
+///     an interrupt prints nothing (main() re-raises the signal);
 ///  3. the credentials file: `args.credentials` when credentials_given (a missing file is exit 1),
 ///     else default_credentials_path(user_dirs(io.env)) (a missing default file is fine): exit 1
 ///     on any problem;
 ///  4. the prompter: only when io.stdin_tty && io.stderr_tty && !no_input && !password_stdin, then
 ///     io.prompter, or a TerminalPrompter over io.stdin_fd and io.err; otherwise none (a missing
 ///     detail is then exit 8);
-///  5. LoginSession::open, with its own stop source driven by an InterruptBridge (joined before
-///     this returns).
+///  5. LoginSession::open (with args.switch_account), with its own stop source driven by an
+///     InterruptBridge (joined before this returns).
 ///
 /// On success it prints notes.warnings (print_warning) and, with -v, `logged in to MangaDex as
 /// <username> (saved login|refreshed|password)`, then returns the phase. With LoginMode::password

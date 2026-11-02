@@ -14,6 +14,10 @@
 // the reason; catch_discover_tests sets SKIP_RETURN_CODE 4, so ctest reports them as Skipped,
 // never as Passed. A failure after posix_openpt succeeded is a real failure.
 //
+// rev3 S18: read_password_from_terminal (--password-stdin on a terminal) over the same pty: echo
+// off while reading, the hint, Enter and Ctrl-D, an interrupt (simulated and a real SIGINT), echo
+// restored on every path, and the pipe fallback.
+//
 // Pipe cases cover what a canonical-mode terminal can't produce (an ICANON line stops at 4095
 // bytes): the too-long answer, the 4096-byte boundary, '\r\n', end of input, and Echo::off on a
 // descriptor that is not a terminal.
@@ -21,13 +25,17 @@
 // Catch2 test names start with "prompt:" so `pixi run tsan -R 'cli\.prompt'` selects them.
 
 #include "app/cmd_auth_prompt.hpp"
+#include "mangadex_dl/auth.hpp"
+#include "mangadex_dl/error.hpp"
 #include "mangadex_dl/fs/output_dir.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/prompt.hpp"
+#include "mangadex_dl/secret.hpp"
 #include "support/pty_pair.hpp"
 
 #include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <atomic>
@@ -35,6 +43,7 @@
 #include <chrono>
 #include <cstddef>
 #include <ios>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <streambuf>
@@ -530,4 +539,118 @@ TEST_CASE("prompt: questions and notices are made terminal-safe", "[prompt]") {
         CHECK(reply.status == md::PromptStatus::answered);
         CHECK(err.str() == "MangaDex password for a?b: ");
     }
+}
+
+// ---- --password-stdin on a terminal (rev3 S18) --------------------------------------------------
+// read_password_from_terminal over the pty slave. The typist types only once ECHO is off (else it
+// gives up and the test fails on the status), which proves the read ran with echo off.
+
+namespace {
+
+[[nodiscard]] std::string hint_line() {
+    return std::string{md::app::password_stdin_terminal_hint} + "\n";
+}
+
+} // namespace
+
+TEST_CASE("prompt: --password-stdin on a terminal reads one line with echo off (rev3 S18)",
+          "[prompt]") {
+    const FlagReset reset{};
+    const mdt::PtyPair pty = require_pty();
+    const tcflag_t before = local_flags(pty.slave.get());
+    REQUIRE((before & echo_flag) != 0);
+
+    std::ostringstream err{};
+    // Enter ends the line; Ctrl-D after some text hands it over, a second Ctrl-D is the end of
+    // input; only the first line is the password.
+    const std::string typed = GENERATE(std::string{"s3cret\n"}, std::string{"s3cret\x04\x04"},
+                                       std::string{"s3cret\nnext line\n"});
+    CAPTURE(typed);
+    const std::string expected = "s3cret";
+    Typist typist{pty.master.get(), TypistPlan{.text = typed}};
+    const md::Result<md::Secret> password =
+        md::app::read_password_from_terminal(pty.slave.get(), err);
+    typist.join();
+
+    CHECK_FALSE(typist.timed_out());
+    CHECK(typist.wrote());
+    REQUIRE(password.has_value());
+    CHECK(password->reveal() == expected);
+    CHECK(local_flags(pty.slave.get()) == before); // echo restored
+    CHECK(err.str() == hint_line());               // the hint, and nothing after the read
+    const std::string echoed = drain(pty.master.get(), milliseconds{200});
+    CHECK(echoed.find("s3cret") == std::string::npos);
+}
+
+TEST_CASE("prompt: --password-stdin on a terminal: Enter or Ctrl-D alone holds no password",
+          "[prompt]") {
+    const FlagReset reset{};
+    const mdt::PtyPair pty = require_pty();
+    const tcflag_t before = local_flags(pty.slave.get());
+    const std::string typed = GENERATE(std::string{"\n"}, std::string{"\x04"});
+    CAPTURE(typed);
+
+    std::ostringstream err{};
+    Typist typist{pty.master.get(), TypistPlan{.text = typed}};
+    const md::Result<md::Secret> password =
+        md::app::read_password_from_terminal(pty.slave.get(), err);
+    typist.join();
+
+    CHECK_FALSE(typist.timed_out());
+    REQUIRE_FALSE(password.has_value());
+    CHECK(password.error().code == md::Errc::usage);
+    CHECK(password.error().message == md::no_password_stdin_text);
+    CHECK(local_flags(pty.slave.get()) == before);
+    CHECK(err.str() == hint_line());
+}
+
+TEST_CASE("prompt: an interrupt during --password-stdin on a terminal restores echo (rev3 S18)",
+          "[prompt]") {
+    const FlagReset reset{};
+    const mdt::PtyPair pty = require_pty();
+    const tcflag_t before = local_flags(pty.slave.get());
+    const bool real_signal = GENERATE(false, true);
+    CAPTURE(real_signal);
+    std::optional<md::Result<md::ScopedInterruptHandlers>> handlers{};
+    if (real_signal) {
+        handlers.emplace(md::ScopedInterruptHandlers::install()); // SA_RESTART, as in the app
+        REQUIRE(handlers->has_value());
+    }
+
+    std::ostringstream err{};
+    // Once echo is off, the typist interrupts instead of typing.
+    Typist typist{pty.master.get(),
+                  TypistPlan{.then = real_signal ? Then::send_sigint : Then::simulate_interrupt}};
+    const md::Result<md::Secret> password =
+        md::app::read_password_from_terminal(pty.slave.get(), err);
+    typist.join();
+
+    CHECK_FALSE(typist.timed_out());
+    REQUIRE_FALSE(password.has_value());
+    CHECK(password.error().code == md::Errc::interrupted);
+    CHECK(md::interrupt_requested());
+    CHECK(local_flags(pty.slave.get()) == before);
+    CHECK(err.str() == hint_line());
+}
+
+TEST_CASE("prompt: --password-stdin with a terminal flag but a pipe reads it as a pipe",
+          "[prompt]") {
+    const FlagReset reset{};
+    std::ostringstream err{};
+    SECTION("a pipe: the pipe rules, no hint") {
+        Pipe pipe = make_pipe();
+        REQUIRE(write_all(pipe.write_end.get(), "s3cret\r\n"));
+        pipe.write_end.reset();
+        const md::Result<md::Secret> password =
+            md::app::read_password_from_terminal(pipe.read_end.get(), err);
+        REQUIRE(password.has_value());
+        CHECK(password->reveal() == "s3cret");
+    }
+    SECTION("a closed stdin: no password") {
+        const md::Result<md::Secret> password = md::app::read_password_from_terminal(-1, err);
+        REQUIRE_FALSE(password.has_value());
+        CHECK(password.error().code == md::Errc::usage);
+        CHECK(password.error().message == md::no_password_stdin_text);
+    }
+    CHECK(err.str().empty());
 }

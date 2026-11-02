@@ -880,31 +880,47 @@ TEST_CASE("auth phase: a session that can't be saved: follows warns, login leave
                                        h.session_file().string(), why));
         CHECK(app::save_outcome(run.phase().notes) == app::SaveOutcome::failed);
     }
-    SECTION("login (password): nothing printed, the command reports save_outcome") {
-        Run run{h, with_credentials(h.creds("credentials")), Setup{.mode = LoginMode::password}};
-        REQUIRE(run.exit_code() == 0);
-        CHECK(run.err().empty());
-        CHECK(run.phase().notes.save_error == std::optional<std::string>{why});
-        CHECK(app::save_outcome(run.phase().notes) == app::SaveOutcome::failed);
+    SECTION("login (password): exit 1 before any request (rev3 S20)") {
+        const Run run{h, with_credentials(h.creds("credentials")),
+                      Setup{.mode = LoginMode::password, .command = "login"}};
+        CHECK(run.exit_code() == 1);
+        CHECK(run.out().empty());
+        CHECK(run.err() == std::format("mangadex-dl: error: could not save the MangaDex login to "
+                                       "{}: {}\n",
+                                       h.session_file().string(), why));
+        CHECK(h.requests().empty());
     }
     CHECK(read_file(h.state_dir()) == "not a directory");
 }
 
-TEST_CASE("auth phase: without a home directory the login works but is not saved", "[auth phase]") {
+TEST_CASE("auth phase: without a home directory follows logs in but does not save, login stops",
+          "[auth phase]") {
     const Harness h{};
-    const LoginMode mode = GENERATE(LoginMode::reuse, LoginMode::password);
-    CAPTURE(mode == LoginMode::password);
-    Run run{h, with_credentials(h.creds("credentials")),
-            Setup{.mode = mode, .env = app::EnvSnapshot{}}};
-    REQUIRE(run.exit_code() == 0);
-    CHECK(!run.phase().notes.session_path.has_value());
-    CHECK(app::save_outcome(run.phase().notes) == app::SaveOutcome::failed);
-    if (mode == LoginMode::reuse) {
+    SECTION("follows (reuse): the login works, with the save warning") {
+        Run run{h, with_credentials(h.creds("credentials")), Setup{.env = app::EnvSnapshot{}}};
+        REQUIRE(run.exit_code() == 0);
+        CHECK(!run.phase().notes.session_path.has_value());
+        CHECK(app::save_outcome(run.phase().notes) == app::SaveOutcome::failed);
         CHECK(run.err() == "mangadex-dl: warning: could not save the MangaDex login: there is no "
                            "home directory (HOME is not set to an absolute path); the next run "
                            "will need the password again\n");
-    } else {
-        CHECK(run.err().empty());
+        CHECK(h.requests() == std::vector<std::string>{h.token_url()});
+    }
+    SECTION("login (password): exit 1 before any prompt or request (rev3 S20)") {
+        FakePrompter prompter{};
+        // No details at all and terminals: without S20 the client hint and prompts would come.
+        const Run run{h, md::RawAuthArgs{},
+                      Setup{.tty = terminals,
+                            .prompter = &prompter,
+                            .mode = LoginMode::password,
+                            .command = "login",
+                            .env = app::EnvSnapshot{}}};
+        CHECK(run.exit_code() == 1);
+        CHECK(run.out().empty());
+        CHECK(run.err() == "mangadex-dl: error: could not save the MangaDex login: there is no "
+                           "home directory (HOME is not set to an absolute path)\n");
+        CHECK(prompter.events().empty());
+        CHECK(h.requests().empty());
     }
 }
 
@@ -913,28 +929,48 @@ TEST_CASE("auth phase: a failed save is printed once by follows, never by login'
     // Pins the copy of the core's save-warning wording in cmd_auth.cpp (save_warning_text): the
     // core raises the warning once in both modes; follows prints it exactly once, and login's
     // phase leaves it out (the command reports save_outcome). A drift would print it in login.
+    // Since rev3 S20 login gets this far only with a usable store, so its case is a write that
+    // fails in a usable directory: the session file's name is taken by a directory (it is
+    // ignored with a warning when read, and renameat can't replace it).
     const Harness h{};
-    const bool home = GENERATE(true, false);
-    const LoginMode mode = GENERATE(LoginMode::reuse, LoginMode::password);
-    CAPTURE(home, mode == LoginMode::password);
+    enum class Why { write_fails, not_a_directory, no_home };
+    struct Variant {
+        Why why = Why::write_fails;
+        LoginMode mode = LoginMode::reuse;
+    };
+    const auto [why, mode] =
+        GENERATE(Variant{.why = Why::write_fails, .mode = LoginMode::reuse},
+                 Variant{.why = Why::write_fails, .mode = LoginMode::password},
+                 Variant{.why = Why::not_a_directory, .mode = LoginMode::reuse},
+                 Variant{.why = Why::no_home, .mode = LoginMode::reuse});
+    CAPTURE(std::to_underlying(why), mode == LoginMode::password);
     std::optional<app::EnvSnapshot> env{};
-    if (home) {
+    switch (why) {
+    case Why::write_fails:
+        fs::create_directories(h.session_file());
+        fs::permissions(h.state_dir(), fs::perms::owner_all, fs::perm_options::replace);
+        break;
+    case Why::not_a_directory:
         fs::create_directories(h.state_dir().parent_path());
         write_file(h.state_dir(), "not a directory"); // the save warning names the session path
-    } else {
+        break;
+    case Why::no_home:
         env = app::EnvSnapshot{}; // no session path: the warning's second wording
+        break;
     }
     Run run{h, with_credentials(h.creds("credentials")), Setup{.mode = mode, .env = env}};
     REQUIRE(run.exit_code() == 0);
     const md::LoginNotes& notes = run.phase().notes;
-    REQUIRE(notes.warnings.size() == 1);
-    CHECK_THAT(notes.warnings.front(), StartsWith("could not save the MangaDex login"));
-    const std::string printed = std::format("mangadex-dl: warning: {}\n", notes.warnings.front());
-    if (mode == LoginMode::reuse) {
-        CHECK(run.err() == printed);
-    } else {
-        CHECK(run.err().empty());
+    REQUIRE(!notes.warnings.empty());
+    CHECK_THAT(notes.warnings.back(), StartsWith("could not save the MangaDex login"));
+    std::string printed{};
+    for (const std::string& warning : notes.warnings) {
+        if (mode == LoginMode::reuse || warning != notes.warnings.back()) {
+            printed += std::format("mangadex-dl: warning: {}\n", warning);
+        }
     }
+    CHECK(run.err() == printed);
+    CHECK(app::save_outcome(notes) == app::SaveOutcome::failed);
 }
 
 TEST_CASE("auth phase: save_outcome tells a saved, an unsynced and a failed save apart",
@@ -1065,6 +1101,113 @@ TEST_CASE("auth phase: the session asks the phase's own prompter after the phase
     CHECK(engaged(h.read_back().refresh_token).value().reveal() == mdx::fixture_refresh_1);
     run.close();
     run.check_no_secret();
+    md::reset_interrupt_for_testing();
+}
+
+// ---- --password-stdin on a terminal (rev3 S18)
+// ---------------------------------------------------
+
+namespace {
+
+constexpr std::string_view password_stdin_hint_line =
+    "mangadex-dl: reading the password from the terminal (what you type is hidden); press Enter "
+    "when done\n";
+
+[[nodiscard]] ::tcflag_t local_flags(int fd) {
+    ::termios attributes{};
+    REQUIRE(::tcgetattr(fd, &attributes) == 0);
+    return attributes.c_lflag;
+}
+
+} // namespace
+
+TEST_CASE("auth phase: --password-stdin on a terminal hides the typing and shows the hint, also "
+          "with -q (rev3 S18)",
+          "[auth phase]") {
+    const md::test::PtyPair pty = require_pty(); // before the Typist: it borrows the master
+    const Harness h{};
+    md::reset_interrupt_for_testing();
+    const bool quiet = GENERATE(false, true);
+    const bool no_input = GENERATE(false, true); // the flag is the explicit request: allowed
+    CAPTURE(quiet, no_input);
+    const ::tcflag_t before = local_flags(pty.slave.get());
+    md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
+    args.password_stdin = true;
+    args.no_input = no_input;
+    // The typist types only once ECHO is off: echo was off while the phase read the password.
+    Typist typist{pty.master.get(), std::format("{}\n", mdx::fixture_password)};
+    Run run{h, args, Setup{.tty = terminals, .stdin_fd = pty.slave.get(), .quiet = quiet}};
+    typist.join();
+    CHECK(!typist.timed_out());
+    CHECK(typist.wrote());
+    REQUIRE(run.exit_code() == 0);
+    CHECK(run.phase().prompter == nullptr); // stdin was spoken for: no prompter
+    CHECK(run.phase().notes.how == LoginHow::password);
+    CHECK(run.err() == password_stdin_hint_line);
+    CHECK(local_flags(pty.slave.get()) == before); // echo restored
+    CHECK(h.requests() == std::vector<std::string>{h.token_url()});
+    run.close();
+    run.check_no_secret();
+    md::reset_interrupt_for_testing();
+}
+
+TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores echo, saves nothing "
+          "(rev3 S18)",
+          "[auth phase]") {
+    const md::test::PtyPair pty = require_pty(); // before the interrupter: it borrows the master
+    const Harness h{};
+    md::reset_interrupt_for_testing();
+    const ::tcflag_t before = local_flags(pty.slave.get());
+    md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
+    args.password_stdin = true;
+    // Once ECHO is off (the read has begun), Ctrl-C as the flag handler records it.
+    std::jthread interrupter{[master = pty.master.get()] {
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+        ::termios attributes{};
+        while (std::chrono::steady_clock::now() < give_up &&
+               ::tcgetattr(master, &attributes) == 0 &&
+               (attributes.c_lflag & static_cast<::tcflag_t>(ECHO)) != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        md::simulate_interrupt_for_testing(SIGINT);
+    }};
+    const Run run{h, args, Setup{.tty = terminals, .stdin_fd = pty.slave.get()}};
+    interrupter.join();
+    CHECK(run.exit_code() == md::exit_code_for(md::Errc::interrupted)); // main() re-raises: 130
+    CHECK(md::interrupt_requested());
+    CHECK(run.out().empty());
+    CHECK(run.err() == password_stdin_hint_line);
+    CHECK(local_flags(pty.slave.get()) == before);
+    CHECK(h.requests().empty());
+    CHECK(!fs::exists(h.session_file()));
+    md::reset_interrupt_for_testing();
+}
+
+TEST_CASE("auth phase: --password-stdin on a pipe stalled by its writer ends on an interrupt "
+          "(rev3 S18)",
+          "[auth phase]") {
+    const Harness h{};
+    md::reset_interrupt_for_testing();
+    std::array<int, 2> fds{-1, -1};
+    REQUIRE(::pipe2(fds.data(), O_CLOEXEC) == 0);
+    const md::UniqueFd read_end{fds[0]};
+    const md::UniqueFd write_end{fds[1]}; // kept open: the read never sees an end of input
+    md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
+    args.password_stdin = true;
+    std::jthread interrupter{[] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        md::simulate_interrupt_for_testing(SIGTERM);
+    }};
+    const auto started = std::chrono::steady_clock::now();
+    const Run run{h, args, Setup{.stdin_fd = read_end.get()}};
+    const auto waited = std::chrono::steady_clock::now() - started;
+    interrupter.join();
+    CHECK(run.exit_code() == md::exit_code_for(md::Errc::interrupted));
+    CHECK(waited < std::chrono::seconds{3});
+    CHECK(run.out().empty());
+    CHECK(run.err().empty());
+    CHECK(h.requests().empty());
+    CHECK(!fs::exists(h.session_file()));
     md::reset_interrupt_for_testing();
 }
 

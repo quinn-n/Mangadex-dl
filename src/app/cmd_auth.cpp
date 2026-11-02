@@ -275,11 +275,16 @@ std::expected<LoginPhase, int> run_login_phase(const RawAuthArgs& args, const Ap
     // Before any secret is read (the password, the credentials file, the saved session).
     guard_secrets();
 
-    // 2. --password-stdin: read once whenever it is given.
+    // 2. --password-stdin: read once whenever it is given; a terminal with echo off (rev3 S18).
+    // Both reads poll for an interrupt, which ends the phase silently (main() re-raises it).
     std::optional<Secret> stdin_password{};
     if (args.password_stdin) {
-        Result<Secret> password = read_password_stdin(io.stdin_fd);
+        Result<Secret> password = io.stdin_tty ? read_password_from_terminal(io.stdin_fd, io.err)
+                                               : read_password_stdin(io.stdin_fd);
         if (!password) {
+            if (password.error().code == Errc::interrupted) {
+                return std::unexpected(password.error().exit_code());
+            }
             if (password.error().code == Errc::usage) {
                 return std::unexpected(usage_failure(io, password.error(), command));
             }
@@ -326,6 +331,7 @@ std::expected<LoginPhase, int> run_login_phase(const RawAuthArgs& args, const Ap
         .password_stdin = std::move(stdin_password),
         .prompter = prompter,
         .lock = LockTiming{},
+        .switch_account = args.switch_account,
     };
     LoginNotes notes{};
     AuthResult<std::unique_ptr<LoginSession>> session{};

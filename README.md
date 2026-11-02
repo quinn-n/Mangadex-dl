@@ -707,8 +707,14 @@ Don't use `echo '<password>' | mangadex-dl …`: the password lands in your shel
   unnecessary, so a pipe always behaves the same.
 - stdin then can't answer prompts, so the client id, the client secret and the username must
   come from the credentials file or the saved login; otherwise exit 8.
-- At a terminal, `--password-stdin` waits until you press Ctrl-D (at the start of a line), and
-  **what you type is echoed**. Use the prompt there instead.
+- At a terminal, `--password-stdin` first prints
+  `mangadex-dl: reading the password from the terminal (what you type is hidden); press Enter when done`
+  on stderr (also with `-q` and `--json`), turns the terminal's echo off, and reads one line:
+  press Enter when done (Ctrl-D ends it too). The echo is turned back on however the read ends.
+  An empty line, or Ctrl-D with nothing typed, is the same exit 2 as an empty pipe. This also
+  works with `--no-input`: the flag itself asks for the password.
+- Ctrl-C (or SIGTERM) while `--password-stdin` waits, at a terminal or on a pipe that never
+  ends, stops the run at once (130 or 143) and saves nothing.
 - `--password-stdin` takes no value: see [Typed values and errors](#typed-values-and-errors)
   for what happens to a password typed after it.
 
@@ -776,15 +782,20 @@ After a successful login, the login (never the password) is saved in
   ends with exit 8:
   `your saved MangaDex login has expired or was ended; run 'mangadex-dl login' in a terminal`;
   at a terminal it asks for the password. Run `mangadex-dl login` again, and cron works again.
-- A saved login that is unreadable or damaged, not owned by you, readable by others, a symbolic
-  link, or for another client or account than the credentials file names is not used:
+- A saved login that is unreadable or damaged, not owned by you, readable by others or a
+  symbolic link is not used:
   `warning: ignoring the saved login at <path>: <why>`, and the run logs in afresh if it can; when
   that new login succeeds, it **replaces** the saved login. The directory must be yours and
   private too; otherwise nothing is read from or saved in it.
+- **A credentials file for another account** (or another API client) than the saved login: see
+  [Switching accounts](#switching-accounts).
 - If the login can't be saved, `follows` warns
   (`could not save the MangaDex login to <path>: <reason>; the next run will need the password again`)
-  and carries on; `login` exits 1. Without a usable `HOME` there is no default credentials file
-  and nothing is saved: `follows` logs in for that run only, and `login` exits 1 with
+  and carries on. `login` exists to save the login, so without a usable state directory it exits 1
+  **before it asks for anything or contacts MangaDex**, with
+  `could not save the MangaDex login to <path>: <reason>`. Without a usable `HOME` there is no
+  default credentials file and nothing is saved: `follows` logs in for that run only, and `login`
+  exits 1 with
   `could not save the MangaDex login: there is no home directory (HOME is not set to an absolute path)`.
 - Two runs at once take turns: the second waits for the first to finish logging in and fetching
   the follows, for at most 60 s, then exits 1 with
@@ -805,10 +816,25 @@ username of the saved login are reused, so usually only the password is asked. O
 prints `mangadex-dl: logged in to MangaDex as <username>; the login is saved in <path>` on
 stderr (not with `-q`), and exits 0. stdout stays empty, also with `--json`.
 
-**Switching accounts:** because the saved client and username are reused, run
-`mangadex-dl logout` first and then `mangadex-dl login`, or use `--credentials` with a file that
-names the other account (a credentials file always beats the saved login; the saved login of the
-first account is then replaced).
+#### Switching accounts
+
+Because the saved client and username are reused, run `mangadex-dl logout` first and then
+`mangadex-dl login`, or give `--credentials` a file that names the other account (a credentials
+file always beats the saved login):
+
+- **`login --credentials FILE`** always replaces the saved login, once the new login works. It
+  warns first:
+  `the saved login at <path> is for another account than the one in <FILE>; logging in with <FILE> replaces it if the login works`
+  (`another API client` when the file names another client).
+- **`follows --credentials FILE`** uses the other account **for that run only**: nothing is
+  saved, the saved login stays exactly as it was, and a warning (hidden by `-q`) says
+  `using <FILE> for this run only; the saved login for <account> at <path> is unchanged (pass --switch-account to replace it)`.
+- **`follows --switch-account --credentials FILE`** replaces the saved login instead, and says
+  `the saved login for <account> at <path> is replaced by the login from <FILE>` once the new
+  login has worked and been saved. With a file for the saved account itself it changes nothing.
+  `--switch-account` without `--credentials` is a usage error (exit 2,
+  `--switch-account needs --credentials`).
+- Neither ends the old account's session at MangaDex: run `mangadex-dl logout` first for that.
 
 ### `logout`
 
@@ -850,6 +876,7 @@ mangadex-dl follows [DIR] [OPTIONS]
 | `--credentials FILE` | Read login details from `FILE` (see [The credentials file](#the-credentials-file)). |
 | `--password-stdin` | Read the password from stdin (see [`--password-stdin`](#--password-stdin)). |
 | `--no-input` | Never prompt; exit 8 if a login is needed. |
+| `--switch-account` | With `--credentials` for another account, log in as that account and replace the saved login (see [Switching accounts](#switching-accounts)). |
 
 There is no `--title` (exit 2, as for `mdlist`) and `DIR` is never a title or a list
 (`DIR looks like a MangaDex id; follows takes no title or list (use 'mangadex-dl mdlist <list>' or 'download <title>')`).
@@ -1032,9 +1059,12 @@ mangadex-dl follows ~/Manga --no-input -q
 # In a script, with the password from a password manager
 pass show mangadex | mangadex-dl follows ~/Manga --password-stdin
 
-# With the details in another file, for example a second account
-# (this replaces the saved login; a later run without --credentials uses that account)
+# With the details in another file, for example a second account, for this run only
+# (the saved login is left as it is)
 mangadex-dl follows ~/Manga-other --credentials ~/.config/mangadex-dl/other-credentials
+
+# The same, but make that account the saved login for later runs
+mangadex-dl follows ~/Manga-other --switch-account --credentials ~/.config/mangadex-dl/other-credentials
 ```
 
 ## Output
@@ -1111,7 +1141,7 @@ Only `follows` and `login` ever prompt, and only at a terminal (see
 |---|---|
 | 0 | Success: every selected file was written or updated, was already up to date, was left alone with a warning, or (with `--dry-run`) is planned. |
 | 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. For `batch`, `mdlist` and `follows`, also the code of a title whose own directory can't be used (that title fails alone). For `follows`, `login` and `logout`, also a credentials file that is missing (with `--credentials`), not private or malformed, a saved login in use by another run, and a login that `login` can't save or `logout` can't remove. |
-| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. For `follows` and `login`, also `--password-stdin` with an empty stdin, and an option that looks like a password (see [Typed values and errors](#typed-values-and-errors)). |
+| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. For `follows` and `login`, also `--password-stdin` with an empty stdin, `follows --switch-account` without `--credentials`, and an option that looks like a password (see [Typed values and errors](#typed-values-and-errors)). |
 | 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. For `mdlist`, also the same problems with the list response, or a list of more than 10 000 titles (see [Exit status of a list](#exit-status-of-a-list)). For `follows` and `login`, also the same problems with the login and follows requests, or more than 10 000 follows (see [Exit status of `follows`](#exit-status-of-follows)). |
 | 4 | The title, or for `mdlist` the list, does not exist on MangaDex, or the list is private. |
 | 5 | The title exists, but nothing downloadable matched the language and selection. |

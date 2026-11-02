@@ -140,6 +140,7 @@ struct RawAuthArgs {
     bool credentials_given = false; ///< Option::count() > 0, set by the Command after parse
     bool password_stdin = false;    ///< --password-stdin
     bool no_input = false;          ///< --no-input
+    bool switch_account = false;    ///< --switch-account (follows only; rev3 S19)
 };
 
 struct RawLoginArgs {
@@ -178,13 +179,20 @@ struct RawLogoutArgs {
 [[nodiscard]] Result<CredentialsFile> load_credentials_file(const std::filesystem::path& path,
                                                             bool explicit_path);
 
-/// The first line of `fd` (at most max_password_stdin_bytes, '\n'/'\r\n' stripped). EOF before
-/// any byte, a NUL, an empty first line or too many bytes -> Errc::usage "--password-stdin was
-/// given, but stdin held no password". Every intermediate buffer is wiped. If stdin is a
-/// terminal, the typed password echoes; that is not refused, because the user chose the flag.
+/// The usage message of a --password-stdin that held no password (exit 2).
+inline constexpr std::string_view no_password_stdin_text =
+    "--password-stdin was given, but stdin held no password";
+
+/// The first line of `fd`, read to EOF (at most max_password_stdin_bytes, '\n'/'\r\n' stripped).
+/// EOF before any byte, a NUL, an empty first line or too many bytes -> Errc::usage
+/// no_password_stdin_text. Every intermediate buffer is wiped. The read never blocks for more than
+/// 100 ms: it poll()s and checks interrupt_requested() between waits (the handlers use SA_RESTART,
+/// so a blocking read() would ignore SIGINT/SIGTERM), and a pending interrupt is Errc::interrupted.
+/// For pipes and files; a terminal is read by the app with echo off (rev3 S18), not here.
 [[nodiscard]] Result<Secret> read_password_stdin(int fd);
 
-/// `credentials_given && credentials.empty()` -> Errc::usage "--credentials needs a file name".
+/// `credentials_given && credentials.empty()` -> Errc::usage "--credentials needs a file name";
+/// `switch_account && !credentials_given` -> Errc::usage "--switch-account needs --credentials".
 [[nodiscard]] Result<void> check_raw_auth_args(const RawAuthArgs& raw);
 
 /// The official API or a fixture tree; anything else is Errc::usage naming `command` ("<command>
@@ -377,6 +385,10 @@ struct LoginRequest {
     std::optional<Secret> password_stdin{};
     Prompter* prompter = nullptr; ///< borrowed for the session's life; null = prompts not allowed
     LockTiming lock{};
+    /// reuse only (follows --switch-account, rev3 S19): a saved login for another account or client
+    /// than the credentials file is replaced. Without it that run logs in with the file's details
+    /// for this run only and leaves the saved login untouched. LoginMode::password always replaces.
+    bool switch_account = false;
 };
 
 /// What the login flow talks to. Every pointer is borrowed and must outlive the session (or the
@@ -425,6 +437,13 @@ public:
     /// auth_endpoints_for(request.api_base) giving nullopt -> {local, Errc::usage} before any
     /// I/O. Problems with the saved login become notes.warnings; a missing detail that can't be
     /// asked for is {local, Errc::login_required}; a refusal is {refused, Errc::auth_rejected}.
+    /// LoginMode::password without a usable state directory (rev3 S20) -> {local, Errc::failure
+    /// "could not save the MangaDex login[ to <path>]: <why>"} before any prompt or request.
+    /// A saved login for another account or client than the credentials file (rev3 S19):
+    /// LoginMode::password replaces it once the login worked; LoginMode::reuse uses the file's
+    /// details for this run only (nothing is ever written, the saved login and its lock are left
+    /// alone, a warning says so) unless request.switch_account, which replaces it and adds the
+    /// "replaced" warning only once the new login is saved.
     [[nodiscard]] static AuthResult<std::unique_ptr<LoginSession>>
     open(LoginRequest request, const AuthServices& services, std::stop_token stop,
          LoginNotes& notes);

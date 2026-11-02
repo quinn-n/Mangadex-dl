@@ -924,29 +924,154 @@ TEST_CASE("login session: the credentials file beats the session, stdin beats th
     CHECK(h.read_back().client_secret.reveal() == mdx::fixture_client_secret);
 }
 
-TEST_CASE("login session: a session for another client or account than the file is ignored",
-          "[auth][login session]") {
-    Harness h{};
+// ---- rev3 S19: a saved login for another account or client than the credentials file --------
+
+namespace {
+
+/// A saved login valid for 600 s that names another client (`other_client`) or another account
+/// than full_file(), and the username it is for.
+struct OtherLogin {
+    md::Session session{};
+    std::string account{};
+};
+
+[[nodiscard]] OtherLogin other_login(const Harness& h, bool other_client) {
     md::Session saved = h.saved(600);
-    const bool other_client = GENERATE(true, false);
-    std::string why{};
     if (other_client) {
         saved.client_id = "other-client";
-        why = "it is for another API client than the one in";
     } else {
         saved.username = "other-user";
-        why = "it is for another account than the one in";
     }
-    CAPTURE(why);
-    h.seed(saved);
+    std::string account = saved.username;
+    return OtherLogin{.session = std::move(saved), .account = std::move(account)};
+}
+
+} // namespace
+
+TEST_CASE("login session: follows uses a credentials file for another account for this run only "
+          "(rev3 S19)",
+          "[auth][login session]") {
+    Harness h{};
+    const bool other_client = GENERATE(true, false);
+    CAPTURE(other_client);
+    const OtherLogin other = other_login(h, other_client);
+    h.seed(other.session);
+    const std::string before = read_file(h.session_file());
+    const std::string lock_before = read_file(h.state_dir() / "session.lock");
     h.transport.push_status(official_url("token"), 200,
                             grant_body(mdx::fixture_access_2, mdx::fixture_refresh_2));
-    const auto session = h.open(h.request(LoginMode::reuse, full_file()));
+
+    auto session = h.open(h.request(LoginMode::reuse, full_file()));
     REQUIRE(session.has_value());
     CHECK(h.notes.how == LoginHow::password);
-    CHECK(h.notes.warnings == std::vector<std::string>{std::format(
-                                  "ignoring the saved login at {}: {} {}",
-                                  h.session_file().string(), why, h.credentials_path().string())});
+    CHECK(h.notes.username == mdx::fixture_username);
+    CHECK(h.notes.warnings ==
+          std::vector<std::string>{std::format(
+              "using {} for this run only; the saved login for {} at {} is unchanged (pass "
+              "--switch-account to replace it)",
+              h.credentials_path().string(), other.account, h.session_file().string())});
+    CHECK_FALSE(h.notes.save_error.has_value());
+    // The file's details were sent (the saved tokens never were), and nothing was written.
+    CHECK(bodies(h.transport) == std::vector{password_body()});
+    CHECK(read_file(h.session_file()) == before);
+    // The lock was let go at once: another run that uses the saved login is not kept waiting.
+    CHECK(h.lock_is_free());
+
+    // A renewal later in the run (a 401 during the collection fetch) is not saved either, and is
+    // not reported as a failed save.
+    h.transport.push_status(official_url("token"), 200,
+                            grant_body(fixture_access_3, fixture_refresh_3));
+    const md::AuthResult<Secret> renewed = (*session)->refresh_after_unauthorized({});
+    REQUIRE(renewed.has_value());
+    CHECK(renewed->reveal() == mdx::bearer(fixture_access_3));
+    CHECK((*session)->take_late_warnings().empty());
+    (*session)->close();
+    CHECK(read_file(h.session_file()) == before);
+    CHECK(read_file(h.state_dir() / "session.lock") == lock_before);
+}
+
+TEST_CASE("login session: --switch-account replaces a saved login for another account (rev3 S19)",
+          "[auth][login session]") {
+    Harness h{};
+    const bool other_client = GENERATE(true, false);
+    CAPTURE(other_client);
+    const OtherLogin other = other_login(h, other_client);
+    h.seed(other.session);
+    h.transport.push_status(official_url("token"), 200,
+                            grant_body(mdx::fixture_access_2, mdx::fixture_refresh_2));
+
+    md::LoginRequest login = h.request(LoginMode::reuse, full_file());
+    login.switch_account = true;
+    const auto session = h.open(std::move(login));
+    REQUIRE(session.has_value());
+    CHECK(h.notes.how == LoginHow::password);
+    CHECK(h.notes.warnings ==
+          std::vector<std::string>{std::format(
+              "the saved login for {} at {} is replaced by the login from {}", other.account,
+              h.session_file().string(), h.credentials_path().string())});
+    CHECK_FALSE(h.notes.save_error.has_value());
+    CHECK(bodies(h.transport) == std::vector{password_body()});
+    const md::Session stored = h.read_back();
+    CHECK(stored.client_id == mdx::fixture_client_id);
+    CHECK(stored.username == mdx::fixture_username);
+    CHECK(token_of(stored.refresh_token) == mdx::fixture_refresh_2);
+}
+
+TEST_CASE("login session: a refused login with --switch-account leaves the saved login intact "
+          "(rev3 S19)",
+          "[auth][login session]") {
+    Harness h{};
+    const OtherLogin other = other_login(h, false);
+    h.seed(other.session);
+    const std::string before = read_file(h.session_file());
+    h.transport.push_status(official_url("token"), 401, error_body(401, "invalid_grant"));
+
+    md::LoginRequest login = h.request(LoginMode::reuse, full_file(other_password));
+    login.switch_account = true;
+    const auto session = h.open(std::move(login));
+    REQUIRE_FALSE(session.has_value());
+    CHECK(session.error().kind == AuthFailureKind::refused);
+    CHECK(session.error().error.code == Errc::auth_rejected);
+    CHECK(h.notes.warnings.empty()); // "replaced" is said only once the new login is saved
+    CHECK(read_file(h.session_file()) == before);
+    CHECK(h.lock_is_free());
+}
+
+TEST_CASE("login session: --switch-account with the saved account changes nothing (rev3 S19)",
+          "[auth][login session]") {
+    Harness h{};
+    h.seed(h.saved(600));
+    const std::string before = read_file(h.session_file());
+    md::LoginRequest login = h.request(LoginMode::reuse, full_file());
+    login.switch_account = true;
+    const auto session = h.open(std::move(login));
+    REQUIRE(session.has_value());
+    CHECK(h.notes.how == LoginHow::saved);
+    CHECK(h.notes.warnings.empty());
+    CHECK(h.transport.requests().empty());
+    CHECK(read_file(h.session_file()) == before);
+}
+
+TEST_CASE("login session: login replaces a saved login for another account, and says so first "
+          "(rev3 S19)",
+          "[auth][login session]") {
+    Harness h{};
+    const bool other_client = GENERATE(true, false);
+    CAPTURE(other_client);
+    const OtherLogin other = other_login(h, other_client);
+    h.seed(other.session);
+    h.transport.push_status(official_url("token"), 200,
+                            grant_body(mdx::fixture_access_2, mdx::fixture_refresh_2));
+
+    const auto session = h.open(h.request(LoginMode::password, full_file()));
+    REQUIRE(session.has_value());
+    const std::string credentials = h.credentials_path().string();
+    CHECK(h.notes.warnings ==
+          std::vector<std::string>{std::format(
+              "the saved login at {} is for another {} than the one in {}; logging in with {} "
+              "replaces it if the login works",
+              h.session_file().string(), other_client ? "API client" : "account", credentials,
+              credentials)});
     CHECK(bodies(h.transport) == std::vector{password_body()});
     const md::Session stored = h.read_back();
     CHECK(stored.client_id == mdx::fixture_client_id);
@@ -1189,10 +1314,10 @@ TEST_CASE("login session: a late warning after authorization() refreshes",
     CHECK((*session)->take_late_warnings().empty());
 }
 
-TEST_CASE("login session: without a home directory the login works but is not saved",
+TEST_CASE("login session: without a home directory the reuse login works but is not saved",
           "[auth][login session]") {
     Harness h{};
-    md::LoginRequest login = h.request(LoginMode::password, full_file());
+    md::LoginRequest login = h.request(LoginMode::reuse, full_file());
     login.dirs = md::UserDirs{};
     h.transport.push_status(official_url("token"), 200,
                             grant_body(mdx::fixture_access_1, mdx::fixture_refresh_1));
@@ -1205,6 +1330,52 @@ TEST_CASE("login session: without a home directory the login works but is not sa
                                                "run will need the password again",
                                                engaged(h.notes.save_error))});
     CHECK_FALSE(fs::exists(h.root() / "state"));
+}
+
+TEST_CASE("login session: a password login without a usable store fails before any prompt or "
+          "request (rev3 S20)",
+          "[auth][login session]") {
+    Harness h{};
+    // Nothing in the file, prompts allowed: without the S20 check the client hint and a prompt
+    // would come first.
+    md::LoginRequest login = h.request(LoginMode::password, {}, true);
+    enum class Store { no_home, too_open, symlink };
+    const Store store = GENERATE(Store::no_home, Store::too_open, Store::symlink);
+    std::string message{};
+    switch (store) {
+    case Store::no_home:
+        login.dirs = md::UserDirs{};
+        message = "could not save the MangaDex login: there is no home directory (HOME is not set "
+                  "to an absolute path)";
+        break;
+    case Store::too_open:
+        fs::create_directories(h.state_dir());
+        REQUIRE(::chmod(h.state_dir().c_str(), 0777) == 0);
+        message = std::format("could not save the MangaDex login to {}: the directory {} is not "
+                              "usable: other users can access it (mode 0777)",
+                              h.session_file().string(), h.state_dir().string());
+        break;
+    case Store::symlink:
+        fs::create_directories(h.root() / "elsewhere");
+        fs::create_directories(h.state_dir().parent_path());
+        fs::create_directory_symlink(h.root() / "elsewhere", h.state_dir());
+        message = std::format("could not save the MangaDex login to {}: the directory {} is not "
+                              "usable: ",
+                              h.session_file().string(), h.state_dir().string());
+        break;
+    }
+    CAPTURE(message);
+    const auto session = h.open(std::move(login));
+    REQUIRE_FALSE(session.has_value());
+    CHECK(session.error().kind == AuthFailureKind::local);
+    CHECK(session.error().error.code == Errc::failure);
+    CHECK_THAT(session.error().error.message, StartsWith(message));
+    CHECK(h.transport.requests().empty());
+    CHECK(h.prompter.events().empty());
+    CHECK_FALSE(h.notes.save_error.has_value());
+    if (store == Store::too_open) {
+        static_cast<void>(::chmod(h.state_dir().c_str(), 0700));
+    }
 }
 
 TEST_CASE("login session: fixture mode uses only fixture-session.json (AC23)",

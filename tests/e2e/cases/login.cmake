@@ -144,3 +144,35 @@ cli_e2e_case(NAME tty-no-input
              TTY EXPECT_EXIT 8 EXPECT_ANSI
              EXPECT_STDOUT_REGEX "^mangadex-dl: ${_login_esc}\\[[0-9;]*merror:${_login_esc}\\[0m ${_login_not_logged_in_re}\n$"
              EXPECT_ABSENT ${_login_session})
+
+# ---- rev3 S19: --credentials for another account replaces the saved login -----------------------------
+string(REGEX REPLACE "([][.+*?^$()|\\\\])" "\\\\\\1" _login_other_creds_re
+       "${CLI_E2E_FIXTURES_DIR}/follows-clean/creds/credentials-revoke-503")
+cli_e2e_case(NAME other-account
+             PRE_RUN login ${_login_c}
+             ARGS login --credentials ${_login_creds}/credentials-revoke-503 ${_login_api}
+             EXPECT_EXIT 0 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: warning: the saved login at [^\n]*/state/mangadex-dl/fixture-session\\.json is for another account than the one in ${_login_other_creds_re}; logging in with ${_login_other_creds_re} replaces it if the login works\nmangadex-dl: logged in to MangaDex as fixture-user-revoke-503; the login is saved in [^\n]*/state/mangadex-dl/fixture-session\\.json\n$"
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_login_session})
+# login has no --switch-account (it always replaces).
+cli_e2e_case(NAME usage-switch-account
+             ARGS login --switch-account ${_login_c}
+             EXPECT_EXIT 2 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*--switch-account[^\n]*\n${_login_hint_re}$"
+             EXPECT_ABSENT ${_login_session})
+
+# ---- rev3 S20: no usable store -> 1 before any prompt or token request --------------------------------
+# No HOME and no XDG directories: nowhere to save. On a terminal with only the client in the file,
+# login would otherwise prompt for the password (and, with script's stdin /dev/null, end with 8);
+# the anchored merged output proves no prompt was shown.
+cli_e2e_case(NAME no-home
+             ARGS login --credentials ${_login_creds}/credentials-client ${_login_api}
+             ENV -HOME -XDG_STATE_HOME -XDG_CONFIG_HOME
+             EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: could not save the MangaDex login: there is no home directory \\(HOME is not set to an absolute path\\)\n$")
+cli_e2e_case(NAME tty-no-home
+             ARGS login --credentials ${_login_creds}/credentials-client ${_login_api}
+             TTY ENV -HOME -XDG_STATE_HOME -XDG_CONFIG_HOME NO_COLOR=1
+             EXPECT_EXIT 1 EXPECT_NO_ANSI
+             EXPECT_STDOUT_REGEX "^mangadex-dl: error: could not save the MangaDex login: there is no home directory \\(HOME is not set to an absolute path\\)\n$")

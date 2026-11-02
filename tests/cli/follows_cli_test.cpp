@@ -1481,3 +1481,104 @@ TEST_CASE("follows cli: the options as CLI11 binds them", "[cli][follows][parse]
         CHECK(run_registered(h, {"follows", "--password", "x"}).exit_code == 2);
     }
 }
+
+// ---- rev3 S19: a credentials file for another account ---------------------------------------
+
+TEST_CASE("follows cli: --credentials for another account is for this run only; the saved login "
+          "is unchanged",
+          "[cli][follows][parse]") {
+    const Harness h{};
+    // A saved login for fixture-user, valid for an hour; the file names fixture-user-revoke-503.
+    const md::Session saved{
+        .issuer = h.issuer(),
+        .client_id = std::string{mdx::fixture_client_id},
+        .client_secret = md::Secret::copy_of(mdx::fixture_client_secret),
+        .username = std::string{mdx::fixture_username},
+        .refresh_token = token(mdx::fixture_refresh_1),
+        .refresh_expires_at = std::nullopt,
+        .access_token = token(mdx::fixture_access_1),
+        .access_expires_at = unix_now() + 3600,
+    };
+    h.seed(saved);
+    const std::string before = read_file(h.session_file());
+    const std::string other = h.creds("credentials-revoke-503").string();
+    const fs::path out = h.path("out");
+
+    SECTION("without --switch-account: a warning, and nothing saved") {
+        const Captured r = run_registered(h, {"follows", out.string(), "--dry-run", "--credentials",
+                                              other, "--api-base", h.api_base()});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == std::format("mangadex-dl: warning: using {} for this run only; the saved "
+                                   "login for fixture-user at {} is unchanged (pass "
+                                   "--switch-account to replace it)\n",
+                                   other, h.session_file().string()));
+        CHECK(read_file(h.session_file()) == before);
+        check_no_secret(r);
+    }
+    SECTION("-q hides the warning; still nothing saved") {
+        const Captured r = run_registered(h, {"follows", out.string(), "--dry-run", "-q",
+                                              "--credentials", other, "--api-base", h.api_base()});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err.empty());
+        CHECK(read_file(h.session_file()) == before);
+    }
+    SECTION("with --switch-account: replaced, and said so") {
+        const Captured r =
+            run_registered(h, {"follows", out.string(), "--dry-run", "--switch-account",
+                               "--credentials", other, "--api-base", h.api_base()});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == std::format("mangadex-dl: warning: the saved login for fixture-user at {} "
+                                   "is replaced by the login from {}\n",
+                                   h.session_file().string(), other));
+        const std::string after = read_file(h.session_file());
+        const md::Result<md::Session> parsed = md::parse_session(after, h.issuer());
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->username == mdx::fixture_user_revoke_503);
+        check_no_secret(r);
+    }
+    SECTION("with --switch-account and the saved account: nothing changes") {
+        const Captured r = run_registered(
+            h, {"follows", out.string(), "--dry-run", "--switch-account", "--credentials",
+                h.creds("credentials").string(), "--api-base", h.api_base()});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err.empty());
+        CHECK(read_file(h.session_file()) == before);
+        CHECK(h.count(h.token_url()) == 0); // the saved access token was reused
+    }
+}
+
+TEST_CASE("follows cli: --switch-account needs --credentials -> 2 before any request",
+          "[cli][follows][parse]") {
+    const Harness h{};
+    // A DIR under the harness and --dry-run: a regression that ran the command would still write
+    // nothing outside the temporary directory.
+    const std::string out = h.path("out").string();
+    SECTION("no --credentials") {
+        const Captured r = run_registered(
+            h, {"follows", out, "--dry-run", "--switch-account", "--api-base", h.api_base()});
+        CHECK(r.exit_code == 2);
+        CHECK(r.out.empty());
+        CHECK(r.err ==
+              "mangadex-dl: error: --switch-account needs --credentials\n" + std::string{hint});
+    }
+    SECTION("a value") {
+        const Captured r =
+            run_registered(h, {"follows", out, "--dry-run", "--switch-account=x", "--credentials",
+                               h.creds("credentials").string(), "--api-base", h.api_base()});
+        CHECK(r.exit_code == 2);
+        CHECK(r.out.empty());
+        CHECK(r.err == "mangadex-dl: error: --switch-account takes no value\n" + std::string{hint});
+    }
+    SECTION("login has no --switch-account") {
+        const Captured r =
+            run_registered(h, {"login", "--switch-account", "--credentials",
+                               h.creds("credentials").string(), "--api-base", h.api_base()});
+        CHECK(r.exit_code == 2);
+        CHECK(r.out.empty());
+        CHECK_THAT(r.err, ContainsSubstring("--switch-account"));
+    }
+    CHECK(h.seen().empty());
+    CHECK(!fs::exists(h.session_file()));
+}
