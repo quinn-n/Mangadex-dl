@@ -5,7 +5,9 @@ Downloads volumes and chapters from MangaDex and converts them into .epub or .pd
 `mangadex-dl download` takes a MangaDex title and writes fixed-layout EPUB 3 files: by default
 one `.epub` per volume, plus one per chapter that has no volume ("loose" chapters).
 `mangadex-dl batch` does the same for every title listed in a CSV file.
-`mangadex-dl mdlist` does the same for every title in a public MangaDex list.
+`mangadex-dl mdlist` does the same for every title in a public MangaDex list, and
+`mangadex-dl follows` for every title your MangaDex account follows (after a one-time
+`mangadex-dl login`).
 
 > **Status:** EPUB output only. PDF output is planned but not available yet.
 
@@ -18,6 +20,7 @@ one `.epub` per volume, plus one per chapter that has no volume ("loose" chapter
 - [Running again](#running-again)
 - [Many titles: `batch`](#many-titles-batch)
 - [A MangaDex list: `mdlist`](#a-mangadex-list-mdlist)
+- [The titles you follow: `follows`](#the-titles-you-follow-follows)
 - [Output](#output)
 - [Exit status](#exit-status)
 - [Network behaviour](#network-behaviour)
@@ -479,9 +482,9 @@ other way round, `download <list address>` and `batch <list address>` exit 2 wit
 
 ### Which titles are downloaded
 
-- **No login:** the list must be public. To download the titles you follow, add them to a public
-  MDList; reading follows directly needs a login, which `mangadex-dl` doesn't support yet. A
-  private list counts as not found: MangaDex answers it with HTTP 404 (exit 4).
+- **No login:** the list must be public; `mdlist` never logs in, also after `mangadex-dl login`.
+  A private list counts as not found: MangaDex answers it with HTTP 404 (exit 4). To download
+  the titles you follow, use [`follows`](#the-titles-you-follow-follows).
 - **Order:** the website's order. A title listed twice is downloaded once; the later entry is
   skipped with a warning (`list:5: <uuid>: same as item 2; skipped`).
 - **At most 10 000 titles.** A longer list is refused (exit 3), never cut short.
@@ -611,6 +614,429 @@ mangadex-dl mdlist <uuid> ~/Manga --dry-run
 mangadex-dl mdlist <uuid> ~/Manga --volumes 1-3 --lang fr --json
 ```
 
+## The titles you follow: `follows`
+
+```
+mangadex-dl login [OPTIONS]
+mangadex-dl follows [DIR] [OPTIONS]
+mangadex-dl logout [OPTIONS]
+```
+
+`follows` downloads every title your MangaDex account follows, one title after another in the
+order MangaDex returns them, into `DIR` (default `.`). Reading your follows needs a login, so
+`follows` first logs in to MangaDex; after that, each title is run exactly as `mdlist` runs an
+item, and the output, the stop rules, the exit status and the `--json` document follow
+`mdlist`'s (the differences are below). `login` sets the login up without downloading anything,
+and `logout` removes it.
+
+```sh
+mangadex-dl login              # once, in a terminal
+mangadex-dl follows ~/Manga    # then as often as you like, also from cron
+```
+
+### Logging in
+
+Logging in needs a MangaDex **personal API client**, which you create yourself: on
+<https://mangadex.org/settings>, under **API Clients**, create a client and note its client id
+and client secret. **A new client may need approval by MangaDex staff before it works**; until
+then a login fails with exit 9 and
+`MangaDex did not let the API client log in (unauthorized_client); a new personal client may need approval by MangaDex first, see https://mangadex.org/settings`.
+MangaDex documents that a personal client uses the password flow and ignores the account's
+multi-factor settings, so the password alone is enough.
+
+A login takes four details: the client id, the client secret, your username and your password.
+Each is taken from the first place that has it:
+
+| Detail | Where it comes from, in order |
+|---|---|
+| client id, client secret, username | the [credentials file](#the-credentials-file), the [saved login](#the-saved-login), a prompt |
+| password | `--password-stdin`, the credentials file, a prompt |
+
+The password is needed only when there is no usable saved login. When a detail is missing and
+can't be asked for, the run ends with exit 8 and says what to do, for example
+`you are not logged in to MangaDex; run 'mangadex-dl login' in a terminal (or pass --password-stdin)`,
+or, with no client anywhere,
+`no MangaDex API client is set up; run 'mangadex-dl login' in a terminal, or put client_id and client_secret in <credentials path>`.
+
+**Never put a password on the command line**: other users can see it (`ps`). There is no
+`--password`, `--client-secret` or `--username` option; `--password`, `--password=...`,
+`--client-secret` and `-p...` are refused (exit 2) with
+`follows has no --password option: passwords and secrets never go on the command line (other users can see it); use the prompt, --password-stdin or the credentials file`.
+
+#### The prompts
+
+`follows` and `login` ask only when stdin and stderr are both terminals, and neither
+`--no-input` nor `--password-stdin` is given. Otherwise a missing detail is exit 8, never a hang,
+so cron and scripts never wait for an answer. The first run asks for what it doesn't know yet:
+
+```
+mangadex-dl: reading your follows needs a MangaDex personal API client; create one at https://mangadex.org/settings (API Clients)
+MangaDex API client id: <client-id>
+MangaDex API client secret:
+MangaDex username: <username>
+MangaDex password for <username>:
+```
+
+- The client secret and the password are **not echoed**. If the terminal will not turn echo off,
+  the secret prompts are refused (exit 8) rather than shown with echo. The first line and the
+  client prompts appear only while the client id or secret is not known yet.
+- An empty answer or Ctrl-D ends the run with exit 8 (`no password given`). An answer longer than
+  4096 bytes is exit 8 too (a terminal in its normal line mode takes at most 4095 bytes per line
+  anyway).
+- Ctrl-C at a prompt turns echo back on, saves nothing and ends the run (130).
+- **Ctrl-Z or Ctrl-\ at a hidden prompt can leave the terminal's echo off.** If what you type is
+  no longer shown afterwards, type `reset` and press Enter.
+
+#### `--password-stdin`
+
+`--password-stdin` reads the password from stdin, for scripts and password managers:
+
+```sh
+pass show mangadex | mangadex-dl follows ~/Manga --password-stdin
+```
+
+Don't use `echo '<password>' | mangadex-dl …`: the password lands in your shell history.
+
+- stdin is read **to the end of input**, at most 4096 bytes. The password is its first line,
+  without the newline. A `\r` right before the newline (`\r\n`) is stripped as well; a lone `\r`
+  at the very end of the input is kept, as part of the password. Spaces are kept.
+- An empty stdin (`/dev/null`, closed, or nothing before the end of input), an empty first line,
+  a NUL byte or more than 4096 bytes is a usage error (exit 2):
+  `--password-stdin was given, but stdin held no password`.
+- It is read whenever the flag is given, even when the saved login makes the password
+  unnecessary, so a pipe always behaves the same.
+- stdin then can't answer prompts, so the client id, the client secret and the username must
+  come from the credentials file or the saved login; otherwise exit 8.
+- At a terminal, `--password-stdin` waits until you press Ctrl-D (at the start of a line), and
+  **what you type is echoed**. Use the prompt there instead.
+- `--password-stdin` takes no value: see [Typed values and errors](#typed-values-and-errors)
+  for what happens to a password typed after it.
+
+#### The credentials file
+
+The client, the username and, if you want, the password can live in a private file instead of
+being typed: `$XDG_CONFIG_HOME/mangadex-dl/credentials` (`~/.config/mangadex-dl/credentials` when
+`XDG_CONFIG_HOME` is unset or not an absolute path), or the file given with `--credentials FILE`.
+
+```sh
+(umask 077; mkdir -p ~/.config/mangadex-dl; touch ~/.config/mangadex-dl/credentials)
+"${EDITOR:-vi}" ~/.config/mangadex-dl/credentials
+```
+
+```
+# MangaDex personal API client
+client_id = <client-id>
+client_secret = <client-secret>
+username = <username>
+# Optional: without it, the password is asked for or read with --password-stdin
+password = <password>
+```
+
+- One `key = value` per line. The keys are exactly `client_id`, `client_secret`, `username` and
+  `password`, each at most once. The value is everything after the first `=` (so it may contain
+  `=`), with the spaces and tabs around it trimmed; an empty value counts as absent.
+- Blank lines and lines starting with `#` (after optional spaces) are ignored. LF or CRLF line
+  endings; UTF-8, no control characters; a value at most 4096 bytes, the file at most 16 KiB.
+- The password line is optional, and the saved login makes it unnecessary for everyday use:
+  leave it out unless an unattended job must be able to log in again by itself. A password here
+  is stored in clear text, so keep this file out of backups, synced folders and dotfile
+  repositories.
+- A password that starts or ends with a space or tab can't be written here (it would be
+  trimmed); use `--password-stdin` for it.
+- **The file must be private:** a regular file (a symbolic link to one is followed), owned by you,
+  and neither readable nor writable by anyone else (`chmod 600`). Otherwise the run ends with
+  exit 1, for example
+  `credentials file '<path>' is readable or writable by others (mode 0644); run 'chmod 600 <path>'`.
+- Mistakes in it are exit 1 and name the line, never a value (an unknown key is shown only when it
+  is made of lower-case letters and underscores):
+  `credentials file '<path>': line 3: no '=' (each line is 'key = value')`.
+- A missing default file is fine. A missing `--credentials FILE` is exit 1.
+- **`--credentials` takes the next word verbatim** as the file name, even when it looks like an
+  option: `--credentials --no-input` reads a file named `--no-input`. `--credentials ''` is
+  exit 2 (`--credentials needs a file name`).
+- `mangadex-dl` never creates, changes or deletes this file.
+
+#### The saved login
+
+After a successful login, the login (never the password) is saved in
+`$XDG_STATE_HOME/mangadex-dl/session.json` (`~/.local/state/mangadex-dl/session.json` when
+`XDG_STATE_HOME` is unset or not an absolute path).
+
+- **It never holds the password.** It holds the client id and secret, the username, and the
+  tokens MangaDex handed out, with their expiry times. Treat it like a password anyway: whoever
+  holds it can use your account through the MangaDex API until MangaDex ends the session.
+- It is mode 0600 in a 0700 directory (missing directories are created that way), written
+  atomically, and rewritten after every successful answer from the login server, so a renewed
+  token is never lost.
+- **Later runs reuse it, cron jobs included**: a token that is still valid is used as it is, and
+  an expired one is renewed silently, without the password. Nothing needs typing until MangaDex
+  ends the session; how long MangaDex keeps a session is not documented.
+- **When MangaDex ends the session**, a run that has the password (in the credentials file, or
+  with `--password-stdin`) logs in again by itself. Otherwise, with no terminal to ask in, it
+  ends with exit 8:
+  `your saved MangaDex login has expired or was ended; run 'mangadex-dl login' in a terminal`;
+  at a terminal it asks for the password. Run `mangadex-dl login` again, and cron works again.
+- A saved login that is unreadable or damaged, not owned by you, readable by others, a symbolic
+  link, or for another client or account than the credentials file names is not used:
+  `warning: ignoring the saved login at <path>: <why>`, and the run logs in afresh if it can; when
+  that new login succeeds, it **replaces** the saved login. The directory must be yours and
+  private too; otherwise nothing is read from or saved in it.
+- If the login can't be saved, `follows` warns
+  (`could not save the MangaDex login to <path>: <reason>; the next run will need the password again`)
+  and carries on; `login` exits 1. Without a usable `HOME` there is no default credentials file
+  and nothing is saved: `follows` logs in for that run only, and `login` exits 1 with
+  `could not save the MangaDex login: there is no home directory (HOME is not set to an absolute path)`.
+- Two runs at once take turns: the second waits for the first to finish logging in and fetching
+  the follows, for at most 60 s, then exits 1 with
+  `another mangadex-dl is using the saved login; try again`. Two cron jobs therefore can't spoil
+  each other's login.
+- `--dry-run` is a dry run of the downloads only: it still logs in, may renew and save the
+  login, and fetches your follows.
+
+### `login`
+
+```
+mangadex-dl login [--credentials FILE] [--password-stdin] [--no-input]
+```
+
+`login` logs in and saves the login, and downloads nothing. It **always logs in afresh with the
+password**, even when a login is saved, so it also renews a login that ended. The client and the
+username of the saved login are reused, so usually only the password is asked. On success it
+prints `mangadex-dl: logged in to MangaDex as <username>; the login is saved in <path>` on
+stderr (not with `-q`), and exits 0. stdout stays empty, also with `--json`.
+
+**Switching accounts:** because the saved client and username are reused, run
+`mangadex-dl logout` first and then `mangadex-dl login`, or use `--credentials` with a file that
+names the other account (a credentials file always beats the saved login; the saved login of the
+first account is then replaced).
+
+### `logout`
+
+```
+mangadex-dl logout
+```
+
+`logout` asks MangaDex to revoke the saved refresh token, then deletes `session.json`.
+
+- **Best effort:** the saved login is removed even when MangaDex can't be reached or refuses,
+  with the warning
+  `could not end the session at MangaDex (<reason>); the saved login was removed anyway`, and
+  exit 0. MangaDex accepts the request even for a session that has already ended, so logging out
+  after an expired login is quiet.
+- An access token that was already issued may stay valid until it expires (MangaDex documents
+  15 minutes). A saved login that cannot be read is removed without asking MangaDex, with a
+  warning; if you think it leaked, change your password and recreate the API client at
+  <https://mangadex.org/settings>.
+- It prints `logged out; removed <path>`, or `not logged in (no saved login at <path>)` (also
+  exit 0, so running it twice is fine; without a usable `HOME` it is
+  `not logged in (no saved login: HOME is not set to an absolute path)`). stdout stays empty, also with `--json`.
+- If the state directory is not private, `logout` touches nothing and exits 1.
+- **It never reads or changes the credentials file**: delete that yourself if it holds your
+  password.
+
+### Downloading your follows
+
+```
+mangadex-dl follows [DIR] [OPTIONS]
+```
+
+| Argument / option | Meaning |
+|---|---|
+| `DIR` | Output directory, as in `download`. |
+| `--volumes`, `--loose-chapters`, `--layout`, `-l, --lang`, `--group`, `--direction`, `--data-saver`, `--overwrite`, `-n, --dry-run`, `-j, --jobs`, `--no-report` | As in `download`, for every title. |
+| `--fail-fast` | Stop at the first title that fails. |
+| `--dir-per-title` | Put each title in a subdirectory of `DIR`, as in `mdlist` (see [Where the files go](#where-the-files-go)). |
+| `--status WORD,...` | Only the follows with one of these reading statuses (below). |
+| `--credentials FILE` | Read login details from `FILE` (see [The credentials file](#the-credentials-file)). |
+| `--password-stdin` | Read the password from stdin (see [`--password-stdin`](#--password-stdin)). |
+| `--no-input` | Never prompt; exit 8 if a login is needed. |
+
+There is no `--title` (exit 2, as for `mdlist`) and `DIR` is never a title or a list
+(`DIR looks like a MangaDex id; follows takes no title or list (use 'mangadex-dl mdlist <list>' or 'download <title>')`).
+The global options (`--json`, `-q`, `-v`, `--color`) work before or after `follows`, also after
+`DIR`. `mangadex-dl follows --help` lists the options with examples.
+
+- **Order:** the order MangaDex returns your follows in. A title that comes twice is downloaded
+  once; the later entry is skipped with a warning.
+- **At most 10 000 follows**, the window MangaDex documents for collection endpoints; more are
+  refused, never truncated (exit 3,
+  `you follow more than 10000 titles on MangaDex; refusing to truncate the list`).
+- **Where the files go:** exactly as in `mdlist`: flat in `DIR` by default, or one directory per
+  title with `--dir-per-title`.
+- **Nothing followed:** the warning `you follow no titles on MangaDex` (not shown with `-q`),
+  nothing created, exit 0.
+
+#### Reading status: `--status`
+
+`--status` narrows the titles you follow to those whose reading status is one of the words given:
+
+| Word | Also accepted |
+|---|---|
+| `reading` | |
+| `on_hold` | `on-hold` |
+| `plan_to_read` | `plan-to-read` |
+| `dropped` | |
+| `re_reading` | `re-reading` |
+| `completed` | |
+
+- Give several separated by commas, or repeat `--status`: `--status reading,on_hold` is
+  `--status reading --status on_hold`. Lower case only; a word given twice counts once.
+- Only titles you **follow** are downloaded: a followed title without a reading status is left
+  out, and a title with a reading status that you don't follow is never downloaded.
+- The titles keep the order of your follows, whatever the order of the words, and are numbered
+  1, 2, 3, … among themselves.
+- An unknown word is exit 2:
+  `--status: unknown reading status '<word>'; use reading, on_hold, plan_to_read, dropped, re_reading or completed`
+  (there is no `all`: leave `--status` out to get every title you follow). An empty word
+  (`--status reading,`) is exit 2 too.
+- If none of your follows has one of the statuses, the warning
+  `none of the titles you follow have the reading status reading, on_hold` (not shown with `-q`),
+  nothing created, exit 0.
+- `--status` costs one extra request, for your reading statuses, after the follows.
+- A reading status MangaDex may add later never matches; `-v` notes how many titles have one.
+
+#### What `follows` prints
+
+As `mdlist` prints (see [What `mdlist` prints](#what-mdlist-prints)), with these differences:
+
+- **stderr:** every warning and error about a title starts with `follows:<n>: <uuid>: `, its
+  position among the titles run (from 1) and its UUID, for example
+  `mangadex-dl: error: follows:2: <uuid>: title <uuid> not found on MangaDex (HTTP 404); check the UUID or URL`.
+  The closing lines say "item", as in `mdlist`.
+- **`-v`** first prints `logged in to MangaDex as <username> (saved login)` (or `(refreshed)`,
+  `(password)`), then `follows: 57 titles`; with `--status` also
+  `follows: 12 of 57 have the reading status reading, on_hold`, and, if any, one line counting the
+  titles with a reading status `mangadex-dl` does not know. Each title begins with
+  `follows:1: <uuid>`.
+- **`-vv`** adds the request trace. The login requests show only the method, the address, the
+  HTTP status and the time, never what was sent.
+- Your password, the client secret and the tokens are never printed, on stderr, in `-v`/`-vv`
+  or in `--json`.
+
+**`--json`** prints `mdlist`'s document, under the same rules, with a `follows` object in
+place of `list`:
+
+```
+{ "format_version": 1, "dry_run", "source": "follows",
+  "follows": { "username", "titles", "statuses", "selected" },
+  "titles": [ { "line", "manga_id", "dir", "status", "exit_code", "error", "duplicate_of",
+                "report" } ],
+  "summary": { "titles": { ... }, "files": { ... } } }
+```
+
+- `source` is always `"follows"`. `follows.username` is the username you logged in with,
+  `follows.titles` the number of follows MangaDex returned (duplicates included),
+  `follows.statuses` `null` without `--status` and otherwise the words given (in the
+  underscore spelling, each once, in your order), and `follows.selected` the number of titles
+  run (equal to `titles` without `--status`). All four keys are always there.
+- `line` is the title's position among the titles run, as in `follows:<n>:`.
+- `titles[].status` is the outcome of the download (`ok`, `not_found`, …), as in `batch`; it has
+  nothing to do with the reading status.
+- No token, client id, client secret or password ever appears in the document.
+- With nothing followed, or nothing matching `--status`: `"titles": []`, with the `follows`
+  object filled in.
+- No document is printed for usage errors, login failures (exits 8 and 9), a failure to fetch
+  the follows, or an interrupt.
+
+#### Exit status of `follows`
+
+The titles' results combine exactly as in a batch (see
+[Exit status of a batch](#what-a-batch-prints-and-when-it-stops)). Before any title runs, the
+login or the follows themselves can fail; then stdout stays empty (even with `--json`), nothing is
+created in `DIR`, and the error has no `follows:<n>:` prefix:
+
+- **8:** not logged in, or the saved login expired, and the missing detail can't be asked for
+  (no terminal, `--no-input`, `--password-stdin`, an empty answer at a prompt). The messages are
+  quoted [above](#logging-in) and under [The saved login](#the-saved-login).
+- **9:** MangaDex rejected the login details:
+  - `MangaDex rejected the username or password for <username> (invalid_grant); check them, or log in on the website to see whether the account is locked`;
+  - `MangaDex rejected the API client (invalid_client); check client_id and client_secret, and whether the client is approved at https://mangadex.org/settings`;
+  - the `unauthorized_client` message [above](#logging-in) for a client that is not approved
+    (yet);
+  - `MangaDex rejected a new access token for your follows (HTTP 401); check that the API client is approved and allowed to read your account`
+    (`your reading statuses` with `--status`);
+  - `MangaDex refused the login (<code>)` for any other refusal, with MangaDex's error code.
+
+  Don't retry a rejected password in a loop. After an exit 9, fix or remove a wrong password in
+  the credentials file so a cron job doesn't keep trying; MangaDex doesn't document what it does
+  after repeated failed logins.
+- **3:** the login or follows requests failed (connection, DNS, TLS, timeout, server errors or
+  rate limiting that did not clear), with the network remedy; or an answer can't be used, with
+  no remedy: a malformed response, more than 10 000 follows, or more than 3 login requests in
+  one run.
+- **1:** a credentials file that is missing (with `--credentials`), not private or malformed; another
+  run holding the saved login for more than 60 s; or a local error, as for `mdlist`.
+- **2:** usage errors, before anything is sent.
+
+#### Typed values and errors
+
+- **On `follows`, `login` and `logout`, no value and no bare word is repeated in a usage error, in
+  case it holds a password.** An unrecognised long option is named, cut at any `=`, so
+  `--bogus=x` shows `--bogus`, and so is a two-character short option such as `-x`. Every other
+  extra word is only counted
+  (`follows does not take 1 more argument (not shown in case it holds a password)`), and a flag
+  given a value (`--dry-run=<value>`) just says that it takes no value
+  (`--dry-run takes no value`). An option-shaped word is therefore shown: never type a secret as
+  `--something`.
+- The value of a known option such as `--status`, `--credentials`, `--jobs`, `--layout` or
+  `--color` is still shown when it is invalid (`--jobs: Value 99 not in range [1 - 8]`), so don't
+  put a secret there either.
+- **A mistyped password after `--password-stdin` (or any stray word) becomes `DIR`**:
+  `follows --password-stdin <password>` takes `<password>` as the output directory. That word was
+  on the command line, so other users could see it (`ps`) and your shell saved it in its history:
+  treat that password as exposed and change it. It is not repeated in a usage or login error, but
+  it is `DIR`: if the run gets as far as downloading, files go into a directory with that name,
+  their paths are printed on stdout, and later errors can name it. Check your command line, and
+  delete that directory if it happens. (`login` takes no `DIR`, so there the word is an error and
+  is not repeated; the same advice about the password applies.)
+
+#### Privacy and proxies
+
+- Only the requests for your follows (and, with `--status`, your reading statuses) carry your
+  login, both on `api.mangadex.org`. The login itself goes to
+  `auth.mangadex.org`. **Every title is downloaded anonymously**, exactly as with `mdlist`, and no
+  login is ever sent to an image server or to MangaDex@Home.
+- libcurl honours `https_proxy`/`http_proxy` (see
+  [Environment and configuration](#environment-and-configuration)). Over https the requests,
+  including the login, travel inside TLS, and the `Authorization` header is never sent to the
+  proxy itself. A proxy set up to inspect TLS, with its certificate authority installed on your
+  system, can still read the traffic: do not point `https_proxy` at one you do not trust.
+- `follows`, `login` and `logout` ask the kernel not to write core files for themselves (best
+  effort), so a crash should not leave a core file holding a secret.
+
+#### Running `follows` again
+
+Running the same command again treats each title as a `download` re-run does (see
+[Running again](#running-again)): files that already hold every chapter are skipped, files
+MangaDex has added chapters to are rebuilt, and titles you have followed since the last run are
+downloaded. The files of titles you no longer follow (or that no longer match `--status`) are
+left alone: delete them yourself. A title whose position changes keeps its files, flat or in its
+`--dir-per-title` directory, whose name does not depend on the position or the reading status.
+
+#### Examples of `follows`
+
+```sh
+# Log in once, then download everything you follow into ~/Manga
+mangadex-dl login
+mangadex-dl follows ~/Manga
+
+# Only what you are reading or plan to read, one folder per title
+mangadex-dl follows ~/Manga --status reading,plan_to_read --dir-per-title
+
+# Show what would be written, without downloading anything
+mangadex-dl follows ~/Manga --dry-run
+
+# From cron: never prompt; exit 8 means "run 'mangadex-dl login' again"
+mangadex-dl follows ~/Manga --no-input -q
+
+# In a script, with the password from a password manager
+pass show mangadex | mangadex-dl follows ~/Manga --password-stdin
+
+# With the details in another file, for example a second account
+# (this replaces the saved login; a later run without --credentials uses that account)
+mangadex-dl follows ~/Manga-other --credentials ~/.config/mangadex-dl/other-credentials
+```
+
 ## Output
 
 - **stdout is data:** the path of each file as it is written or updated, one per line. With
@@ -673,23 +1099,26 @@ mangadex-dl mdlist <uuid> ~/Manga --volumes 1-3 --lang fr --json
   except an `mdlist` list that is malformed or too long, where retrying can't help (see
   [Exit status of a list](#exit-status-of-a-list)).
 - **Usage errors** (exit 2) read `mangadex-dl: error: <what is wrong>`, followed by
-  `Run 'mangadex-dl download --help' for more information.` (or `mangadex-dl batch --help`, or
-  `mangadex-dl mdlist --help`, or `mangadex-dl --help` before a command is given).
+  `Run 'mangadex-dl download --help' for more information.` (or the `--help` of the command
+  given, such as `mangadex-dl batch --help`, or `mangadex-dl --help` before a command is given).
 
-`mangadex-dl` never prompts. Only `batch -` reads stdin.
+Only `follows` and `login` ever prompt, and only at a terminal (see
+[The prompts](#the-prompts)). Only `batch -`, the prompts and `--password-stdin` read stdin.
 
 ## Exit status
 
 | Code | Meaning |
 |---|---|
 | 0 | Success: every selected file was written or updated, was already up to date, was left alone with a warning, or (with `--dry-run`) is planned. |
-| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. For `batch` and `mdlist`, also the code of a title whose own directory can't be used (that title fails alone). |
-| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. |
-| 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. For `mdlist`, also the same problems with the list response, or a list of more than 10 000 titles (see [Exit status of a list](#exit-status-of-a-list)). |
+| 1 | Local failure, which stops the run: `DIR` is unusable, permission denied, read-only file system, disk full, a failed write to stdout, or no usable libcurl. For `batch`, also a list file that can't be read. For `batch`, `mdlist` and `follows`, also the code of a title whose own directory can't be used (that title fails alone). For `follows`, `login` and `logout`, also a credentials file that is missing (with `--credentials`), not private or malformed, a saved login in use by another run, and a login that `login` can't save or `logout` can't remove. |
+| 2 | Usage error: unknown option, bad value, malformed `SPEC`, both selections `none`, or a `DIR` that looks like a second manga id. For `batch`, also any problem in the CSV list. For `follows` and `login`, also `--password-stdin` with an empty stdin, and an option that looks like a password (see [Typed values and errors](#typed-values-and-errors)). |
+| 3 | Network or API problem before anything could be planned: connection, DNS, TLS, timeout, server errors or rate limiting that did not clear, or a malformed or oversized API response. For `mdlist`, also the same problems with the list response, or a list of more than 10 000 titles (see [Exit status of a list](#exit-status-of-a-list)). For `follows` and `login`, also the same problems with the login and follows requests, or more than 10 000 follows (see [Exit status of `follows`](#exit-status-of-follows)). |
 | 4 | The title, or for `mdlist` the list, does not exist on MangaDex, or the list is private. |
 | 5 | The title exists, but nothing downloadable matched the language and selection. |
 | 6 | Incomplete: at least one file failed, either a new file or the update of an existing one (which is then kept unchanged); the others may have been written. |
-| 7 | `batch` and `mdlist` only: the titles that did not complete failed in more than one way (for example one not found and one with no matching chapters); the per-title results say which. See [Exit status of a batch](#what-a-batch-prints-and-when-it-stops). |
+| 7 | Several titles failed in different ways (see per-title results): `batch`, `mdlist` and `follows` only, when the titles that did not complete failed in more than one way (for example one not found and one with no matching chapters). See [Exit status of a batch](#what-a-batch-prints-and-when-it-stops). |
+| 8 | `follows`/`login`: not logged in, or the saved login expired, and the missing detail can't be asked for (no terminal, `--no-input`, `--password-stdin`, an empty answer). Run `mangadex-dl login` in a terminal. See [Logging in](#logging-in). |
+| 9 | `follows`/`login`: MangaDex rejected the login details (the username or password, the API client, or a client that is not approved yet), or a new access token. See [Exit status of `follows`](#exit-status-of-follows). |
 | 70 | Internal error (a bug; please report it). |
 
 A run stopped by Ctrl-C or `SIGTERM` ends by that signal (the shell reports 130 or 143). When
@@ -700,8 +1129,11 @@ quietly by `SIGPIPE` (141).
 
 All production traffic is HTTPS: the MangaDex API (`api.mangadex.org`), cover images
 (`uploads.mangadex.org`), the image servers the API hands out, and MangaDex@Home reports
-(`api.mangadex.network`). Requests carry the User-Agent `mangadex-dl/<version>`. No login is
-used; only public data is downloaded. `mdlist` makes one extra API request, for the list.
+(`api.mangadex.network`). Requests carry the User-Agent `mangadex-dl/<version>`. `mdlist` makes
+one extra API request, for the list. Only `follows`, `login` and `logout` log in: they talk to
+MangaDex's login server (`auth.mangadex.org`), and `follows` reads your follows (and, with
+`--status`, your reading statuses) with that login. Every title, cover and image is downloaded
+without it (see [Privacy and proxies](#privacy-and-proxies)).
 
 ### TLS and CA certificates
 
@@ -782,6 +1214,11 @@ new ones are dropped, and reports still waiting when the download ends are disca
 `mangadex-dl` has **no configuration file** and reads **no environment variables of its own**
 for its behaviour; everything is set on the command line. The only exceptions:
 
+- `follows`, `login` and `logout`: the [credentials file](#the-credentials-file) in
+  `$XDG_CONFIG_HOME/mangadex-dl/` and the [saved login](#the-saved-login) in
+  `$XDG_STATE_HOME/mangadex-dl/`. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` are used only when they
+  are absolute paths; otherwise `HOME` decides (`~/.config/`, `~/.local/state/`). Login details
+  are never read from environment variables.
 - Color of stderr diagnostics: `NO_COLOR`, `CLICOLOR_FORCE` and `TERM` (`TERM=dumb` also turns
   the progress line off). Precedence: `--color` > `NO_COLOR` > `CLICOLOR_FORCE` > `TERM=dumb` >
   whether stderr is a terminal.
@@ -793,8 +1230,9 @@ for its behaviour; everything is set on the command line. The only exceptions:
 - The dynamic loader's search path (`LD_LIBRARY_PATH`, `/etc/ld.so.conf`) decides which libcurl
   is loaded; see [Security notes](#security-notes).
 
-No cache, config or state directories are used, and `TMPDIR` is ignored. What a file holds is
-recorded inside the file itself (see [The manifest](#the-manifest)).
+No cache directory is used, `TMPDIR` is ignored, and only `follows`, `login` and `logout` use the
+config and state directories above. What a file holds is recorded inside the file itself (see
+[The manifest](#the-manifest)).
 
 ## Interruption and file safety
 
@@ -802,6 +1240,9 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   permissions) and their temporary files are ever written (with `batch`, also
   `DIR/<dir>/<name>.epub` for a row with a `dir`; with `mdlist --dir-per-title`, also
   `DIR/<title>/<name>.epub`). Existing `.epub` files are read, never modified in place.
+  `follows`, `login` and `logout` also write the saved login in
+  `$XDG_STATE_HOME/mangadex-dl/` (`session.json`, its lock file `session.lock` and, briefly, a
+  hidden temporary file next to them; see [The saved login](#the-saved-login)).
 - Each file is written to a temporary file in `DIR`, flushed to disk, and only then given its
   final name. A finished `.epub` is never a partial one.
 - An existing file is replaced only with `--overwrite` (never a directory, which fails that
@@ -841,6 +1282,8 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 - One title and one language per `download` run; `batch` runs a list of titles one after
   another (never in parallel).
 - `mdlist` downloads one list per run, at most 10 000 titles.
+- `follows` downloads the follows of one account per run, at most 10 000 follows, the window
+  MangaDex documents for collection endpoints; more are refused, never truncated.
 - No resuming inside a file: an interrupted file is downloaded again from the start. (An
   interrupted update starts again from the old file, so its chapters are still reused.)
 - API responses over 16 MiB, images over 32 MiB, chapters over 5000 pages and images wider or
@@ -864,6 +1307,12 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
   printed on stderr, and image-server addresses and image names from the API are validated
   (HTTPS only, plain names) before use. Your `MANGA` and `--title` values are never echoed in
   error messages.
+- **Secrets** (`follows`, `login`, `logout`): the password, the client secret and the tokens never
+  go on the command line, into environment variables, onto stderr or into `--json`. The password
+  is never saved. The credentials file and the saved login must be private to you, and the login
+  is sent only to MangaDex's own servers (`--api-base` can't redirect it). See
+  [The titles you follow](#the-titles-you-follow-follows), in particular
+  [Typed values and errors](#typed-values-and-errors).
 - Existing files in `DIR` are treated as untrusted input. They are opened without following
   symbolic links, read with bounded sizes, and checked (zip structure, manifest, CRC-32 of every
   reused page and its image header) before anything is copied from them. A file that fails a
@@ -875,7 +1324,9 @@ recorded inside the file itself (see [The manifest](#the-manifest)).
 There is a hidden `--api-base` option used by the test suite (for example
 `--api-base file:///abs/fixture/dir` reads canned API responses and images from disk). It is for
 testing only, is not shown in `--help`, and is not a supported interface. Any non-default
-`--api-base` also turns MangaDex@Home reports off.
+`--api-base` also turns MangaDex@Home reports off. `follows`, `login` and `logout` accept only
+the official API or a `file://` fixture there; with a fixture they keep their login in
+`fixture-session.json` instead of `session.json`, so a test never reads or replaces a real login.
 
 ## Development
 
