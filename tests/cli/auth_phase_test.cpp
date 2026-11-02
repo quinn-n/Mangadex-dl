@@ -64,6 +64,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1119,6 +1120,31 @@ constexpr std::string_view password_stdin_hint_line =
     return attributes.c_lflag;
 }
 
+/// Clears the process-wide interrupt flag on entry and on exit, so a simulated signal never
+/// leaks into another test.
+class FlagReset {
+public:
+    FlagReset() noexcept { md::reset_interrupt_for_testing(); }
+    FlagReset(const FlagReset&) = delete;
+    FlagReset& operator=(const FlagReset&) = delete;
+    FlagReset(FlagReset&&) = delete;
+    FlagReset& operator=(FlagReset&&) = delete;
+    ~FlagReset() { md::reset_interrupt_for_testing(); }
+};
+
+/// How long a watchdog waits before it unblocks a read that ignored the interrupt, so a
+/// regression fails on the result instead of hanging the test run.
+constexpr std::chrono::seconds watchdog_timeout{5};
+
+/// Sleeps until `stop` is requested or watchdog_timeout has passed. True when it timed out.
+[[nodiscard]] bool watchdog_wait(const std::stop_token& stop) {
+    const auto give_up = std::chrono::steady_clock::now() + watchdog_timeout;
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    return !stop.stop_requested();
+}
+
 } // namespace
 
 TEST_CASE("auth phase: --password-stdin on a terminal hides the typing and shows the hint, also "
@@ -1126,7 +1152,7 @@ TEST_CASE("auth phase: --password-stdin on a terminal hides the typing and shows
           "[auth phase]") {
     const md::test::PtyPair pty = require_pty(); // before the Typist: it borrows the master
     const Harness h{};
-    md::reset_interrupt_for_testing();
+    const FlagReset reset{};
     const bool quiet = GENERATE(false, true);
     const bool no_input = GENERATE(false, true); // the flag is the explicit request: allowed
     CAPTURE(quiet, no_input);
@@ -1148,7 +1174,6 @@ TEST_CASE("auth phase: --password-stdin on a terminal hides the typing and shows
     CHECK(h.requests() == std::vector<std::string>{h.token_url()});
     run.close();
     run.check_no_secret();
-    md::reset_interrupt_for_testing();
 }
 
 TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores echo, saves nothing "
@@ -1156,12 +1181,16 @@ TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores e
           "[auth phase]") {
     const md::test::PtyPair pty = require_pty(); // before the interrupter: it borrows the master
     const Harness h{};
-    md::reset_interrupt_for_testing();
+    const FlagReset reset{};
     const ::tcflag_t before = local_flags(pty.slave.get());
     md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
     args.password_stdin = true;
-    // Once ECHO is off (the read has begun), Ctrl-C as the flag handler records it.
-    std::jthread interrupter{[master = pty.master.get()] {
+    // Once ECHO is off (the read has begun), Ctrl-C as the flag handler records it. As a
+    // watchdog it then types Enter if the read is still waiting after watchdog_timeout (an empty
+    // line ends it), so a read that ignored the interrupt fails the test instead of hanging.
+    std::atomic<bool> watchdog_fired{false};
+    std::jthread interrupter{[master = pty.master.get(),
+                              fired = &watchdog_fired](const std::stop_token& stop) {
         const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
         ::termios attributes{};
         while (std::chrono::steady_clock::now() < give_up &&
@@ -1170,9 +1199,14 @@ TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores e
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
         md::simulate_interrupt_for_testing(SIGINT);
+        if (watchdog_wait(stop)) {
+            fired->store(::write(master, "\n", 1) == 1);
+        }
     }};
     const Run run{h, args, Setup{.tty = terminals, .stdin_fd = pty.slave.get()}};
+    interrupter.request_stop();
     interrupter.join();
+    CHECK_FALSE(watchdog_fired.load());
     CHECK(run.exit_code() == md::exit_code_for(md::Errc::interrupted)); // main() re-raises: 130
     CHECK(md::interrupt_requested());
     CHECK(run.out().empty());
@@ -1180,35 +1214,41 @@ TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores e
     CHECK(local_flags(pty.slave.get()) == before);
     CHECK(h.requests().empty());
     CHECK(!fs::exists(h.session_file()));
-    md::reset_interrupt_for_testing();
 }
 
 TEST_CASE("auth phase: --password-stdin on a pipe stalled by its writer ends on an interrupt "
           "(rev3 S18)",
           "[auth phase]") {
     const Harness h{};
-    md::reset_interrupt_for_testing();
+    const FlagReset reset{};
     std::array<int, 2> fds{-1, -1};
     REQUIRE(::pipe2(fds.data(), O_CLOEXEC) == 0);
     const md::UniqueFd read_end{fds[0]};
-    const md::UniqueFd write_end{fds[1]}; // kept open: the read never sees an end of input
+    md::UniqueFd write_end{fds[1]}; // kept open: the read never sees an end of input
     md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
     args.password_stdin = true;
-    std::jthread interrupter{[] {
+    // The interrupter owns the write end and, as a watchdog, closes it after watchdog_timeout:
+    // a read that ignored the interrupt then ends (an empty stdin, exit 2) instead of hanging.
+    std::atomic<bool> watchdog_fired{false};
+    std::jthread interrupter{[owned = std::move(write_end), fired = &watchdog_fired](
+                                 const std::stop_token& stop) mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
         md::simulate_interrupt_for_testing(SIGTERM);
+        fired->store(watchdog_wait(stop));
+        owned.reset();
     }};
     const auto started = std::chrono::steady_clock::now();
     const Run run{h, args, Setup{.stdin_fd = read_end.get()}};
     const auto waited = std::chrono::steady_clock::now() - started;
+    interrupter.request_stop();
     interrupter.join();
+    CHECK_FALSE(watchdog_fired.load());
     CHECK(run.exit_code() == md::exit_code_for(md::Errc::interrupted));
-    CHECK(waited < std::chrono::seconds{3});
+    CHECK(waited < watchdog_timeout);
     CHECK(run.out().empty());
     CHECK(run.err().empty());
     CHECK(h.requests().empty());
     CHECK(!fs::exists(h.session_file()));
-    md::reset_interrupt_for_testing();
 }
 
 // ---- interrupts and the end of the phase --------------------------------------------------------

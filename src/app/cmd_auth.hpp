@@ -121,7 +121,8 @@ enum class SaveOutcome {
 /// interrupt handlers, the backend and the trace exist. In order:
 ///  1. check_raw_auth_args, then check_auth_api_base(api_base, command): exit 2 (the message and
 ///     `Run 'mangadex-dl <command> --help' ...`) before any file, stdin or request is touched;
-///     then guard_secrets(), before any secret is read;
+///     then guard_secrets(), before any secret is read; with LoginMode::password (`login`),
+///     check_login_store (rev3 S20): no usable state directory is exit 1, before stdin is read;
 ///  2. --password-stdin, if given, is read from io.stdin_fd (always, even if a session would make
 ///     it unnecessary): with io.stdin_tty through read_password_from_terminal (echo off, the
 ///     hint line first), else read_password_stdin. An empty one is exit 2, a read error exit 1,

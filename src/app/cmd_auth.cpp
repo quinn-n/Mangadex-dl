@@ -275,6 +275,16 @@ std::expected<LoginPhase, int> run_login_phase(const RawAuthArgs& args, const Ap
     // Before any secret is read (the password, the credentials file, the saved session).
     guard_secrets();
 
+    // rev3 S20: `login` that could not save the login stops here, before stdin is read, a hint
+    // or prompt is shown, or a request is sent (LoginSession::open checks again).
+    const UserDirs dirs = user_dirs(io.env);
+    if (mode == LoginMode::password) {
+        if (Result<void> store = check_login_store(api_base, dirs); !store) {
+            print_error(io, policy, store.error().message);
+            return std::unexpected(store.error().exit_code());
+        }
+    }
+
     // 2. --password-stdin: read once whenever it is given; a terminal with echo off (rev3 S18).
     // Both reads poll for an interrupt, which ends the phase silently (main() re-raises it).
     std::optional<Secret> stdin_password{};
@@ -295,7 +305,6 @@ std::expected<LoginPhase, int> run_login_phase(const RawAuthArgs& args, const Ap
     }
 
     // 3. The credentials file.
-    const UserDirs dirs = user_dirs(io.env);
     Result<LoadedCredentials> credentials = load_credentials(args, dirs);
     if (!credentials) {
         print_error(io, policy, credentials.error().message);

@@ -276,16 +276,38 @@ struct SessionState {
 
 /// rev3 S20: `login` without a usable state directory, in the wording `login` reports a failed
 /// save with: `could not save the MangaDex login[ to <path>]: <why>` (exit 1).
-[[nodiscard]] AuthFailure no_store_failure(const SessionState& s) {
-    const std::string why = s.no_store_reason.empty()
+[[nodiscard]] Error no_store_error(const std::optional<std::filesystem::path>& session_path,
+                                   std::string_view no_store_reason) {
+    const std::string why = no_store_reason.empty()
                                 ? std::string{"the state directory is not usable"}
-                                : s.no_store_reason;
-    if (s.session_path.has_value()) {
-        return local_failure(Errc::failure,
-                             std::format("could not save the MangaDex login to {}: {}",
-                                         s.session_path->string(), why));
+                                : std::string{no_store_reason};
+    if (session_path.has_value()) {
+        return Error{.code = Errc::failure,
+                     .message = std::format("could not save the MangaDex login to {}: {}",
+                                            session_path->string(), why)};
     }
-    return local_failure(Errc::failure, std::format("could not save the MangaDex login: {}", why));
+    return Error{.code = Errc::failure,
+                 .message = std::format("could not save the MangaDex login: {}", why)};
+}
+
+[[nodiscard]] AuthFailure no_store_failure(const SessionState& s) {
+    return AuthFailure{.kind = AuthFailureKind::local,
+                       .error = no_store_error(s.session_path, s.no_store_reason)};
+}
+
+/// The no-store reason when there is no state directory path (no absolute HOME/XDG_STATE_HOME).
+inline constexpr std::string_view no_home_reason =
+    "there is no home directory (HOME is not set to an absolute path)";
+
+/// The no-store reason when StateDir::open refused `dir_path`.
+[[nodiscard]] std::string dir_unusable_reason(const std::filesystem::path& dir_path,
+                                              const FileProblem& problem) {
+    return std::format("the directory {} is not usable: {}", dir_path.string(), problem.reason);
+}
+
+/// The session slot of an API base: the fixture slot iff a fixture tree.
+[[nodiscard]] SessionSlot slot_for(const ApiBase& api_base) noexcept {
+    return api_base.kind() == ApiBase::Kind::fixture ? SessionSlot::fixture : SessionSlot::real;
 }
 
 /// Writes the session in memory. Precondition for StateDir::write: the SessionLock is held (the
@@ -579,7 +601,7 @@ void apply_grant(SessionState& s, TokenGrant grant, GrantKind kind) {
                                                             LoginNotes& notes) {
     const std::optional<std::filesystem::path> dir_path = state_dir_path(dirs);
     if (!dir_path.has_value()) {
-        s.no_store_reason = "there is no home directory (HOME is not set to an absolute path)";
+        s.no_store_reason = std::string{no_home_reason};
         return std::optional<Session>{};
     }
     s.session_path = *dir_path / session_file_name(s.slot);
@@ -588,8 +610,7 @@ void apply_grant(SessionState& s, TokenGrant grant, GrantKind kind) {
 
     FileResult<StateDir> dir = StateDir::open(*dir_path, true);
     if (!dir) {
-        s.no_store_reason = std::format("the directory {} is not usable: {}", dir_path->string(),
-                                        dir.error().reason);
+        s.no_store_reason = dir_unusable_reason(*dir_path, dir.error());
         if (hides_saved_login(dir.error().kind)) {
             notes.warnings.push_back(ignore_warning(session_path, s.no_store_reason));
         }
@@ -706,6 +727,20 @@ void seed_session(SessionState& s, CredentialsFile& file, std::optional<Session>
 
 } // namespace
 
+Result<void> check_login_store(const ApiBase& api_base, const UserDirs& dirs) {
+    const std::optional<std::filesystem::path> dir_path = state_dir_path(dirs);
+    if (!dir_path.has_value()) {
+        return std::unexpected(no_store_error(std::nullopt, no_home_reason));
+    }
+    // The same open (and creation) as LoginSession::open's; the descriptor is closed again here.
+    const FileResult<StateDir> dir = StateDir::open(*dir_path, true);
+    if (!dir) {
+        return std::unexpected(no_store_error(*dir_path / session_file_name(slot_for(api_base)),
+                                              dir_unusable_reason(*dir_path, dir.error())));
+    }
+    return {};
+}
+
 struct LoginSession::State : SessionState {
     using SessionState::SessionState;
 };
@@ -733,8 +768,7 @@ LoginSession::open(LoginRequest request, const AuthServices& services,
     auto state = std::make_unique<State>(*services.transport, *services.clock,
                                          std::move(*endpoints), services.jitter, services.trace);
     SessionState& s = *state;
-    s.slot = request.api_base.kind() == ApiBase::Kind::fixture ? SessionSlot::fixture
-                                                               : SessionSlot::real;
+    s.slot = slot_for(request.api_base);
     s.prompter = request.prompter;
     s.credentials_path = std::move(request.credentials_path);
     s.stdin_password = std::move(request.password_stdin);

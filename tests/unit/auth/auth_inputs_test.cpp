@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -187,13 +188,21 @@ public:
 // NOLINTNEXTLINE(misc-include-cleaner): POSIX pthread_t; glibc defines it in a bits/ header
 using ThreadId = pthread_t;
 
+/// How long a watchdog waits before it closes a stalled pipe's write end: a read that ignored the
+/// interrupt then sees the end of input and the test fails on the result instead of hanging.
+constexpr std::chrono::seconds watchdog_timeout{5};
+
 /// After 200 ms, interrupts the thread that constructed it: a simulated interrupt (the flag
 /// only), or a real SIGINT sent to that thread (pthread_kill), which the installed handler turns
-/// into the flag. The thread is joined by the destructor (std::jthread, the last member).
+/// into the flag. It owns the pipe's write end and, as a watchdog, closes it watchdog_timeout
+/// later unless finish() came first. The thread is joined by finish() or the destructor
+/// (std::jthread, the last member).
 class Interrupter {
 public:
-    explicit Interrupter(bool real_signal)
-        : target_{::pthread_self()}, thread_{[real_signal, target = target_, sent = &sent_] {
+    Interrupter(bool real_signal, md::UniqueFd write_end)
+        : target_{::pthread_self()},
+          thread_{[real_signal, target = target_, sent = &sent_, fired = &watchdog_fired_,
+                   owned = std::move(write_end)](const std::stop_token& stop) mutable {
               std::this_thread::sleep_for(std::chrono::milliseconds{200});
               if (real_signal) {
                   sent->store(::pthread_kill(target, SIGINT) == 0);
@@ -201,6 +210,12 @@ public:
                   md::simulate_interrupt_for_testing(SIGINT);
                   sent->store(true);
               }
+              const auto give_up = std::chrono::steady_clock::now() + watchdog_timeout;
+              while (!stop.stop_requested() && std::chrono::steady_clock::now() < give_up) {
+                  std::this_thread::sleep_for(std::chrono::milliseconds{1});
+              }
+              fired->store(!stop.stop_requested());
+              owned.reset();
           }} {}
     Interrupter(const Interrupter&) = delete;
     Interrupter& operator=(const Interrupter&) = delete;
@@ -208,15 +223,19 @@ public:
     Interrupter& operator=(Interrupter&&) = delete;
     ~Interrupter() = default;
 
-    void join() {
+    /// Stops the watchdog and joins the thread.
+    void finish() {
+        thread_.request_stop();
         if (thread_.joinable()) {
             thread_.join();
         }
     }
     [[nodiscard]] bool sent() const noexcept { return sent_.load(); }
+    [[nodiscard]] bool watchdog_fired() const noexcept { return watchdog_fired_.load(); }
 
 private:
     std::atomic<bool> sent_{false};
+    std::atomic<bool> watchdog_fired_{false};
     ThreadId target_{};
     std::jthread thread_{};
 };
@@ -228,8 +247,9 @@ TEST_CASE("auth inputs: an interrupt ends a stalled --password-stdin read prompt
     const FlagReset reset{};
     const bool real_signal = GENERATE(false, true);
     CAPTURE(real_signal);
-    // The writer stays open and has written part of a line: read() alone would wait forever.
-    const Pipe pipe = make_pipe();
+    // The writer stays open and has written part of a line: read() alone would wait forever
+    // (until the watchdog closes it).
+    Pipe pipe = make_pipe();
     REQUIRE(::write(pipe.write_end.get(), "partial", 7) == 7);
     std::optional<md::Result<md::ScopedInterruptHandlers>> handlers{};
     if (real_signal) {
@@ -238,17 +258,18 @@ TEST_CASE("auth inputs: an interrupt ends a stalled --password-stdin read prompt
     }
 
     const auto started = std::chrono::steady_clock::now();
-    Interrupter interrupter{real_signal};
+    Interrupter interrupter{real_signal, std::move(pipe.write_end)};
     const auto password = read_password_stdin(pipe.read_end.get());
     const auto waited = std::chrono::steady_clock::now() - started;
-    interrupter.join();
+    interrupter.finish();
 
     CHECK(interrupter.sent());
+    CHECK_FALSE(interrupter.watchdog_fired());
     REQUIRE_FALSE(password.has_value());
     CHECK(password.error().code == md::Errc::interrupted);
     CHECK(md::interrupt_requested());
-    // 200 ms until the interrupt, then at most one 100 ms poll: far below this bound.
-    CHECK(waited < std::chrono::seconds{3});
+    // 200 ms until the interrupt, then at most one 100 ms poll: well below the watchdog.
+    CHECK(waited < watchdog_timeout);
 }
 
 TEST_CASE("auth inputs: a pending interrupt is honoured before stdin is read",
@@ -274,14 +295,18 @@ TEST_CASE("auth inputs: a non-blocking stdin is waited for, not an error", "[aut
     Pipe pipe = make_pipe();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl is variadic in C
     REQUIRE(::fcntl(pipe.read_end.get(), F_SETFL, O_NONBLOCK) == 0);
-    std::jthread writer{[write_end = std::move(pipe.write_end)] mutable {
+    // No Catch2 macros on the thread: the write's outcome is checked after the join.
+    std::atomic<bool> wrote{false};
+    std::jthread writer{[write_end = std::move(pipe.write_end), done = &wrote] mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds{150});
         const std::string line = std::string{mdx::fixture_password} + "\n";
-        static_cast<void>(::write(write_end.get(), line.data(), line.size()));
+        done->store(::write(write_end.get(), line.data(), line.size()) ==
+                    static_cast<ssize_t>(line.size()));
         write_end.reset();
     }};
     const auto password = read_password_stdin(pipe.read_end.get());
     writer.join();
+    CHECK(wrote.load());
     REQUIRE(password.has_value());
     CHECK(password->reveal() == mdx::fixture_password);
 }

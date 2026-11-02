@@ -464,6 +464,13 @@ private:
     std::unique_ptr<State> state_{};
 };
 
+/// rev3 S20 pre-flight for `login`, before stdin, a prompt or a request: the state directory for
+/// `dirs` exists or is created (0700) and is usable, as LoginSession::open would find it. If not,
+/// Errc::failure with LoginSession::open's no-store text, "could not save the MangaDex login[ to
+/// <path>]: <why>" (<path> is the session file of `api_base`'s slot). Takes no lock and reads no
+/// file; LoginSession::open checks again.
+[[nodiscard]] Result<void> check_login_store(const ApiBase& api_base, const UserDirs& dirs);
+
 struct LogoutOutcome {
     bool removed = false;                 ///< false: there was no saved login
     std::filesystem::path path{};         ///< the session file
