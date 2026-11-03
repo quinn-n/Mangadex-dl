@@ -465,7 +465,8 @@ private:
 };
 
 /// rev3 S20 pre-flight for `login`, before stdin, a prompt or a request: the state directory for
-/// `dirs` exists or is created (0700) and is usable, as LoginSession::open would find it. If not,
+/// `dirs` is missing (LoginSession::open creates it) or usable, as LoginSession::open would find
+/// it; nothing is created. If not,
 /// Errc::failure with LoginSession::open's no-store text, "could not save the MangaDex login[ to
 /// <path>]: <why>" (<path> is the session file of `api_base`'s slot). Takes no lock and reads no
 /// file; LoginSession::open checks again.

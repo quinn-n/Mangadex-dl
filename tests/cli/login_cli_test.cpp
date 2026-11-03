@@ -552,10 +552,10 @@ TEST_CASE("login cli: a state directory others can access -> 1 before any prompt
     const std::string why = std::format("the directory {} is not usable: other users can access it "
                                         "(mode 0777)",
                                         h.state_dir().string());
-    CHECK(run.err == std::format("mangadex-dl: warning: ignoring the saved login at {}: {}\n"
-                                 "mangadex-dl: error: could not save the MangaDex login to {}: "
+    // The pre-flight stops before the saved login is looked at: one line, no "ignoring" warning.
+    CHECK(run.err == std::format("mangadex-dl: error: could not save the MangaDex login to {}: "
                                  "{}\n",
-                                 h.session_file().string(), why, h.session_file().string(), why));
+                                 h.session_file().string(), why));
     CHECK(prompter.events().empty());
     CHECK(h.requests().empty());
     CHECK(read_file(h.session_file()) == before);

@@ -32,6 +32,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <expected>
+#include <format>
 #include <ios>
 #include <optional>
 #include <ostream>
@@ -243,16 +244,29 @@ void write_text(std::ostream& out, std::string_view text) {
     return Error{.code = Errc::usage, .message = std::string{no_password_stdin_text}};
 }
 
+/// A typed line over the cap (only a non-canonical terminal can deliver one): exit 2, worded for
+/// what was typed, not as an empty stdin.
+[[nodiscard]] Error password_too_long() {
+    return Error{.code = Errc::usage,
+                 .message = std::format("the password typed for --password-stdin is longer than "
+                                        "{} bytes",
+                                        max_password_stdin_bytes)};
+}
+
 /// What read_line's status means for --password-stdin on a terminal. `line` is the kept answer.
 [[nodiscard]] Result<Secret> password_result(PromptStatus status, Secret& line) {
     switch (status) {
     case PromptStatus::answered:
-        if (line.reveal().contains('\0') || line.size() > max_password_stdin_bytes) {
+        if (line.size() > max_password_stdin_bytes) {
+            return std::unexpected(password_too_long());
+        }
+        if (line.reveal().contains('\0')) {
             return std::unexpected(no_password()); // the pipe rules: a NUL is no password
         }
         return std::move(line);
-    case PromptStatus::empty:
     case PromptStatus::too_long:
+        return std::unexpected(password_too_long());
+    case PromptStatus::empty:
         return std::unexpected(no_password());
     case PromptStatus::interrupted:
         return std::unexpected(Error{.code = Errc::interrupted, .message = "interrupted"});

@@ -1189,20 +1189,20 @@ TEST_CASE("auth phase: an interrupt at --password-stdin on a terminal restores e
     // watchdog it then types Enter if the read is still waiting after watchdog_timeout (an empty
     // line ends it), so a read that ignored the interrupt fails the test instead of hanging.
     std::atomic<bool> watchdog_fired{false};
-    std::jthread interrupter{[master = pty.master.get(),
-                              fired = &watchdog_fired](const std::stop_token& stop) {
-        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
-        ::termios attributes{};
-        while (std::chrono::steady_clock::now() < give_up &&
-               ::tcgetattr(master, &attributes) == 0 &&
-               (attributes.c_lflag & static_cast<::tcflag_t>(ECHO)) != 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        md::simulate_interrupt_for_testing(SIGINT);
-        if (watchdog_wait(stop)) {
-            fired->store(::write(master, "\n", 1) == 1);
-        }
-    }};
+    std::jthread interrupter{
+        [master = pty.master.get(), fired = &watchdog_fired](const std::stop_token& stop) {
+            const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+            ::termios attributes{};
+            while (std::chrono::steady_clock::now() < give_up &&
+                   ::tcgetattr(master, &attributes) == 0 &&
+                   (attributes.c_lflag & static_cast<::tcflag_t>(ECHO)) != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            md::simulate_interrupt_for_testing(SIGINT);
+            if (watchdog_wait(stop)) {
+                fired->store(::write(master, "\n", 1) == 1);
+            }
+        }};
     const Run run{h, args, Setup{.tty = terminals, .stdin_fd = pty.slave.get()}};
     interrupter.request_stop();
     interrupter.join();
@@ -1230,8 +1230,8 @@ TEST_CASE("auth phase: --password-stdin on a pipe stalled by its writer ends on 
     // The interrupter owns the write end and, as a watchdog, closes it after watchdog_timeout:
     // a read that ignored the interrupt then ends (an empty stdin, exit 2) instead of hanging.
     std::atomic<bool> watchdog_fired{false};
-    std::jthread interrupter{[owned = std::move(write_end), fired = &watchdog_fired](
-                                 const std::stop_token& stop) mutable {
+    std::jthread interrupter{[owned = std::move(write_end),
+                              fired = &watchdog_fired](const std::stop_token& stop) mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
         md::simulate_interrupt_for_testing(SIGTERM);
         fired->store(watchdog_wait(stop));
@@ -1249,6 +1249,55 @@ TEST_CASE("auth phase: --password-stdin on a pipe stalled by its writer ends on 
     CHECK(run.err().empty());
     CHECK(h.requests().empty());
     CHECK(!fs::exists(h.session_file()));
+}
+
+TEST_CASE("auth phase: login with --password-stdin and no usable store stops before stdin is read "
+          "(rev3 S20)",
+          "[auth phase]") {
+    const Harness h{};
+    md::RawAuthArgs args = with_credentials(h.creds("credentials-client"));
+    args.password_stdin = true;
+    const std::string line = std::format("{}\n", mdx::fixture_password);
+    SECTION("a pipe: nothing is consumed") {
+        const md::UniqueFd stdin_fd = pipe_with(line);
+        const Run run{h, args,
+                      Setup{.stdin_fd = stdin_fd.get(),
+                            .mode = LoginMode::password,
+                            .command = "login",
+                            .env = app::EnvSnapshot{}}};
+        CHECK(run.exit_code() == 1);
+        CHECK(run.out().empty());
+        CHECK(run.err() == "mangadex-dl: error: could not save the MangaDex login: there is no "
+                           "home directory (HOME is not set to an absolute path)\n");
+        CHECK(drain(stdin_fd.get()) == line); // the password was never read
+    }
+    SECTION("a terminal: no hint, echo untouched, nothing read") {
+        const md::test::PtyPair pty = require_pty();
+        const ::tcflag_t before = local_flags(pty.slave.get());
+        REQUIRE(::write(pty.master.get(), line.data(), line.size()) ==
+                static_cast<::ssize_t>(line.size()));
+        fs::create_directories(h.state_dir());
+        fs::permissions(h.state_dir(), fs::perms::all, fs::perm_options::replace);
+        const Run run{h, args,
+                      Setup{.tty = terminals,
+                            .stdin_fd = pty.slave.get(),
+                            .mode = LoginMode::password,
+                            .command = "login"}};
+        fs::permissions(h.state_dir(), fs::perms::owner_all, fs::perm_options::replace);
+        CHECK(run.exit_code() == 1);
+        CHECK(run.out().empty());
+        CHECK(run.err() == std::format("mangadex-dl: error: could not save the MangaDex login to "
+                                       "{}: the directory {} is not usable: other users can "
+                                       "access it (mode 0777)\n",
+                                       h.session_file().string(), h.state_dir().string()));
+        CHECK(local_flags(pty.slave.get()) == before);
+        // The typed line is still waiting on the terminal (TCSAFLUSH would have discarded it).
+        std::string pending(line.size(), '\0');
+        CHECK(::read(pty.slave.get(), pending.data(), pending.size()) ==
+              static_cast<::ssize_t>(line.size()));
+        CHECK(pending == line);
+    }
+    CHECK(h.requests().empty());
 }
 
 // ---- interrupts and the end of the phase --------------------------------------------------------
@@ -1352,6 +1401,33 @@ TEST_CASE("auth phase: paths and usernames are printed terminal-safe", "[auth ph
         CHECK_THAT(run.err(), !ContainsSubstring(rlo()));
         CHECK_THAT(run.err(), StartsWith("mangadex-dl: the MangaDex login server answered HTTP 400 "
                                          "with unauthorized_client: Client ?[31mnot? allowed\n"));
+    }
+    SECTION("ESC in the credentials path and a bidi override in the saved username of the "
+            "account-switch warnings (rev3 S19)") {
+        // A saved username can't hold a C0 control (parse_session refuses it), so the username
+        // carries a bidi override; the credentials path carries ESC.
+        const std::string username = std::format("fixture{}user", rlo());
+        h.seed(
+            h.session(mdx::fixture_refresh_1, mdx::fixture_access_1, unix_now() + 3600, username));
+        const fs::path path = h.root() / "creds\x1b[2Jother";
+        write_private_file(
+            path, mdx::credentials_text(mdx::fixture_user_revoke_503, mdx::fixture_password),
+            fs::perms::owner_read | fs::perms::owner_write);
+        md::RawAuthArgs args = with_credentials(path);
+        const int variant = GENERATE(0, 1, 2); // follows; follows --switch-account; login
+        CAPTURE(variant);
+        args.switch_account = variant == 1;
+        const Run run{h, args,
+                      Setup{.mode = variant == 2 ? LoginMode::password : LoginMode::reuse,
+                            .command = variant == 2 ? "login" : "follows"}};
+        CHECK(run.exit_code() == 0);
+        CHECK_THAT(run.err(), StartsWith("mangadex-dl: warning: "));
+        CHECK_THAT(run.err(), !ContainsSubstring("\x1b"));
+        CHECK_THAT(run.err(), !ContainsSubstring(rlo()));
+        CHECK_THAT(run.err(), ContainsSubstring("creds?[2Jother"));
+        if (variant != 2) {
+            CHECK_THAT(run.err(), ContainsSubstring("the saved login for fixture?user at "));
+        }
     }
     SECTION("a bidi override in a saved username on -v") {
         const std::string username = std::format("fixture{}user", rlo());

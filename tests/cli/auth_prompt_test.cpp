@@ -604,6 +604,35 @@ TEST_CASE("prompt: --password-stdin on a terminal: Enter or Ctrl-D alone holds n
     CHECK(err.str() == hint_line());
 }
 
+TEST_CASE("prompt: --password-stdin on a non-canonical terminal: a line over 4096 bytes is too "
+          "long",
+          "[prompt]") {
+    const FlagReset reset{};
+    const mdt::PtyPair pty = require_pty();
+    // Only a non-canonical terminal delivers more than 4095 bytes in a line.
+    termios raw{};
+    REQUIRE(::tcgetattr(pty.slave.get(), &raw) == 0);
+    raw.c_lflag &= ~static_cast<tcflag_t>(ICANON);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    REQUIRE(::tcsetattr(pty.slave.get(), TCSANOW, &raw) == 0);
+    const tcflag_t before = local_flags(pty.slave.get());
+
+    std::ostringstream err{};
+    Typist typist{pty.master.get(), TypistPlan{.text = std::string(4200, 'x') + "\n"}};
+    const md::Result<md::Secret> password =
+        md::app::read_password_from_terminal(pty.slave.get(), err);
+    typist.join();
+
+    CHECK_FALSE(typist.timed_out());
+    REQUIRE_FALSE(password.has_value());
+    CHECK(password.error().code == md::Errc::usage);
+    CHECK(password.error().message ==
+          "the password typed for --password-stdin is longer than 4096 bytes");
+    CHECK(local_flags(pty.slave.get()) == before);
+    CHECK(err.str() == hint_line());
+}
+
 TEST_CASE("prompt: an interrupt during --password-stdin on a terminal restores echo (rev3 S18)",
           "[prompt]") {
     const FlagReset reset{};

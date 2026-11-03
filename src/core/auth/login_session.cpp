@@ -732,9 +732,11 @@ Result<void> check_login_store(const ApiBase& api_base, const UserDirs& dirs) {
     if (!dir_path.has_value()) {
         return std::unexpected(no_store_error(std::nullopt, no_home_reason));
     }
-    // The same open (and creation) as LoginSession::open's; the descriptor is closed again here.
-    const FileResult<StateDir> dir = StateDir::open(*dir_path, true);
-    if (!dir) {
+    // Without creating anything (a usage error found after this must leave no trace): a missing
+    // directory is fine, LoginSession::open creates it; any other problem is the one open() would
+    // meet. The descriptor is closed again here.
+    const FileResult<StateDir> dir = StateDir::open(*dir_path, false);
+    if (!dir && dir.error().kind != FileProblemKind::missing) {
         return std::unexpected(no_store_error(*dir_path / session_file_name(slot_for(api_base)),
                                               dir_unusable_reason(*dir_path, dir.error())));
     }

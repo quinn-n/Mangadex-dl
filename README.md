@@ -710,9 +710,11 @@ Don't use `echo '<password>' | mangadex-dl …`: the password lands in your shel
 - At a terminal, `--password-stdin` first prints
   `mangadex-dl: reading the password from the terminal (what you type is hidden); press Enter when done`
   on stderr (also with `-q` and `--json`), turns the terminal's echo off, and reads one line:
-  press Enter when done (Ctrl-D ends it too). The echo is turned back on however the read ends.
-  An empty line, or Ctrl-D with nothing typed, is the same exit 2 as an empty pipe. This also
-  works with `--no-input`: the flag itself asks for the password.
+  press Enter when done (Ctrl-D on an empty line, or twice after typing, also ends it). The echo
+  is turned back on however the read ends. An empty line, or Ctrl-D with nothing typed, is the
+  same exit 2 as an empty pipe. This also works with `--no-input`: the flag itself asks for the
+  password. `login` checks first that it can save the login, so without a usable state directory
+  it exits 1 before reading anything.
 - Ctrl-C (or SIGTERM) while `--password-stdin` waits, at a terminal or on a pipe that never
   ends, stops the run at once (130 or 143) and saves nothing.
 - `--password-stdin` takes no value: see [Typed values and errors](#typed-values-and-errors)

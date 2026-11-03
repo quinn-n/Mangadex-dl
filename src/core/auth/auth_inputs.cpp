@@ -31,6 +31,8 @@
 #include <system_error>
 #include <utility>
 
+// <sys/poll.h>, not <poll.h>: glibc declares poll/pollfd/POLL* there, and misc-include-cleaner
+// rejects the <poll.h> wrapper (as in src/app/cmd_auth_prompt.cpp).
 #include <sys/poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -129,6 +131,10 @@ struct StepResult {
     const ::ssize_t count = ::read(fd, unread.data(), unread.size());
     if (count < 0) {
         const int err = errno;
+        if (err == EAGAIN && has_event(entry.revents, POLLERR)) {
+            // poll() would report the error again at once: fail instead of spinning.
+            return std::unexpected(cannot_read_stdin("the descriptor reported an error"));
+        }
         if (retryable(err)) {
             return StepResult{};
         }
