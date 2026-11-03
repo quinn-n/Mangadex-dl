@@ -625,6 +625,7 @@ TEST_CASE("prompt: --password-stdin on a non-canonical terminal: a line over 409
     typist.join();
 
     CHECK_FALSE(typist.timed_out());
+    CHECK(typist.wrote()); // all 4201 bytes reached the terminal: not a short line
     REQUIRE_FALSE(password.has_value());
     CHECK(password.error().code == md::Errc::usage);
     CHECK(password.error().message ==

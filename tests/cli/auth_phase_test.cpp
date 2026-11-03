@@ -67,11 +67,13 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <termios.h>
@@ -456,6 +458,43 @@ private:
     return std::format("mangadex-dl: error: no MangaDex API client is set up; run 'mangadex-dl "
                        "login' in a terminal, or put client_id and client_secret in {}\n",
                        credentials.string());
+}
+
+/// Gives `path` the permissions `during` for the guard's lifetime and `after` when it ends, on
+/// every path (a failed REQUIRE or an exception included). A failure to restore is ignored: a
+/// destructor must not throw, and the TempDir is removed either way.
+class ScopedPerms {
+public:
+    ScopedPerms(fs::path path, fs::perms during, fs::perms after)
+        : path_(std::move(path)), after_(after) {
+        fs::permissions(path_, during, fs::perm_options::replace);
+    }
+    ScopedPerms(const ScopedPerms&) = delete;
+    ScopedPerms& operator=(const ScopedPerms&) = delete;
+    ScopedPerms(ScopedPerms&&) = delete;
+    ScopedPerms& operator=(ScopedPerms&&) = delete;
+    ~ScopedPerms() {
+        std::error_code ignored{};
+        fs::permissions(path_, after_, fs::perm_options::replace, ignored);
+    }
+
+private:
+    fs::path path_{};
+    fs::perms after_ = fs::perms::none;
+};
+
+/// How long a test waits for input it expects to be pending before it fails instead of blocking.
+constexpr int pending_input_timeout_ms = 5000;
+
+/// Is input waiting on `fd` within pending_input_timeout_ms? (EINTR retried.)
+[[nodiscard]] bool input_pending(int fd) {
+    pollfd entry{.fd = fd, .events = POLLIN, .revents = 0};
+    int ready = -1;
+    do {
+        ready = ::poll(&entry, 1, pending_input_timeout_ms);
+    } while (ready < 0 && errno == EINTR);
+    return ready == 1 &&
+           (static_cast<unsigned>(entry.revents) & static_cast<unsigned>(POLLIN)) != 0U;
 }
 
 } // namespace
@@ -1277,13 +1316,12 @@ TEST_CASE("auth phase: login with --password-stdin and no usable store stops bef
         REQUIRE(::write(pty.master.get(), line.data(), line.size()) ==
                 static_cast<::ssize_t>(line.size()));
         fs::create_directories(h.state_dir());
-        fs::permissions(h.state_dir(), fs::perms::all, fs::perm_options::replace);
+        const ScopedPerms insecure{h.state_dir(), fs::perms::all, fs::perms::owner_all};
         const Run run{h, args,
                       Setup{.tty = terminals,
                             .stdin_fd = pty.slave.get(),
                             .mode = LoginMode::password,
                             .command = "login"}};
-        fs::permissions(h.state_dir(), fs::perms::owner_all, fs::perm_options::replace);
         CHECK(run.exit_code() == 1);
         CHECK(run.out().empty());
         CHECK(run.err() == std::format("mangadex-dl: error: could not save the MangaDex login to "
@@ -1292,6 +1330,8 @@ TEST_CASE("auth phase: login with --password-stdin and no usable store stops bef
                                        h.session_file().string(), h.state_dir().string()));
         CHECK(local_flags(pty.slave.get()) == before);
         // The typed line is still waiting on the terminal (TCSAFLUSH would have discarded it).
+        // Polled first: if a regression consumed it, the read below would block forever.
+        REQUIRE(input_pending(pty.slave.get()));
         std::string pending(line.size(), '\0');
         CHECK(::read(pty.slave.get(), pending.data(), pending.size()) ==
               static_cast<::ssize_t>(line.size()));

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// tests/unit/auth/auth_inputs_test.cpp: read_password_stdin (through pipes), check_raw_auth_args
-// and check_auth_api_base (follows plan T9). Passwords are obviously fake. rev3 S18: a stalled
-// pipe (its writer kept open) and an interrupt, simulated or a real SIGINT under the SA_RESTART
-// handlers, end the read promptly with Errc::interrupted.
+// tests/unit/auth/auth_inputs_test.cpp: read_password_stdin (through pipes, and a loopback UDP
+// socket for POLLERR with EAGAIN), check_raw_auth_args and check_auth_api_base (follows plan T9).
+// Passwords are obviously fake. rev3 S18: a stalled pipe (its writer kept open) and an interrupt,
+// simulated or a real SIGINT under the SA_RESTART handlers, end the read promptly with
+// Errc::interrupted.
 
 #include "mangadex_dl/auth.hpp"
 #include "mangadex_dl/error.hpp"
@@ -20,8 +21,10 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -29,10 +32,14 @@
 #include <thread>
 #include <utility>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <pthread.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers): pthread_kill and SIGINT are POSIX <signal.h>
 #include <signal.h>
+#include <sys/poll.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -309,6 +316,105 @@ TEST_CASE("auth inputs: a non-blocking stdin is waited for, not an error", "[aut
     CHECK(wrote.load());
     REQUIRE(password.has_value());
     CHECK(password->reveal() == mdx::fixture_password);
+}
+
+// ---- a descriptor that keeps reporting an error with nothing to read ----------------------------
+
+namespace {
+
+/// The one place a sockaddr_in is viewed as the generic sockaddr the socket API takes.
+[[nodiscard]] sockaddr* as_sockaddr(sockaddr_in& address) noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr punning (BSD API)
+    return reinterpret_cast<sockaddr*>(&address);
+}
+
+[[nodiscard]] sockaddr_in loopback_address(std::uint16_t port) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1);
+    return address;
+}
+
+/// A UDP port on 127.0.0.1 that nothing is bound to (bound once, then released): a datagram sent
+/// there is answered with an ICMP "port unreachable".
+[[nodiscard]] std::uint16_t unused_udp_port() {
+    const md::UniqueFd probe{::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+    REQUIRE(probe.valid());
+    sockaddr_in address = loopback_address(0);
+    socklen_t length = sizeof address;
+    REQUIRE(::bind(probe.get(), as_sockaddr(address), length) == 0);
+    REQUIRE(::getsockname(probe.get(), as_sockaddr(address), &length) == 0);
+    return ntohs(address.sin_port);
+}
+
+[[nodiscard]] bool has_pollerr(short revents) noexcept {
+    return (static_cast<unsigned>(revents) & static_cast<unsigned>(POLLERR)) != 0U;
+}
+
+/// A non-blocking, connected UDP socket on which poll() reports POLLERR at once while read()
+/// fails with EAGAIN. With IP_RECVERR, the ICMP "port unreachable" answering its datagram is kept
+/// on the socket's error queue (POLLERR until it is read with MSG_ERRQUEUE); the pending socket
+/// error the same ICMP set is consumed by one read() (ECONNREFUSED), so a later read() has nothing
+/// to report and nothing to deliver. Both halves are checked before it is returned.
+[[nodiscard]] md::UniqueFd erroring_socket() {
+    md::UniqueFd fd{::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)};
+    REQUIRE(fd.valid());
+    const int on = 1;
+    REQUIRE(::setsockopt(fd.get(), IPPROTO_IP, IP_RECVERR, &on, sizeof on) == 0);
+    sockaddr_in target = loopback_address(unused_udp_port());
+    REQUIRE(::connect(fd.get(), as_sockaddr(target), sizeof target) == 0);
+    REQUIRE(::send(fd.get(), "x", 1, 0) == 1);
+
+    pollfd entry{.fd = fd.get(), .events = POLLIN, .revents = 0};
+    REQUIRE(::poll(&entry, 1, 5000) == 1); // the ICMP answer has arrived
+    REQUIRE(has_pollerr(entry.revents));
+    std::array<char, 16> scratch{};
+    const ssize_t refused = ::read(fd.get(), scratch.data(), scratch.size());
+    const int refused_errno = errno;
+    REQUIRE(refused == -1);
+    REQUIRE(refused_errno == ECONNREFUSED); // the pending error, now consumed
+
+    entry.revents = 0;
+    REQUIRE(::poll(&entry, 1, 0) == 1); // still POLLERR: the error queue is not empty
+    REQUIRE(has_pollerr(entry.revents));
+    const ssize_t again = ::read(fd.get(), scratch.data(), scratch.size());
+    const int again_errno = errno;
+    REQUIRE(again == -1);
+    REQUIRE(again_errno == EAGAIN); // and nothing else to read
+    return fd;
+}
+
+} // namespace
+
+TEST_CASE("auth inputs: a descriptor reporting an error with nothing to read fails, not spins",
+          "[auth][auth-inputs]") {
+    const FlagReset reset{};
+    const md::UniqueFd fd = erroring_socket();
+    // Without the POLLERR check read_password_stdin would spin (POLLERR at once, then EAGAIN)
+    // until an interrupt: the watchdog simulates one after watchdog_timeout, so a regression fails
+    // on the result instead of hanging. `fired` outlives the thread: it is declared first, and
+    // the thread is joined below (or by ~jthread) before it goes away.
+    std::atomic<bool> fired{false};
+    std::jthread watchdog{[fired_flag = &fired](const std::stop_token& stop) {
+        const auto give_up = std::chrono::steady_clock::now() + watchdog_timeout;
+        while (!stop.stop_requested() && std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        if (!stop.stop_requested()) {
+            fired_flag->store(true);
+            md::simulate_interrupt_for_testing(SIGINT);
+        }
+    }};
+    const auto password = read_password_stdin(fd.get());
+    watchdog.request_stop();
+    watchdog.join();
+
+    CHECK_FALSE(fired.load());
+    REQUIRE_FALSE(password.has_value());
+    CHECK(password.error().code == md::Errc::failure);
+    CHECK(password.error().exit_code() == 1);
+    CHECK(password.error().message == "cannot read stdin: the descriptor reported an error");
 }
 
 // ---- check_raw_auth_args ------------------------------------------------------------------------
