@@ -267,12 +267,19 @@ private:
 }
 
 /// The follows collision line for `path` (item 2 = the twin, item 1 = the clean title).
-[[nodiscard]] std::string follows_collision(const fs::path& path) {
-    return std::format("mangadex-dl: warning: follows:2: {}: {} was already written by item 1 "
-                       "(another title with the same name); pass --dir-per-title to give each "
-                       "title its own directory, or download one of them on its own with "
-                       "'mangadex-dl download <title> --title ...'\n",
-                       twin_id, path.string());
+/// `written` is "was already written" in a real run, "would already be written" in a dry run.
+[[nodiscard]] std::string follows_collision(const fs::path& path, std::string_view written) {
+    return std::format("mangadex-dl: warning: follows:2: {}: {} {} by item 1 (another title with "
+                       "the same name); pass --dir-per-title to give each title its own "
+                       "directory, or download one of them on its own with 'mangadex-dl "
+                       "download <title> --title ...'\n",
+                       twin_id, path.string(), written);
+}
+
+/// Item 2's collision lines for both of the clean title's files, worded `written`.
+[[nodiscard]] std::string follows_collisions(const fs::path& out, std::string_view written) {
+    return follows_collision(out / clean_vol1, written) +
+           follows_collision(out / clean_vol2, written);
 }
 
 } // namespace
@@ -388,9 +395,44 @@ TEST_CASE("batch jobs follows: two titles writing the same file get mdlist's col
     const md::FollowsSettings settings = tree.settings(out, {.dry_run = true});
     const Captured r = run_jobs(make_jobs(settings, {clean_id, twin_id}), settings);
     CHECK(r.exit_code == 0);
-    CHECK(r.err == follows_collision(out / clean_vol1) + follows_collision(out / clean_vol2));
+    CHECK(r.err == follows_collisions(out, "would already be written"));
     CHECK(!r.err.contains("'title' column"));
     CHECK(!r.err.contains("by line"));
+    CHECK(!fs::exists(out));
+
+    SECTION("--json: item 2's files exist as foreign, as in the real run") {
+        const Captured dry =
+            run_jobs(make_jobs(settings, {clean_id, twin_id}), settings, {.json = true});
+        CHECK(dry.exit_code == 0);
+        CHECK(dry.err == follows_collisions(out, "would already be written"));
+        CHECK(!fs::exists(out));
+
+        // The real run on the same, still fresh, DIR.
+        const md::FollowsSettings real_settings = tree.settings(out);
+        const Captured real =
+            run_jobs(make_jobs(real_settings, {clean_id, twin_id}), real_settings, {.json = true});
+        CHECK(real.exit_code == 0);
+        CHECK(real.err == follows_collisions(out, "was already written"));
+
+        const Json doc = parse_document(dry.out);
+        const Json real_doc = parse_document(real.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!real_doc.is_discarded());
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        const Json& dry_epubs = doc.at("titles").at(1).at("report").at("epubs");
+        const Json& real_epubs = real_doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(dry_epubs.size() == 2);
+        REQUIRE(real_epubs.size() == 2);
+        for (std::size_t i = 0; i < 2; ++i) {
+            CHECK(dry_epubs.at(i).at("status") == "exists");
+            CHECK(dry_epubs.at(i).at("existing") == "foreign");
+            CHECK(dry_epubs.at(i).at("replaced") == false);
+            CHECK(dry_epubs.at(i) == real_epubs.at(i));
+        }
+        const Json& files = doc.at("summary").at("files");
+        CHECK(files.at("planned") == 2);
+        CHECK(files.at("exists") == 2);
+    }
 }
 
 TEST_CASE("batch jobs follows: flat --overwrite, a second title with the same name never "
@@ -399,8 +441,8 @@ TEST_CASE("batch jobs follows: flat --overwrite, a second title with the same na
     // V27: follows hands every row the run's claimed paths (claims_paths), as mdlist does.
     const Tree tree{CleanTwin{}};
     const fs::path out = tree.path("out");
-    const std::string collisions =
-        follows_collision(out / clean_vol1) + follows_collision(out / clean_vol2);
+    const std::string collisions = follows_collisions(out, "was already written");
+    const std::string dry_collisions = follows_collisions(out, "would already be written");
 
     // Item 1's own bytes and the twin's: each title alone, in a directory of its own.
     const auto alone = [&tree](std::string_view manga, std::string_view dir) {
@@ -474,7 +516,7 @@ TEST_CASE("batch jobs follows: flat --overwrite, a second title with the same na
         const Captured r = run_jobs(dry_jobs, dry);
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
-        CHECK(r.err == collisions);
+        CHECK(r.err == dry_collisions);
         CHECK(!fs::exists(out));
 
         const Captured json = run_jobs(dry_jobs, dry, {.json = true});

@@ -62,17 +62,17 @@ struct DownloadServices {
     /// --dir-per-title only; borrowed for the run_download call, nullable (null = the plain
     /// stem); called only on the calling thread.
     TitleDirResolver* title_dir = nullptr;
-    /// mdlist only (empty for `download` and `batch`): does an earlier title of the same run
+    /// mdlist and follows (empty for `download` and `batch`): does an earlier title of the same run
     /// already own `path` (EpubOutcome::path as the report builds it)? With --overwrite, a file
     /// whose path it owns is never replaced: it is left alone as a foreign book (status exists,
     /// existing foreign, with the "holds a different book" warning), in a dry run too. Called
     /// only on the calling thread, during run_download; the views are valid only during the call.
     std::function<bool(std::string_view path)> claimed{};
-    /// batch and mdlist (empty for `download`): in a dry run without --overwrite, what will an
-    /// earlier row of the same run have left at `path` (EpubOutcome::path as the report builds
-    /// it)? A value is that row's planned file (its EpubOutcome::epub). The engine then decides
-    /// this file as a real run's assessment of that row's file would, without looking at DIR:
-    /// another identifier is left alone as foreign (other_book); the same identifier is
+    /// batch, mdlist and follows (empty for `download`): in a dry run without --overwrite, what
+    /// will an earlier row of the same run have left at `path` (EpubOutcome::path as the report
+    /// builds it)? A value is that row's planned file (its EpubOutcome::epub). The engine then
+    /// decides this file as a real run's assessment of that row's file would, without looking at
+    /// DIR: another identifier is left alone as foreign (other_book); the same identifier is
     /// complete, incomplete (an update) or diverged against the recorded chapters. nullopt:
     /// assessed as usual. Never asked in a real run or with --overwrite. Called only on the
     /// calling thread, during run_download; `path` is valid only during the call.

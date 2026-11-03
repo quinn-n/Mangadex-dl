@@ -9,6 +9,7 @@
 // ever carries the key).
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/report.hpp"
+#include "support/json_bytes.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
@@ -174,19 +175,25 @@ TEST_CASE("batch json follows: nothing selected prints titles [] plus the follow
     CHECK(none.at("follows").at("statuses").is_null());
 }
 
-TEST_CASE("batch json follows: ESC and invalid UTF-8 in the username give valid JSON",
+TEST_CASE("batch json follows: ESC, DEL, C1 and invalid UTF-8 in the username give valid JSON",
           "[batch][json][follows]") {
     md::FollowsSummary summary = unfiltered();
-    summary.username = "evil\x1b[2J\x1b]0;t\x07user\xff\xc3!";
+    summary.username = "evil\x1b[2J\x1b]0;t\x07user \x7f\xc2\x9b"
+                       "2J \xff\xc3!";
     const std::string text = md::batch_to_json(two_items(), "follows", false, summary);
 
+    // C0 controls are escaped: no raw ESC or BEL byte anywhere, the escape is spelled \u001b. DEL
+    // and the C1 controls are escaped too (\u007f, \u009b): no raw 7F or C2 80..C2 9F either.
     CHECK(!text.contains('\x1b'));
     CHECK(!text.contains('\x07'));
+    CHECK(!md::test::has_raw_del_or_c1(text));
     CHECK(text.contains("\\u001b[2J"));
+    CHECK(text.contains("user \\u007f\\u009b2J "));
 
     const OrderedJson doc = parse(text); // strict: fails on any invalid UTF-8
-    CHECK(doc.at("follows").at("username") ==
-          std::format("evil\x1b[2J\x1b]0;t\x07user{}{}!", replacement, replacement));
+    CHECK(doc.at("follows").at("username") == std::format("evil\x1b[2J\x1b]0;t\x07user \x7f\xc2\x9b"
+                                                          "2J {}{}!",
+                                                          replacement, replacement));
 }
 
 TEST_CASE("batch json follows: the exact bytes of a small follows document",
