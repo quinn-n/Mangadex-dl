@@ -532,13 +532,15 @@ TEST_CASE("mdlist runner --dir-per-title: a second title with the same name is m
 
 namespace {
 
-/// The mdlist collision line for `path` (item 2 = the twin, item 1 = the clean title).
-[[nodiscard]] std::string mdlist_collision(const fs::path& path) {
-    return std::format("mangadex-dl: warning: list:2: {}: {} was already written by item 1 "
-                       "(another title with the same name); pass --dir-per-title to give each "
-                       "title its own directory, or download one of them on its own with "
-                       "'mangadex-dl download <title> --title ...'\n",
-                       twin_id, path.string());
+/// The mdlist collision line for `path` (item 2 = the twin, item 1 = the clean title); a dry
+/// run's says "would already be written".
+[[nodiscard]] std::string mdlist_collision(const fs::path& path, bool dry_run = false) {
+    return std::format("mangadex-dl: warning: list:2: {}: {} {} by item 1 (another title with "
+                       "the same name); pass --dir-per-title to give each title its own "
+                       "directory, or download one of them on its own with 'mangadex-dl "
+                       "download <title> --title ...'\n",
+                       twin_id, path.string(),
+                       dry_run ? "would already be written" : "was already written");
 }
 
 } // namespace
@@ -550,8 +552,11 @@ TEST_CASE("mdlist runner: two titles writing the same file get the mdlist collis
     const md::BatchSettings settings = tree.list_settings(out, /*dry_run=*/true);
     const Captured r = run_jobs(make_jobs(settings, {clean_id, twin_id}), settings);
     CHECK(r.exit_code == 0);
-    // A dry run writes nothing, so item 2 finds no file to leave alone: only the collision lines.
-    CHECK(r.err == mdlist_collision(out / clean_vol1) + mdlist_collision(out / clean_vol2));
+    // As in the real run: item 2 would find item 1's files and leave them alone, and the observer
+    // drops the engine's line for a claimed path, so only the collision lines are printed.
+    CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+    CHECK(r.err == mdlist_collision(out / clean_vol1, /*dry_run=*/true) +
+                       mdlist_collision(out / clean_vol2, /*dry_run=*/true));
     CHECK(!r.err.contains("'title' column"));
     CHECK(!r.err.contains("by line"));
 }
@@ -675,8 +680,8 @@ TEST_CASE("mdlist runner: source csv keeps batch's collision advice",
     settings.label = "titles.csv";
     const Captured r = run_jobs(make_jobs(settings, {clean_id, twin_id}), settings);
     CHECK(r.exit_code == 0);
-    CHECK(r.err.contains(std::format("mangadex-dl: warning: titles.csv:2: {} was already written "
-                                     "by line 1; give one of them a 'title' column\n",
+    CHECK(r.err.contains(std::format("mangadex-dl: warning: titles.csv:2: {} would already be "
+                                     "written by line 1; give one of them a 'title' column\n",
                                      (out / clean_vol1).string())));
 }
 
@@ -736,12 +741,16 @@ TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchang
     raw.defaults.dir = out.string();
     raw.defaults.api_base = tree.api_base();
     raw.defaults.overwrite = true;
-    const std::string collisions =
-        std::format("mangadex-dl: warning: {0}:2: {1} was already written by line 1; give one of "
-                    "them a 'title' column\n"
-                    "mangadex-dl: warning: {0}:2: {2} was already written by line 1; give one of "
-                    "them a 'title' column\n",
-                    csv.string(), (out / clean_vol1).string(), (out / clean_vol2).string());
+    const auto collisions_worded = [&csv, &out](std::string_view written) {
+        return std::format("mangadex-dl: warning: {0}:2: {1} {3} by line 1; give one of them a "
+                           "'title' column\n"
+                           "mangadex-dl: warning: {0}:2: {2} {3} by line 1; give one of them a "
+                           "'title' column\n",
+                           csv.string(), (out / clean_vol1).string(), (out / clean_vol2).string(),
+                           written);
+    };
+    const std::string collisions = collisions_worded("was already written");
+    const std::string dry_collisions = collisions_worded("would already be written");
     const auto run = [&raw](const app::GlobalOptions& globals) {
         std::ostringstream cmd_out;
         std::ostringstream cmd_err;
@@ -779,7 +788,91 @@ TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchang
         const Captured r = run({});
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2, clean_vol1, clean_vol2}));
-        CHECK(r.err == collisions);
+        CHECK(r.err == dry_collisions);
+        CHECK(!fs::exists(out));
+    }
+}
+
+TEST_CASE("mdlist runner: `batch --dry-run` on two same-name titles prints what the real run "
+          "prints",
+          "[cli][mdlist][batch-jobs][csv][collision][dry-run]") {
+    const Tree tree{CleanTwin{}};
+    const fs::path csv = tree.path("titles.csv");
+    write_file(csv, std::format("{}\n{}\n", clean_id, twin_id));
+    const fs::path out = tree.path("out");
+    md::RawBatchArgs raw{.file = csv.string()};
+    raw.defaults.dir = out.string();
+    raw.defaults.api_base = tree.api_base();
+    const auto run = [&raw](bool dry_run, const app::GlobalOptions& globals) {
+        md::RawBatchArgs args = raw;
+        args.defaults.dry_run = dry_run;
+        std::ostringstream cmd_out;
+        std::ostringstream cmd_err;
+        app::Io io{.out = cmd_out, .err = cmd_err};
+        Captured result;
+        result.exit_code = app::run_batch_command(args, globals, io);
+        result.out = cmd_out.str();
+        result.err = cmd_err.str();
+        return result;
+    };
+    // batch keeps the engine's line for each file during line 2, then the collision line for
+    // each file after it.
+    const auto expected_err = [&csv, &out](std::string_view written) {
+        return std::format("mangadex-dl: warning: {0}:2: {1}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:2: {2}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:2: {1} {3} by line 1; give one of them a "
+                           "'title' column\n"
+                           "mangadex-dl: warning: {0}:2: {2} {3} by line 1; give one of them a "
+                           "'title' column\n",
+                           csv.string(), (out / clean_vol1).string(), (out / clean_vol2).string(),
+                           written);
+    };
+
+    SECTION("line 2's files would be left alone, then the real run on the same DIR agrees") {
+        const Captured dry = run(true, {});
+        CHECK(dry.exit_code == 0);
+        CHECK(dry.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(dry.err == expected_err("would already be written"));
+        CHECK(!fs::exists(out));
+
+        const Captured real = run(false, {});
+        CHECK(real.exit_code == dry.exit_code);
+        CHECK(real.out == dry.out);
+        CHECK(real.err == expected_err("was already written"));
+    }
+    SECTION("--json: line 2's files exist as foreign") {
+        const Captured dry = run(true, {.json = true});
+        CHECK(dry.exit_code == 0);
+        CHECK(dry.err == expected_err("would already be written"));
+        const Json doc = parse_document(dry.out);
+        REQUIRE(!doc.is_discarded());
+        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "foreign");
+            CHECK(epub.at("replaced") == false);
+        }
+        CHECK(!fs::exists(out));
+    }
+    SECTION("-v: no 'would write' for line 2's files; -q: nothing on stderr") {
+        const Captured dry = run(true, {.verbose = 1});
+        CHECK(dry.exit_code == 0);
+        INFO("stderr: " << dry.err);
+        const std::vector<std::string> lines = lines_of(dry.err);
+        const auto line2 =
+            std::ranges::find(lines, std::format("mangadex-dl: {}:2: {}", csv.string(), twin_id));
+        REQUIRE(line2 != lines.end());
+        const auto would_write = [](const std::string& line) {
+            return line.starts_with("mangadex-dl: would write ");
+        };
+        CHECK(std::ranges::none_of(line2, lines.end(), would_write));
+        CHECK(std::ranges::count_if(lines, would_write) == 2); // line 1's two files
+
+        const Captured quiet = run(true, {.quiet = true});
+        CHECK(quiet.exit_code == 0);
+        CHECK(quiet.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(quiet.err.empty());
         CHECK(!fs::exists(out));
     }
 }

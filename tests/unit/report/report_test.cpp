@@ -3,12 +3,13 @@
 // tests/unit/report/report_test.cpp: the run report (download plan T13): status counts, the
 // exit-code priority and the --json document. The document is asserted key by key after parsing
 // ("golden by assertion") for the success, dry-run, exit-5 and exit-6 shapes, plus the hostile
-// cases: invalid UTF-8 and terminal escapes in titles. Skip-existing plan T11 adds `existing`,
-// `new_chapters` and `reused_chapters` after `replaced`.
+// cases: invalid UTF-8 and terminal escapes (C0, DEL and C1 controls) in titles. Skip-existing plan
+// T11 adds `existing`, `new_chapters` and `reused_chapters` after `replaced`.
 
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
+#include "support/json_bytes.hpp"
 
 #include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -339,8 +340,15 @@ TEST_CASE("report_to_json: invalid UTF-8 becomes U+FFFD and the document stays v
 
 TEST_CASE("report_to_json: terminal escapes in titles are escaped, never raw ANSI",
           "[report][json]") {
+    // C0 (ESC, CR, LF, BEL), DEL and the C1 controls U+009B (the 8-bit CSI), U+009C (ST) and
+    // U+009D (OSC): a terminal acts on every one of them.
+    const std::string title = "\x1b[31mred\x1b[0m\r\n\x07"
+                              "\x7f"
+                              "\xc2\x9b[31m8bit"
+                              "\xc2\x9c"
+                              "\xc2\x9d";
     md::RunReport report = base_report();
-    report.manga.title = "\x1b[31mred\x1b[0m\r\n\x07";
+    report.manga.title = title;
     md::EpubOutcome written = outcome(md::EpubStatus::written, "x.epub");
     written.epub.chapters.at(0).title = "\x1b]0;pwned\x07";
     report.epubs = {written};
@@ -349,16 +357,19 @@ TEST_CASE("report_to_json: terminal escapes in titles are escaped, never raw ANS
     CHECK(!text.contains('\x1b'));
     CHECK(!text.contains('\x07'));
     CHECK(!text.contains('\r'));
+    CHECK(!md::test::has_raw_del_or_c1(text));
     CHECK(text.contains("\\u001b[31mred"));
+    CHECK(text.contains("\\u0007\\u007f\\u009b[31m8bit\\u009c\\u009d\""));
     const json doc = parse(text);
-    CHECK(doc.at("manga").at("title") == "\x1b[31mred\x1b[0m\r\n\x07"); // round-trips exactly
+    CHECK(doc.at("manga").at("title") == title); // round-trips exactly
 }
 
 TEST_CASE("report_to_json: valid UTF-8 is kept verbatim (not \\u-escaped)", "[report][json]") {
     md::RunReport report = base_report();
-    report.manga.title = "進撃の巨人";
+    // U+00E9 (C3 A9) and U+00A0 (C2 A0, NO-BREAK SPACE: a C2 lead byte, but not a C1 control).
+    report.manga.title = "進撃の巨人 caf\xc3\xa9\xc2\xa0x";
     const std::string text = md::report_to_json(report);
-    CHECK(text.contains("\"title\": \"進撃の巨人\""));
+    CHECK(text.contains("\"title\": \"進撃の巨人 caf\xc3\xa9\xc2\xa0x\""));
 }
 
 TEST_CASE("report_to_json: existing has a spelling for every kind and null for none",

@@ -136,6 +136,49 @@ cli_e2e_case(NAME json-dry-run
              GOLDEN
              EXPECT_ABSENT out)
 
+# ---- same-path overlap: a dry run reports what the real run does -------------------------------------
+# Line 3 writes a path line 2 already wrote. The dry run decides it against line 2's planned file, as
+# the real run will find it: one collision line ("would already be written" in a dry run), then the
+# real run's outcome. Inline regexes, no golden.
+# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date.
+set(_batch_overlap_dry_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub would already be written by line 2; give one of them a 'title' column\nmangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n$")
+set(_batch_overlap_real_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub was already written by line 2; give one of them a 'title' column\nmangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n$")
+cli_e2e_case(NAME overlap-dry-run
+             ARGS batch --dry-run ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_overlap_dry_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME overlap
+             ARGS batch ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_overlap_real_re}"
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_clean_files}
+             EXPECT_EPUB ${_batch_clean_files})
+# clean-grow.csv: line 3 updates line 2's single file, so the path is listed twice in both runs.
+set(_batch_grow_dry_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub would already be written by line 2; give one of them a 'title' column\n$")
+set(_batch_grow_real_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub was already written by line 2; give one of them a 'title' column\n$")
+set(_batch_grow_paths_re "^out/Clean Title\\.epub\nout/Clean Title\\.epub\n$")
+cli_e2e_case(NAME grow-dry-run
+             ARGS batch --dry-run ${_batch_clean_api} ${_batch_in}/clean-grow.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_grow_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_grow_dry_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME grow
+             ARGS batch ${_batch_clean_api} ${_batch_in}/clean-grow.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_grow_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_grow_real_re}"
+             EXPECT_NO_ANSI
+             EXPECT_FILES "out/Clean Title.epub"
+             EXPECT_EPUB "out/Clean Title.epub"
+             EXPECT_NO_GLOB "out/.*.part-*")
+
 # ---- the per-row `dir` column (AC19, AC20) ---------------------------------------------------------------
 set(_batch_row_dir_paths_re
     "^out/series/clean/Clean Title - Vol\\. 01\\.epub\nout/series/clean/Clean Title - Vol\\. 02\\.epub\n$")

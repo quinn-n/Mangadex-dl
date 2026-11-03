@@ -12,7 +12,7 @@
 #              [EXPECT_STDOUT_REGEX <re> | EXPECT_STDOUT_EMPTY]
 #              [EXPECT_STDERR_REGEX <re> | EXPECT_STDERR_EMPTY]
 #              [EXPECT_JSON | EXPECT_JSON_LINES]                 stdout is exactly one JSON document / one per line
-#              [EXPECT_NO_ANSI | EXPECT_ANSI]                    ESC[ absent from / present in the output
+#              [EXPECT_NO_ANSI | EXPECT_ANSI]                    ESC[ (and C2 9B) absent / ESC[ present on stdout
 #              [GOLDEN]                                          compare golden/<suite>.<case>.{stdout,stderr}
 #              [ENV <NAME=value | -NAME>...]                     set / unset on top of the hermetic env
 #              [TTY]                                             run under `script` (pseudo-terminal); skips (77) if absent
@@ -33,8 +33,17 @@
 # nochapters} and the clean-* variants for re-run cases {{FIXTURES}}/{clean-grown,
 # clean-grown-reuse-only,clean-regrouped,clean-regrouped-served,clean-regrouped-grown,
 # clean-mixed-reference,clean-diverged}, layout in tests/e2e/inputs/README), {{INVALID_UTF8}} (the
-# bytes 0xFF 0xFE). Goldens normalize the {{WORK}}, {{FIXTURES}}, {{INPUTS}} and {{TOOL}} paths back
-# to these placeholders.
+# bytes 0xFF 0xFE), {{DEL}} (the byte 0x7F) and {{C1_CSI}} (the bytes 0xC2 0x9B: U+009B, the 8-bit
+# CSI). Goldens normalize the {{WORK}}, {{FIXTURES}}, {{INPUTS}} and {{TOOL}} paths back to these
+# placeholders.
+#
+# Stream checks beyond the exact regexes:
+# - EXPECT_JSON / EXPECT_JSON_LINES: CMake's string(JSON) is lenient (it accepts raw C0 controls and
+#   invalid UTF-8), so the driver also requires valid UTF-8 (iconv, when present) and fails on any raw
+#   DEL (7F) or C1 control (C2 80..C2 9F) on stdout: a document must spell them \u007f / \u0080..
+#   \u009f. The needles are whole two-byte sequences, never a lone byte (9B also ends U+011B, C4 9B).
+# - EXPECT_NO_ANSI: fails on ESC[ or on the 8-bit CSI (C2 9B) on stdout OR stderr (under TTY, the
+#   merged output). EXPECT_ANSI asks only for ESC[ on stdout.
 #
 # The tool runs with its working directory set to {{WORK}}, so relative output paths (`out/x.epub`)
 # land there. The file keywords take paths RELATIVE to {{WORK}} (no leading '/', no '..'), checked

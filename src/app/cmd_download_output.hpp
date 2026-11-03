@@ -67,6 +67,12 @@ struct RowContext {
     /// replacing it. Borrowed and only read: the registry is declared before the runner and
     /// outlives every observer and every run_title call.
     const OutputRegistry* claimed = nullptr;
+    /// batch and mdlist (null for `download`): the run's OutputRegistry, holding the files the
+    /// earlier rows of a dry run planned. run_title hands it to the engine as
+    /// DownloadServices::planned_in_run (OutputRegistry::planned_at), so a dry run without
+    /// --overwrite decides such a path as the real run will find it. The observer never reads
+    /// it; `claimed` stays mdlist-only. Borrowed and only read, like `claimed`.
+    const OutputRegistry* planned = nullptr;
 
     friend bool operator==(const RowContext&, const RowContext&) = default;
 };

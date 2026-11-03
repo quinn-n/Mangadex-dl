@@ -6,6 +6,7 @@
 // removing one is a breaking change that needs a format_version bump.
 #include "mangadex_dl/report.hpp"
 
+#include "json_output.hpp"
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/model.hpp"
 #include "report_json.hpp"
@@ -274,13 +275,11 @@ Json report_json(const RunReport& report) {
 } // namespace detail
 
 std::string report_to_json(const RunReport& report) {
-    // replace: titles, names and paths are untrusted bytes; the strict handler would throw on
-    // invalid UTF-8. ensure_ascii=false keeps valid UTF-8 readable; control characters (ESC
-    // included) are always escaped as \u00XX, so the document never carries ANSI.
-    std::string text =
-        detail::report_json(report).dump(2, ' ', false, Json::error_handler_t::replace);
-    text += '\n';
-    return text;
+    // Titles, names and paths are untrusted bytes. dump_document dumps with the replace handler
+    // (invalid UTF-8 becomes U+FFFD); nlohmann escapes the C0 controls (ESC included) and
+    // dump_document escapes DEL and the C1 controls (U+009B, the 8-bit CSI, included), so the
+    // document carries neither a 7-bit nor an 8-bit escape sequence.
+    return json_output::dump_document(detail::report_json(report));
 }
 
 } // namespace mangadex_dl

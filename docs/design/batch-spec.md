@@ -17,6 +17,12 @@ download them again` (no `warning:`, never colored, not with `-q`), counting onl
 as up to date (`existing == complete`). JSON per-row reports gain `existing`, `new_chapters` and
 `reused_chapters` (additive, `format_version` 1); `files.exists` counts every file left alone,
 diverged and foreign ones included. No exit code or flag changes.
+rev3 (dry-run parity) 2026-10-28: a `--dry-run` without `--overwrite` treats a file an earlier
+row of the same run planned as written, so a later row whose file has that path is reported
+exactly as the real run will report it, and the collision line of every dry run reads "would
+already be written by"; marked **rev3 (dry-run parity)** inline. Real runs, exit codes, flags
+and JSON keys are unchanged. Such a dry run keeps each planned file's chapter list in memory for
+the run, roughly 60 KB per typical title (about what `--json` already keeps).
 
 **Intent:** run the existing `download` engine once for each title listed in a CSV file (or on
 stdin), in file order. The CSV can override a few per-title options on each row. The run ends with
@@ -167,7 +173,9 @@ can write to. Each title costs several API requests: a long list is a long run.
   already exist" aggregated into one end-of-batch warning. Cross-row collision warning:
   `<file>:<line>: <path> was already written by line <k>; give one of them a 'title' column`.
   (T5 impl: the first row to claim a path — written *or* exists — owns it, so a re-run of a
-  colliding list still warns.)
+  colliding list still warns.) **rev3 (dry-run parity):** in every dry run (`--overwrite` too) it
+  reads `<file>:<line>: <path> would already be written by line <k>; give one of them a 'title' column`,
+  and without `--overwrite` a path an earlier row planned counts as written (see `--dry-run`).
   Empty on full success. Otherwise one closing `error:` line (even with `-q`/`--json`), line list
   capped at 10:
   - `<n> of <m> titles did not complete (lines 4, 9, 12); run the same command again to retry them`
@@ -239,6 +247,25 @@ row and README rows.
   before each row. No JSON, no summary; printed paths stay; exit 130/143. During phase 1 the
   default disposition applies.
 - **`--dry-run`:** plans every row, prints planned paths, creates nothing; same aggregation.
+  **rev3 (dry-run parity):** without `--overwrite`, a file an earlier row of the same run reported
+  as `planned` counts as written, and a later row whose file has that path is decided as the real
+  run will decide it:
+  - a different book (another title with the same name, or the same manga in another language):
+    left alone, `exists`/`foreign`, with the engine's
+    `<path>: left alone: holds a different book; use another DIR or --title` line, then the
+    collision line;
+  - the same book (same manga, language and unit, another selection): up to date
+    (`exists`/`complete`, counted in the "N files are already up to date" note), an update
+    (`planned`/`incomplete`, `replaced: true`, the path listed again on stdout as the real update
+    lists it, `-v` `would update …`), or diverged (`exists`/`diverged`, with the real diverged
+    warning).
+
+  So stdout lists what the real run will list, each clashing path once unless the later row would
+  update it. `--json` carries the same statuses (no new keys) and `summary.files` moves with them;
+  exit codes equal the real run's. `--overwrite --dry-run` still lists a clashing path once per
+  row, because its real run replaces it. Still approximate: page counts come from MangaDex's
+  chapter list (the real run counts the image server's pages), and damaged pages in an existing
+  file are only found by a real run.
 - **Data/state:** writes only `download`'s outputs under DIR or DIR/<dir> via the existing atomic
   `OutputDir` publish. No state file. Threat model: CSV is untrusted; limited to titles,
   selection/lang/layout/direction, file title, and a lexically-contained subdirectory. Existing
@@ -281,7 +308,9 @@ row and README rows.
 11. `[cli]` Phase-1 errors (CSV error, bad `--lang`, FILE/DIR look like a manga id, empty FILE) →
     exit 2, empty stdout, hint line, no transport created, no DIR created.
 12. `[cli]` Cross-row collision (same `title` into same dir) → second row `exists`, warning names
-    both lines; still warns with `--overwrite`.
+    both lines; still warns with `--overwrite`. **rev3 (dry-run parity):** `--dry-run`, with or
+    without `--overwrite`, prints the real run's stdout, stderr and `--json` statuses (`planned`
+    for `written`), apart from the wording `would already be written by line <k>`.
 13. `[cli]` Row-scoped stderr lines carry `<file>:<line>: `; aggregated "already exist" warning
     once at end; `-q` suppresses warnings but keeps the closing error line.
 14. `[e2e]` `batch --help` golden (synopsis, CSV footer, exit table incl. 7, no `--api-base`).

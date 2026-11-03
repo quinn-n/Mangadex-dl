@@ -23,6 +23,7 @@
 #include <format>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -72,6 +73,10 @@ struct RunContext {
     /// asked by the execute phase, on the calling thread, before --overwrite replaces a file.
     /// Never reached by a FetchPool worker.
     const std::function<bool(std::string_view)>* claimed = nullptr;
+    /// &DownloadServices::planned_in_run (run_download always sets it; the function may be
+    /// empty): asked by plan_file only (dry run, no --overwrite), on the calling thread. A dry run
+    /// never calls FetchPool::run, so no worker reaches it.
+    const std::function<std::optional<PlannedEpub>(std::string_view)>* planned_in_run = nullptr;
 };
 
 /// The plan phase's result: the plan and the title record (the execute phase needs its creators).
@@ -111,7 +116,9 @@ struct PlanResult {
 [[nodiscard]] Result<std::filesystem::path> resolve_title_dir(RunContext& ctx, const Plan& plan);
 
 /// Dry-run: reports every file as planned, exists or failed, touching nothing (an existing file
-/// is assessed from its central directory and manifest only). Otherwise, in order, each file is
+/// is assessed from its central directory and manifest only; without --overwrite, a path an
+/// earlier row of a batch/mdlist run planned, ctx.planned_in_run, is decided against that row's
+/// planned file instead, as the real run would find it). Otherwise, in order, each file is
 /// assessed (unless --overwrite; download/existing.hpp) and then written when absent, left alone
 /// (exists) when complete, diverged or foreign, or rebuilt with page reuse and replaced when
 /// incomplete. A per-file network or media failure marks that file failed (an existing file is

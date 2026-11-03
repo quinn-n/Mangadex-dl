@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -67,6 +68,15 @@ struct DownloadServices {
     /// existing foreign, with the "holds a different book" warning), in a dry run too. Called
     /// only on the calling thread, during run_download; the views are valid only during the call.
     std::function<bool(std::string_view path)> claimed{};
+    /// batch and mdlist (empty for `download`): in a dry run without --overwrite, what will an
+    /// earlier row of the same run have left at `path` (EpubOutcome::path as the report builds
+    /// it)? A value is that row's planned file (its EpubOutcome::epub). The engine then decides
+    /// this file as a real run's assessment of that row's file would, without looking at DIR:
+    /// another identifier is left alone as foreign (other_book); the same identifier is
+    /// complete, incomplete (an update) or diverged against the recorded chapters. nullopt:
+    /// assessed as usual. Never asked in a real run or with --overwrite. Called only on the
+    /// calling thread, during run_download; `path` is valid only during the call.
+    std::function<std::optional<PlannedEpub>(std::string_view path)> planned_in_run{};
 };
 
 /// Runs the whole download. An Error is fatal for the run: Errc::failure (exit 1, a local

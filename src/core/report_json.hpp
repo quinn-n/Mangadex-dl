@@ -2,8 +2,8 @@
 //
 // Core-private (not under include/): the `download --json` document as a JSON value, so the batch
 // document (src/core/batch_json.cpp) can embed one per row (batch plan T3b). Implemented in
-// src/core/report.cpp; report_to_json() is exactly report_json(r) dumped with indent 2 and the
-// replace handler, plus '\n'.
+// src/core/report.cpp; report_to_json() is exactly json_output::dump_document(report_json(r))
+// (src/core/json_output.hpp: indent 2, the replace handler, DEL and C1 escaped, plus '\n').
 #pragma once
 
 #include "mangadex_dl/report.hpp"

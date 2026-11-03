@@ -24,6 +24,10 @@ check the bytes with `od -c`.
   nochapters-mixed.csv      headerless: 5555..., 6666... (exit 5 then 4 on the nochapters tree)
   nochapters-fail-fast.csv  the same two rows, for the --fail-fast cases
   two-clean.csv             headerless: 1111... twice (row 2 is a duplicate)
+  clean-overlap.csv         `manga,volumes`: 1111...,1 and 1111...,1-2 (line 3's Vol. 01 is line
+                            2's)
+  clean-grow.csv            `manga,volumes,layout`: 1111...,1,single and 1111...,1-2,single (line 3
+                            updates line 2's file)
   four-clean.csv            headerless: 1111..., 2222..., 3333..., 4444... (four distinct rows, for
                             the network-failure streak)
   comments-only.csv         only `#` comments and a blank line (an empty list)

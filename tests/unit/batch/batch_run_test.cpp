@@ -8,6 +8,7 @@
 #include "mangadex_dl/exit_codes.hpp"
 #include "mangadex_dl/interrupt.hpp"
 #include "mangadex_dl/manga_id.hpp"
+#include "mangadex_dl/model.hpp"
 #include "mangadex_dl/report.hpp"
 
 #include <catch2/catch_message.hpp>
@@ -691,4 +692,73 @@ TEST_CASE("OutputRegistry: claimed_by looks a path up without claiming it", "[ba
     // A later claim does not move the first one.
     CHECK(registry.claim("out/A.epub", 4) == std::optional<std::size_t>{2});
     CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{2});
+}
+
+namespace {
+
+/// A planned book for the dry-run records: one chapter, so copies are easy to tell apart.
+[[nodiscard]] md::PlannedEpub planned_book(std::string identifier, std::string chapter_id) {
+    return md::PlannedEpub{
+        .file_name = "A.epub",
+        .chapters = {md::Chapter{.id = std::move(chapter_id), .pages = 3}},
+        .identifier = std::move(identifier),
+        .planned_pages = 3,
+    };
+}
+
+} // namespace
+
+TEST_CASE("OutputRegistry: planned_at is empty until a path is recorded", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    CHECK_FALSE(registry.planned_at("out/A.epub").has_value());
+    CHECK_FALSE(registry.planned_at("").has_value());
+    // A claim alone (an `exists` or `written` row) records no planned book.
+    CHECK(!registry.claim("out/A.epub", 2).has_value());
+    CHECK_FALSE(registry.planned_at("out/A.epub").has_value());
+}
+
+TEST_CASE("OutputRegistry: planned_at returns a copy of the latest record", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    const md::PlannedEpub first = planned_book("urn:a", "c1");
+    const md::PlannedEpub second = planned_book("urn:a", "c2");
+    registry.record_planned("out/A.epub", first);
+    const std::optional<md::PlannedEpub> before = registry.planned_at("out/A.epub");
+    CHECK(before == std::optional<md::PlannedEpub>{first});
+
+    // The latest record wins; a copy taken earlier is unaffected (it owns its data).
+    registry.record_planned("out/A.epub", second);
+    CHECK(registry.planned_at("out/A.epub") == std::optional<md::PlannedEpub>{second});
+    CHECK(before == std::optional<md::PlannedEpub>{first});
+
+    // Other paths stay separate.
+    const md::PlannedEpub third = planned_book("urn:b", "c3");
+    registry.record_planned("out/B.epub", third);
+    CHECK(registry.planned_at("out/B.epub") == std::optional<md::PlannedEpub>{third});
+    CHECK(registry.planned_at("out/A.epub") == std::optional<md::PlannedEpub>{second});
+}
+
+TEST_CASE("OutputRegistry: planned records are keyed as claim() keys them", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    const md::PlannedEpub book = planned_book("urn:a", "c1");
+    registry.record_planned("out/./a.epub", book);
+    CHECK(registry.planned_at("out/a.epub") == std::optional<md::PlannedEpub>{book});
+    CHECK(registry.planned_at("out//a.epub") == std::optional<md::PlannedEpub>{book});
+    CHECK(registry.planned_at("x/../out/a.epub") == std::optional<md::PlannedEpub>{book});
+    CHECK_FALSE(registry.planned_at("out/A.epub").has_value());
+    CHECK_FALSE(registry.planned_at("out/sub/a.epub").has_value());
+    // A record under another spelling of the same path replaces the first.
+    const md::PlannedEpub later = planned_book("urn:b", "c2");
+    registry.record_planned("./out/a.epub", later);
+    CHECK(registry.planned_at("out/a.epub") == std::optional<md::PlannedEpub>{later});
+}
+
+TEST_CASE("OutputRegistry: record_planned claims nothing", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    registry.record_planned("out/A.epub", planned_book("urn:a", "c1"));
+    CHECK_FALSE(registry.claimed_by("out/A.epub").has_value());
+    // The first claimant keeps its line across a record in between.
+    CHECK(!registry.claim("out/A.epub", 1).has_value());
+    registry.record_planned("out/A.epub", planned_book("urn:a", "c2"));
+    CHECK(registry.claim("out/A.epub", 2) == std::optional<std::size_t>{1});
+    CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{1});
 }

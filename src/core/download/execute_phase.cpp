@@ -18,7 +18,9 @@
 // inspection descriptor stays open until that publish has returned (V5): in produce() the
 // Assessment owning it is declared before the FdReadSource that borrows it, the TempFile and the
 // EpubBuild, so every early return or unwind discards the temporary first and closes the
-// descriptor last.
+// descriptor last. A dry run (plan_file) decides the same from the central directory and the
+// manifest only; in a batch/mdlist dry run without --overwrite, a path an earlier row planned is
+// decided against that row's planned file instead (simulated_held), as the real run will find it.
 //
 // Error classes, decided by Error::code:
 // - Errc::failure / Errc::io (a local file-system problem, or an exception on a worker) and
@@ -675,8 +677,20 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
     return ctx.claimed != nullptr && *ctx.claimed && (*ctx.claimed)(path);
 }
 
+/// Dry run without --overwrite: the planned file an earlier row of this run would leave at
+/// `path` (DownloadServices::planned_in_run), or nullopt (none, or no such function).
+[[nodiscard]] std::optional<PlannedEpub> earlier_plan(const RunContext& ctx,
+                                                      std::string_view path) {
+    if (ctx.planned_in_run == nullptr || !*ctx.planned_in_run) {
+        return std::nullopt;
+    }
+    return (*ctx.planned_in_run)(path);
+}
+
 /// --overwrite, a path claimed_in_run: left alone exactly as an assessment finds that title's
-/// book (foreign, other_book), real and dry run alike, without looking at what is there.
+/// book (foreign, other_book), real and dry run alike, without looking at what is there. Also a
+/// dry run without --overwrite over a path an earlier row planned for another book
+/// (earlier_plan), which is what the real run's assessment of that row's file finds.
 void leave_claimed(DownloadObserver& observer, EpubOutcome& outcome) {
     const InspectFailure other{.reason = ForeignReason::other_book, .error = 0};
     observer.on_warning(foreign_warning(outcome.path, other));
@@ -891,9 +905,79 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     return std::unexpected(internal_error("unexpected assessment of an existing file"));
 }
 
+/// --dry-run, an assessed file (on disk, or simulated from an earlier row's planned file): sets
+/// outcome.existing, tells the observer what the assessment found, and reports what a real run
+/// would do with the file. true: decided (left alone, an update, or failed for a plan error
+/// with an incomplete file kept); false: nothing is there, so the caller plans the file fresh.
+[[nodiscard]] Result<bool> plan_assessed(const RunContext& ctx, const Assessment& assessment,
+                                         const PlannedEpub& epub, FileResult& result) {
+    EpubOutcome& outcome = result.outcome;
+    outcome.existing = assessment.kind;
+    announce(*ctx.observer, outcome.path, assessment);
+    switch (assessment.kind) {
+    case ExistingKind::none:
+        return false;
+    case ExistingKind::complete:
+    case ExistingKind::diverged:
+    case ExistingKind::foreign:
+        report_left_alone(assessment, result);
+        return true;
+    case ExistingKind::incomplete:
+        report_update(assessment, outcome);
+        if (epub.plan_error) {
+            outcome.status = EpubStatus::failed;
+            outcome.error = *epub.plan_error;
+            return true;
+        }
+        outcome.pages = assessment.final_plan.planned_pages;
+        outcome.replaced = true; // the update would replace the existing file
+        if (assessment.decision) {
+            result.kept = assessment.decision->kept;
+        }
+        return true;
+    case ExistingKind::unchecked: // assess never classifies a file as unchecked
+        break;
+    }
+    return std::unexpected(internal_error("unexpected assessment of an existing file"));
+}
+
+/// --dry-run without --overwrite, a path an earlier row of a batch/mdlist run planned
+/// (earlier_plan): decides the file as the real run will find that row's file, without looking
+/// at DIR. Another book: left alone (leave_claimed: exists/foreign, never failed). This book:
+/// the recorded plan is assessed as the file it would be (simulated_held, classify_held) and
+/// reported by plan_assessed, exactly as a file on disk would be. true: decided; false: no
+/// earlier row planned the path, or --overwrite (the caller assesses DIR as usual).
+[[nodiscard]] Result<bool> plan_over_earlier(const RunContext& ctx, const PlannedEpub& epub,
+                                             FileResult& result) {
+    const DownloadOptions& options = *ctx.options;
+    if (options.overwrite) {
+        return false; // never asked with --overwrite: it plans the file over whatever is there
+    }
+    const std::optional<PlannedEpub> earlier = earlier_plan(ctx, result.outcome.path);
+    if (!earlier) {
+        return false;
+    }
+    if (earlier->identifier != epub.identifier) { // as inspect_existing's identity step
+        leave_claimed(*ctx.observer, result.outcome);
+        return true;
+    }
+    // A local, like an assessment of a file on disk: its decision's indices point into its own
+    // held book and into `epub`, both alive until plan_assessed has copied what it reports.
+    const Assessment simulated = classify_held(simulated_held(*earlier, options.quality), epub,
+                                               options.groups, options.quality);
+    Result<bool> decided = plan_assessed(ctx, simulated, epub, result);
+    if (decided && !*decided) { // classify_held never classifies a held book as absent
+        return std::unexpected(internal_error("a simulated file classified as absent"));
+    }
+    return decided;
+}
+
 /// --dry-run for one file: what a real run would do, decided from the central directory and the
 /// manifest only (D11). Nothing is downloaded, written or created, and the inspection
 /// descriptor is closed before this returns. `dir` is null when DIR does not exist.
+///
+/// Without --overwrite, a path an earlier row of a batch/mdlist run planned is decided first
+/// (plan_over_earlier), also when DIR does not exist, and DIR is not looked at for it.
 [[nodiscard]] Result<FileResult> plan_file(const RunContext& ctx, const OutputDir* dir,
                                            const PlannedEpub& epub) {
     const DownloadOptions& options = *ctx.options;
@@ -912,6 +996,13 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         leave_claimed(*ctx.observer, outcome); // also when DIR does not exist yet
         return result;
     }
+    const Result<bool> earlier = plan_over_earlier(ctx, epub, result); // never with --overwrite
+    if (!earlier) {
+        return std::unexpected(earlier.error());
+    }
+    if (*earlier) {
+        return result; // an earlier row of this run planned the path
+    }
     if (dir != nullptr && options.overwrite) {
         const Result<EntryKind> found = dir->entry_kind(epub.file_name);
         if (!found) {
@@ -929,32 +1020,12 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         if (!assessed) {
             return std::unexpected(assessed.error());
         }
-        const Assessment& assessment = *assessed;
-        outcome.existing = assessment.kind;
-        announce(*ctx.observer, outcome.path, assessment);
-        switch (assessment.kind) {
-        case ExistingKind::none:
-            break;
-        case ExistingKind::complete:
-        case ExistingKind::diverged:
-        case ExistingKind::foreign:
-            report_left_alone(assessment, result);
+        const Result<bool> decided = plan_assessed(ctx, *assessed, epub, result);
+        if (!decided) {
+            return std::unexpected(decided.error());
+        }
+        if (*decided) {
             return result;
-        case ExistingKind::incomplete:
-            report_update(assessment, outcome);
-            if (epub.plan_error) {
-                outcome.status = EpubStatus::failed;
-                outcome.error = *epub.plan_error;
-                return result;
-            }
-            outcome.pages = assessment.final_plan.planned_pages;
-            outcome.replaced = true; // the update would replace the existing file
-            if (assessment.decision) {
-                result.kept = assessment.decision->kept;
-            }
-            return result;
-        case ExistingKind::unchecked: // assess never classifies a file as unchecked
-            return std::unexpected(internal_error("unexpected assessment of an existing file"));
         }
     }
     if (epub.plan_error) {
@@ -971,7 +1042,8 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
 
 /// --dry-run: every file is planned (or exists, or failed for a plan error). Nothing is
 /// downloaded and nothing is created, not even DIR. With --overwrite an existing target is
-/// planned with `replaced` set; without it an existing file is assessed as a real run would.
+/// planned with `replaced` set; without it an existing file (or an earlier row's planned file)
+/// is assessed as a real run would.
 [[nodiscard]] Result<RunReport> dry_run(RunContext& ctx, const PlanResult& planned,
                                         RunReport report) {
     const DownloadOptions& options = *ctx.options;

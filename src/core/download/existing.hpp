@@ -110,6 +110,24 @@ struct Assessment {
 /// The held chapters as Chapters, in file order (a diverged outcome lists them, D2).
 [[nodiscard]] std::vector<Chapter> held_chapters(const HeldBook& held);
 
+/// The HeldBook a dry run assumes for a file an earlier row of the same run would leave: `book`
+/// is that row's planned EpubOutcome::epub (the plan, or an update's final plan). What a real
+/// build writes (EpubBuild::run): manifest.identifier = book.identifier; one chapter per
+/// book.chapters entry, manifest_chapter_from(chapter, quality), holding max(chapter.pages, 0)
+/// image entries named as the writer names them (page_image_entry, one page index across the
+/// book; `.jpg` as a placeholder extension); `pages` parallel to the chapters with as many
+/// placeholder HeldEntry (the name only); no cover (manifest.cover and cover both nullopt).
+///
+/// Known differences that decide nothing: every chapter's `quality` is `quality` (a real
+/// manifest keeps the held quality of a reused chapter; nothing reads it here), and the image
+/// count is the chapter list's `pages`, not the at-home server's count. A chapter holds at most
+/// max_pages_per_chapter images and the book at most zip_max_entries, as a real file can (a
+/// planned book never exceeds either; this only bounds the allocation).
+///
+/// For the decision and the dry-run report only: it is never read through a ReadSource (no
+/// prepass, no read_held_page; a dry run has neither).
+[[nodiscard]] HeldBook simulated_held(const PlannedEpub& book, ImageQuality quality);
+
 // ---- messages (path as built for the report; the observer makes them terminal-safe) ---------
 
 /// `<path>: left alone: <reason>[ (<strerror>)]; <remedy>`. The errno text only for unreadable.

@@ -2,12 +2,13 @@
 //
 // tests/unit/batch/batch_json_list_test.cpp: the `mdlist --json` document (list plan T5, AC8,
 // fact-check V17): batch's document plus the additive `list` object right after `source`, with
-// `name` null when absent; untrusted name bytes (ESC, invalid UTF-8) give valid JSON with \u001b
-// and U+FFFD; the empty list; and the batch document (the three-argument overload, or nullopt)
-// stays byte-identical to today's and never carries `list`. Per the plan-gate decision only C0/ESC
-// escaping is asserted (DEL and C1 are out of scope here).
+// `name` null when absent; untrusted name bytes (ESC, DEL, the C1 CSI U+009B, invalid UTF-8) give
+// valid JSON with \u001b, \u007f, \u009b and U+FFFD (DEL and C1 since json-c1); the empty list;
+// and the batch document (the three-argument overload, or nullopt) stays byte-identical to today's
+// and never carries `list`.
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/report.hpp"
+#include "support/json_bytes.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
@@ -141,19 +142,24 @@ TEST_CASE("batch json list: name is null when absent", "[batch][json][list]") {
     CHECK(list.at("url") == list_url);
 }
 
-TEST_CASE("batch json list: ESC and invalid UTF-8 in the name give valid JSON (V17)",
+TEST_CASE("batch json list: ESC, DEL, C1 and invalid UTF-8 in the name give valid JSON (V17)",
           "[batch][json][list]") {
-    const std::string name = "Evil \x1b[2J\x1b]0;t\x07 list \xff\xc3 end";
+    const std::string name = "Evil \x1b[2J\x1b]0;t\x07 list \x7f\xc2\x9b"
+                             "2J \xff\xc3 end";
     const std::string text = md::batch_to_json(two_items(), "L1", false, summary(name));
 
-    // C0 controls are escaped: no raw ESC or BEL byte anywhere, the escape is spelled \u001b.
+    // C0 controls are escaped: no raw ESC or BEL byte anywhere, the escape is spelled \u001b. DEL
+    // and the C1 controls are escaped too (\u007f, \u009b): no raw 7F or C2 80..C2 9F either.
     CHECK(!text.contains('\x1b'));
     CHECK(!text.contains('\x07'));
+    CHECK(!md::test::has_raw_del_or_c1(text));
     CHECK(text.contains("\\u001b[2J"));
+    CHECK(text.contains("list \\u007f\\u009b2J "));
 
     const OrderedJson doc = parse(text); // strict: fails on any invalid UTF-8
-    CHECK(doc.at("list").at("name") ==
-          std::format("Evil \x1b[2J\x1b]0;t\x07 list {}{} end", replacement, replacement));
+    CHECK(doc.at("list").at("name") == std::format("Evil \x1b[2J\x1b]0;t\x07 list \x7f\xc2\x9b"
+                                                   "2J {}{} end",
+                                                   replacement, replacement));
 }
 
 TEST_CASE("batch json list: the empty list prints titles [] plus the list object",

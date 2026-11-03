@@ -141,6 +141,14 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
             return registry->claimed_by(path).has_value();
         };
     }
+    if (row.planned != nullptr) {
+        // batch and mdlist: a dry run decides a path an earlier row planned as the real run will
+        // find it. Captures the registry pointer by value; the registry outlives this call
+        // (RowContext::planned) and is not written during it.
+        services.planned_in_run = [registry = row.planned](std::string_view path) {
+            return registry->planned_at(path);
+        };
+    }
 
     // Borrows `io` (a parameter, so it outlives the observer); owns its copy of `row`.
     ConsoleObserver observer{io, policy, row};
