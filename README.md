@@ -387,7 +387,7 @@ https://mangadex.org/title/<uuid>,,,,
     them.
   - A title whose own directory can't be used (a regular file with its name, say) fails alone,
     with exit code 1 for that title, and the next row runs:
-    `titles.csv:1: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`.
+    `titles.csv:1: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title`.
 - **New paths:** a renamed title (or `title` cell), another `--lang` or `lang`, or switching
   between flat and `--dir-per-title` gives new paths. The files are downloaded again there, and
   the old ones are left alone; delete them yourself.

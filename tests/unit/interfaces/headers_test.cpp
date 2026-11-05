@@ -1007,7 +1007,10 @@ TEST_CASE("The title-directory seam dispatches through the base and owns its str
     const md::TitleDirChoice choice{};
     CHECK(choice.name.empty());
     CHECK_FALSE(choice.warning.has_value());
-    CHECK(md::TitleDirChoice{.name = "T"} == md::TitleDirChoice{.name = "T", .warning = {}});
+    CHECK_FALSE(choice.remedy.has_value());
+    CHECK(md::TitleDirChoice{.name = "T"} ==
+          md::TitleDirChoice{.name = "T", .warning = {}, .remedy = {}});
+    CHECK(md::TitleDirChoice{.name = "T", .remedy = "r"} != md::TitleDirChoice{.name = "T"});
 
     const md::TitleDirClaim claim{};
     CHECK(claim.name.empty());

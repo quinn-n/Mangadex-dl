@@ -26,8 +26,10 @@
 namespace mangadex_dl::detail {
 namespace {
 
-/// Appended to check_row_dir's message when the title's own directory is unusable.
-constexpr std::string_view row_dir_remedy = "; rename or remove it, or run without --dir-per-title";
+/// Appended, after "; ", to check_row_dir's message when the title's own directory is unusable
+/// and the resolver names no remedy of its own (TitleDirChoice::remedy).
+constexpr std::string_view default_row_dir_remedy =
+    "rename or remove it, or run without --dir-per-title";
 
 /// Defence in depth: the name joins onto DIR, so it must be exactly one path component that the
 /// batch `dir` rules accept unchanged (no '/', no '.'/'..', no controls, no invisible or bidi
@@ -71,8 +73,14 @@ Result<std::filesystem::path> resolve_title_dir(RunContext& ctx, const Plan& pla
     case RowDirKind::ok:
         return dir;
     case RowDirKind::row_error:
-        // Only --dir-per-title makes this directory, so the way out names the flag.
-        verdict.message += row_dir_remedy;
+        // Only --dir-per-title makes this directory, so the way out names the flag. The resolver
+        // may word it for its source (batch: a row's `dir` cell is another way out).
+        verdict.message += "; ";
+        if (choice.remedy) {
+            verdict.message += *choice.remedy;
+        } else {
+            verdict.message += default_row_dir_remedy;
+        }
         return std::unexpected(Error{.code = Errc::row_dir, .message = std::move(verdict.message)});
     case RowDirKind::global_error:
         return std::unexpected(Error{.code = Errc::failure, .message = std::move(verdict.message)});

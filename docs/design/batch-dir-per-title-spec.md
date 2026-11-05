@@ -66,9 +66,9 @@ Typical user: a human with a long CSV of series who wants one folder per series 
   - **Directory reserved by an explicit `dir` cell of another manga** (new; warning, not shown with `-q`):
     `mangadex-dl: warning: titles.csv:2: directory 'Clean Title' is used by the 'dir' of line 5; using 'Clean Title [11111111]'`
     `<k>` is the first line whose cell reserved the name. A cell can reserve a name through its first segment (`dir=Clean Title/extras`), so the line says "is used by", not "is".
-  - **The title's own directory is unusable** (error; the row fails alone; this is the engine's existing text):
-    `mangadex-dl: error: titles.csv:3: cannot open directory 'out/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title`
-    The remedy is source-independent and correct for batch, so it stays unchanged. An explicit-`dir` row that runs into a file keeps today's message, with no remedy suffix.
+  - **The title's own directory is unusable** (error; the row fails alone):
+    `mangadex-dl: error: titles.csv:3: cannot open directory 'out/Clean Title': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title`
+    Amended 2026-11-05 (`batch-row-dir-remedy-plan.md`): batch names the `dir` cell as a further way out, through the resolver's `TitleDirChoice::remedy`. mdlist keeps the engine's default `; rename or remove it, or run without --dir-per-title` byte for byte. An explicit-`dir` row that runs into a file keeps today's message, with no remedy suffix.
   - **`-v`:** after the existing `mangadex-dl: titles.csv:3: <uuid>` start line, a derived row prints the engine's `mangadex-dl: output directory: out/Clean Title`. It is unprefixed and passes through `terminal_safe`, as in mdlist.
     - The warning, if any, comes before it, which is the existing engine order.
     - An explicit-`dir` row prints no `output directory:` line, as today.
@@ -180,7 +180,7 @@ There are no new codes and no new `Errc`. The table in `include/mangadex_dl/exit
 
 All of these are specified in "Input & output":
 - the resolver's warning gains batch's noun ("line") and the reserved variant;
-- the unusable-title-dir error is the engine's unchanged text, remedy included;
+- the unusable-title-dir error is the engine's text with batch's remedy (amended 2026-11-05: it also names the `dir` cell);
 - `-v` shows the engine's `output directory:` line for derived rows only;
 - the cross-row collision line is unchanged, for the reasons given there.
 
@@ -317,7 +317,7 @@ The fixture trees serve one real title each, so a cross-manga derived-vs-derived
 13. `[cli]` Reservation, both orders: rows `twin,dir=Clean Title` and `clean,` (and reversed) + flag → clean goes to `out/Clean Title [11111111]/` with exactly `…:<clean line>: directory 'Clean Title' is used by the 'dir' of line <twin line>; using 'Clean Title [11111111]'`, and twin goes to `out/Clean Title/`. No directory holds files of both mangas. Also passes with `dir=Clean Title/extras` (first segment) and when the reserving row is a 404.
 14. `[cli]` Same manga explicit + derived with the same name (`clean,dir=Clean Title` then `clean,`) + flag → both in `out/Clean Title/`, no directory warning, second row's files `exists`, today's collision line `… was already written by line 2; give one of them a 'title' column`.
 15. `[cli]` `-v` + flag: `mangadex-dl: titles.csv:1: 11111111-…` then (after any directory warning) `mangadex-dl: output directory: out/Clean Title`. An explicit row prints no `output directory:` line.
-16. `[cli]` A regular file `DIR/Clean Title`, `clean, unknown` + flag (real run and dry run) → row 1 fails alone with exactly `mangadex-dl: error: titles.csv:1: cannot open directory '<DIR>/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title`, row 2 runs (404), exit 7, no `stopped at`. JSON row 1: `failed`, `exit_code` 1, `dir` `<DIR>/Clean Title`. With `--fail-fast`: `stopped at line 1: --fail-fast; 1 title not run`, exit 1.
+16. `[cli]` A regular file `DIR/Clean Title`, `clean, unknown` + flag (real run and dry run) → row 1 fails alone with exactly `mangadex-dl: error: titles.csv:1: cannot open directory '<DIR>/Clean Title': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title` (amended 2026-11-05), row 2 runs (404), exit 7, no `stopped at`. JSON row 1: `failed`, `exit_code` 1, `dir` `<DIR>/Clean Title`. With `--fail-fast`: `stopped at line 1: --fail-fast; 1 title not run`, exit 1.
 17. `[cli]` DIR itself a regular file + flag → as today: exit 1, `stopped at line 1: the error above affects every title; …`.
 18. `[cli]` Exit-4 and exit-5 rows + flag leave no directory (neither DIR nor `DIR/<name>`). Their JSON `dir` is DIR.
 19. `[cli]` A dry run + flag creates nothing. The planned paths are under `DIR/<name>/`, and a `row_dir` problem fails the row in the dry run too.
@@ -338,7 +338,7 @@ The fixture trees serve one real title each, so a cross-manga derived-vs-derived
     mangadex-dl: warning: …/dir-reserved.csv:3: directory 'Clean Title' is used by the 'dir' of line 2; using 'Clean Title [11111111]'
     mangadex-dl: error: 1 of 2 titles would fail (line 2)
     ```
-30. `[e2e]` `batch.dir-per-title-unusable`: `clean.csv` + flag `--dry-run` with DIR `{{INPUTS}}/mdlist` → exit 1, empty stdout, stderr exactly `…: error: …/clean.csv:1: cannot open directory '…/inputs/mdlist/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title\nmangadex-dl: error: 1 of 1 title would fail \(line 1\)\n`.
+30. `[e2e]` `batch.dir-per-title-unusable`: `clean.csv` + flag `--dry-run` with DIR `{{INPUTS}}/mdlist` → exit 1, empty stdout, stderr exactly `…: error: …/clean.csv:1: cannot open directory '…/inputs/mdlist/Clean Title': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title\nmangadex-dl: error: 1 of 1 title would fail \(line 1\)\n` (amended 2026-11-05).
 31. `[e2e]` `batch.dir-per-title-row-dir-file`: `row-dir-file.csv` + flag `--dry-run` with DIR `{{INPUTS}}` → exit 1.
     - Line 2 has today's error with **no** remedy suffix: `cannot open directory '…/README': Not a directory`.
     - Line 3 is planned under `…/inputs/Clean Title/`.

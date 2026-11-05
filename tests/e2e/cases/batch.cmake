@@ -440,13 +440,13 @@ cli_e2e_case(NAME dir-per-title-reserved-real
              EXPECT_NO_GLOB "out/*/.*.part-*")
 
 # AC30: the title's own directory is a committed regular file ({{INPUTS}}/mdlist/Clean Title, shared
-# read-only with e2e.mdlist.dir-per-title-row-dir-file): the row fails with the engine's remedy. A dry
+# read-only with e2e.mdlist.dir-per-title-row-dir-file): the row fails with batch's remedy. A dry
 # run, so nothing is ever created under the source tree.
 cli_e2e_case(NAME dir-per-title-unusable
              ARGS batch --dir-per-title --dry-run ${_batch_clean_api} ${_batch_in}/clean.csv
                   {{INPUTS}}/mdlist
              EXPECT_EXIT 1 EXPECT_STDOUT_EMPTY
-             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/clean\\.csv:1: cannot open directory '[^\n]*/inputs/mdlist/Clean Title': Not a directory; rename or remove it, or run without --dir-per-title\nmangadex-dl: error: 1 of 1 title would fail \\(line 1\\)\n$"
+             EXPECT_STDERR_REGEX "^mangadex-dl: error: [^\n]*/batch/clean\\.csv:1: cannot open directory '[^\n]*/inputs/mdlist/Clean Title': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title\nmangadex-dl: error: 1 of 1 title would fail \\(line 1\\)\n$"
              EXPECT_NO_ANSI)
 # AC31: an explicit `dir` that runs into a file keeps today's message (no remedy suffix), and the
 # derived line 3 plans under DIR/Clean Title/. A dry run into {{INPUTS}}: nothing is created there.

@@ -668,7 +668,7 @@ TEST_CASE("batch --dir-per-title: a row whose directory is a file fails alone (e
     const fs::path list = tree.csv("titles.csv", std::format("{}\n{}\n", clean_id, unknown_id));
     const std::string rows = std::format(
         "mangadex-dl: error: {0}:1: cannot open directory '{1}': Not a directory; rename or remove "
-        "it, or run without --dir-per-title\n"
+        "it, give that line a 'dir' cell, or run without --dir-per-title\n"
         "mangadex-dl: error: {0}:2: {2}\n",
         list.string(), (out / clean_dir).string(), title_not_found(unknown_id));
 
@@ -698,6 +698,10 @@ TEST_CASE("batch --dir-per-title: a row whose directory is a file fails alone (e
         REQUIRE(!doc.is_discarded());
         CHECK(statuses(doc) == std::vector<std::string>{"failed", "not_found"});
         CHECK(doc.at("titles").at(0).at("exit_code") == 1);
+        CHECK(doc.at("titles").at(0).at("error") ==
+              std::format("cannot open directory '{}': Not a directory; rename or remove it, give "
+                          "that line a 'dir' cell, or run without --dir-per-title",
+                          (out / clean_dir).string()));
         CHECK(doc.at("titles").at(0).at("dir") == (out / clean_dir).string());
         CHECK(doc.at("titles").at(1).at("dir") == out.string());
     }

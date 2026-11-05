@@ -77,7 +77,7 @@ V-B2 is moot (QB3: `claim()`'s same-manga rule is unchanged).
 
 **Cluster C: repo, runner/engine order and message text.** Blocks the exact assertions in T2 (cli) and T3 (e2e).
 - **V-B6** The stderr order inside a derived row: the runner's `-v` start line, then the directory warning, then `output directory: …`, then the pre-flight `row_dir` error (R5). It holds for csv rows exactly as for mdlist.
-- **V-P5** For a csv row, the warning and error lines the engine sends through the row observer carry the `<label>:<line>: ` prefix and pass through `terminal_safe`. The `-v` `output directory:` line carries no row prefix. A `row_dir` row error prints as `mangadex-dl: error: <label>:<line>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, or run without --dir-per-title`.
+- **V-P5** For a csv row, the warning and error lines the engine sends through the row observer carry the `<label>:<line>: ` prefix and pass through `terminal_safe`. The `-v` `output directory:` line carries no row prefix. A `row_dir` row error prints as `mangadex-dl: error: <label>:<line>: cannot open directory '<DIR>/<name>': Not a directory; rename or remove it, give that line a 'dir' cell, or run without --dir-per-title` (amended 2026-11-05, `batch-row-dir-remedy-plan.md`).
 - **V-P6** The closing and stop wording in `batch_run.cpp` (`:343` and the stop messages) for the asserted cases:
   - a dry run with one exit-4 row of two: `1 of 2 titles would fail (line 2)`;
   - one `row_dir` row of one: `1 of 1 title would fail (line 1)`;

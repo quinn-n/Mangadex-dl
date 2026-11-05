@@ -496,6 +496,43 @@ TEST_CASE("download dir per title: a title directory that is a file fails the ti
     CHECK(observer.starting_with("begin: ").empty());
 }
 
+TEST_CASE("download dir per title: the resolver's remedy replaces the default one",
+          "[download][dir_per_title]") {
+    const bool dry_run = GENERATE(false, true);
+    INFO("dry run: " << dry_run);
+    Harness h{mdx::clean_fixture()};
+    REQUIRE(std::filesystem::create_directory(h.out()));
+    write_text(h.out() / clean_stem, "not a directory\n");
+    const std::vector<std::string> before = list_tree(h.out());
+
+    md::DownloadOptions options = h.options(true);
+    options.dry_run = dry_run;
+    SECTION("a resolver that names its own remedy") {
+        FakeResolver resolver{md::TitleDirChoice{.name = std::string{clean_stem},
+                                                 .remedy = "give that line a 'dir' cell"}};
+        EventObserver observer;
+        const auto result = h.run(options, observer, &resolver);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == md::Errc::row_dir);
+        CHECK(result.error().message == "cannot open directory '" +
+                                            (h.out() / clean_stem).string() +
+                                            "': Not a directory; give that line a 'dir' cell");
+        CHECK(resolver.calls().size() == 1);
+    }
+    SECTION("a resolver that names none keeps the default") {
+        FakeResolver resolver{};
+        EventObserver observer;
+        const auto result = h.run(options, observer, &resolver);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == md::Errc::row_dir);
+        CHECK(result.error().message == "cannot open directory '" +
+                                            (h.out() / clean_stem).string() +
+                                            "': Not a directory; rename or remove it, or run "
+                                            "without --dir-per-title");
+    }
+    CHECK(list_tree(h.out()) == before);
+}
+
 TEST_CASE("download dir per title: DIR that is a file is a global failure",
           "[download][dir_per_title]") {
     const bool dry_run = GENERATE(false, true);

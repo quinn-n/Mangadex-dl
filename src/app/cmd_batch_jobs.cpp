@@ -61,10 +61,25 @@ namespace {
     return "line"; // only reachable through an out-of-range enum value
 }
 
+/// The way out a --dir-per-title row offers when its derived directory is unusable (the engine
+/// appends it after "; "). Batch rows also take a `dir` cell, which replaces the derived
+/// directory; mdlist has no such cell, so it keeps the engine's default (nullopt), byte for
+/// byte. Points at static storage.
+[[nodiscard]] constexpr std::optional<std::string_view>
+row_dir_remedy(BatchSource source) noexcept {
+    switch (source) {
+    case BatchSource::csv:
+        return "rename or remove it, give that line a 'dir' cell, or run without --dir-per-title";
+    case BatchSource::mdlist:
+        return std::nullopt;
+    }
+    return std::nullopt; // only reachable through an out-of-range enum value
+}
+
 /// The app side of the TitleDirResolver seam (--dir-per-title, batch and mdlist): claims each
 /// title's directory in the run's TitleDirRegistry for the current row, and remembers the name it
 /// claimed so the runner can report it as the row's `dir`. Its warning names rows with the
-/// source's noun: "line" for batch, "item" for mdlist.
+/// source's noun: "line" for batch, "item" for mdlist; its remedy is row_dir_remedy(source).
 ///
 /// Threads: run_download calls resolve() on its calling thread (the runner's), at most once per
 /// row, so no lock is needed. Lifetime: `registry` is borrowed; it is declared before the runner
@@ -86,6 +101,9 @@ public:
         // The registry copies `stem` into owned keys; the claim and the choice own their strings.
         TitleDirClaim claim = registry_->claim(stem, manga, item_);
         TitleDirChoice choice{.name = claim.name};
+        if (const std::optional<std::string_view> remedy = row_dir_remedy(source_)) {
+            choice.remedy = std::string{*remedy};
+        }
         if (claim.taken_by) {
             // Raw: the observer's on_warning adds `warning: <prefix>` and sanitizes the line.
             // Only batch reserves names (run_batch_jobs), so mdlist never gets the first form.

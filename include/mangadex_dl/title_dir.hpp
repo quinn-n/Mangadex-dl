@@ -23,6 +23,10 @@ namespace mangadex_dl {
 struct TitleDirChoice {
     std::string name{}; ///< one path component below DIR (passes validate_list_dir)
     std::optional<std::string> warning{}; ///< one line for observer.on_warning, without prefix
+    /// The way out the engine appends, after "; ", when this directory is unusable
+    /// (Errc::row_dir). One line, no prefix. nullopt: the engine's source-independent default,
+    /// "rename or remove it, or run without --dir-per-title".
+    std::optional<std::string> remedy{};
 
     friend bool operator==(const TitleDirChoice&, const TitleDirChoice&) = default;
 };
