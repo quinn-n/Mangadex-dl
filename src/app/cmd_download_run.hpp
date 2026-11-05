@@ -80,11 +80,11 @@ struct TitleRun {
 ///
 /// `title_dir` (--dir-per-title rows of `batch` and `mdlist` only; null for `download`) becomes
 /// DownloadServices::title_dir: borrowed for the call, called at most once by run_download on
-/// this thread, never stored past it. A non-null `row.claimed` (mdlist only) becomes
-/// DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite never replaces a path
-/// an earlier row claimed. A non-null `row.planned` (batch and mdlist) becomes
-/// DownloadServices::planned_in_run (OutputRegistry::planned_at), so a dry run without
-/// --overwrite decides a path an earlier row planned as the real run will find it.
+/// this thread, never stored past it. A non-null `row.registry` (batch and mdlist) becomes both
+/// DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite decides a path an
+/// earlier row claimed exactly as a run without it, and DownloadServices::planned_in_run
+/// (OutputRegistry::planned_at), so a dry run decides a path an earlier row planned as the real
+/// run will find it.
 [[nodiscard]] TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
                                  const Backend& backend, const std::string& agent, Io& io,
                                  const OutputPolicy& policy, const RowContext& row,

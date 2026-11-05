@@ -2,7 +2,8 @@
 //
 // The execute phase of run_download (download plan T14 + rev1, skip-existing plan T10). Files are
 // produced one at a time on the calling thread:
-//   assessment of an existing file (unless --overwrite; download/existing.hpp) -> plan_error
+//   assessment of an existing file (unless the file's effective --overwrite, see below;
+//   download/existing.hpp) -> plan_error
 //   check -> [update: pre-pass over the pages to reuse] -> temporary -> EPUB begin -> cover ->
 //   per chapter: either its held pages copied from the existing file, or fetch_at_home and its
 //   pages through the FetchPool -> EPUB finish (with the book manifest) -> publish.
@@ -21,6 +22,11 @@
 // descriptor last. A dry run (plan_file) decides the same from the central directory and the
 // manifest only; in a batch/mdlist dry run without --overwrite, a path an earlier row planned is
 // decided against that row's planned file instead (simulated_held), as the real run will find it.
+//
+// --overwrite applies per file (batch-spec rev4): a path an earlier title of the same
+// batch/mdlist run claimed (DownloadServices::claimed) is decided exactly as without --overwrite,
+// on disk in a real run, against planned_in_run (else DIR) in a dry run. Every other path is
+// replaced without being assessed.
 //
 // Error classes, decided by Error::code:
 // - Errc::failure / Errc::io (a local file-system problem, or an exception on a worker) and
@@ -672,13 +678,23 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
 }
 
 /// --overwrite: does an earlier title of this run own `path` (DownloadServices::claimed)? Then
-/// the file is not replaced.
+/// --overwrite does not apply to the file: it is decided as without --overwrite
+/// (overwrites_file).
 [[nodiscard]] bool claimed_in_run(const RunContext& ctx, std::string_view path) {
     return ctx.claimed != nullptr && *ctx.claimed && (*ctx.claimed)(path);
 }
 
-/// Dry run without --overwrite: the planned file an earlier row of this run would leave at
-/// `path` (DownloadServices::planned_in_run), or nullopt (none, or no such function).
+/// The effective --overwrite of the file at `path`: options.overwrite, unless an earlier title
+/// of this run claimed the path (claimed_in_run, asked only under --overwrite, once per file, on
+/// the calling thread). Every decision about that one file reads this flag, never
+/// options.overwrite.
+[[nodiscard]] bool overwrites_file(const RunContext& ctx, std::string_view path) {
+    return ctx.options->overwrite && !claimed_in_run(ctx, path);
+}
+
+/// Dry run, a file decided as without --overwrite: the planned file an earlier row of this run
+/// would leave at `path` (DownloadServices::planned_in_run), or nullopt (none, or no such
+/// function).
 [[nodiscard]] std::optional<PlannedEpub> earlier_plan(const RunContext& ctx,
                                                       std::string_view path) {
     if (ctx.planned_in_run == nullptr || !*ctx.planned_in_run) {
@@ -687,10 +703,9 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
     return (*ctx.planned_in_run)(path);
 }
 
-/// --overwrite, a path claimed_in_run: left alone exactly as an assessment finds that title's
-/// book (foreign, other_book), real and dry run alike, without looking at what is there. Also a
-/// dry run without --overwrite over a path an earlier row planned for another book
-/// (earlier_plan), which is what the real run's assessment of that row's file finds.
+/// A dry run over a path an earlier row planned for another book (earlier_plan; without
+/// --overwrite, or a path claimed_in_run under it): left alone exactly as the real run's
+/// assessment of that row's file finds it (foreign, other_book), without looking at DIR.
 void leave_claimed(DownloadObserver& observer, EpubOutcome& outcome) {
     const InspectFailure other{.reason = ForeignReason::other_book, .error = 0};
     observer.on_warning(foreign_warning(outcome.path, other));
@@ -708,10 +723,11 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     }
 }
 
-/// Downloads and builds the planned file from scratch, then publishes it (no-clobber unless
-/// --overwrite).
+/// Downloads and builds the planned file from scratch, then publishes it: no-clobber unless
+/// `overwrite`, the file's effective --overwrite (overwrites_file). A file decided as without
+/// --overwrite (its assessment found nothing) never replaces what appeared under its name since.
 [[nodiscard]] Result<FileResult> produce_fresh(RunContext& ctx, const PlanResult& planned,
-                                               OutputDir& dir, std::size_t index,
+                                               OutputDir& dir, std::size_t index, bool overwrite,
                                                FileResult result) {
     const DownloadOptions& options = *ctx.options;
     const PlannedEpub& epub = planned.plan.epubs[index];
@@ -736,7 +752,7 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         return result; // `temp` is discarded on the way out
     }
     const Result<PublishOutcome> published =
-        dir.publish(std::move(*temp), epub.file_name, options.overwrite);
+        dir.publish(std::move(*temp), epub.file_name, overwrite);
     if (!published) {
         return std::unexpected(published.error());
     }
@@ -844,10 +860,11 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     return std::unexpected(internal_error("unknown publish outcome"));
 }
 
-/// Produces one file: assessment of what is under its name (unless --overwrite), then a fresh
-/// build, an update, or nothing. With --overwrite, a path an earlier title of the run claimed is
-/// left alone (leave_claimed) instead. The value is the file's outcome (written, exists or
-/// failed); an Error ends the run.
+/// Produces one file: assessment of what is under its name (unless the file's effective
+/// --overwrite, overwrites_file), then a fresh build, an update, or nothing. With --overwrite, a
+/// path an earlier title of the run claimed is decided exactly as without --overwrite: assessed
+/// on disk, then written, updated or left alone (another book: foreign, other_book). The value is
+/// the file's outcome (written, exists or failed); an Error ends the run.
 [[nodiscard]] Result<FileResult> produce(RunContext& ctx, const PlanResult& planned, OutputDir& dir,
                                          std::size_t index) {
     const DownloadOptions& options = *ctx.options;
@@ -861,11 +878,7 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
             },
         .kept = {},
     };
-    if (options.overwrite) {
-        if (claimed_in_run(ctx, result.outcome.path)) {
-            leave_claimed(*ctx.observer, result.outcome);
-            return result;
-        }
+    if (overwrites_file(ctx, result.outcome.path)) {
         const Result<EntryKind> found = dir.entry_kind(epub.file_name);
         if (!found) {
             return std::unexpected(found.error());
@@ -876,7 +889,7 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
         }
         result.outcome.existing =
             *found == EntryKind::absent ? ExistingKind::none : ExistingKind::unchecked;
-        return produce_fresh(ctx, planned, dir, index, std::move(result));
+        return produce_fresh(ctx, planned, dir, index, /*overwrite=*/true, std::move(result));
     }
 
     // Owns the inspection descriptor. Declared before everything that borrows it, never moved,
@@ -890,7 +903,7 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     result.outcome.existing = assessment.kind;
     switch (assessment.kind) {
     case ExistingKind::none:
-        return produce_fresh(ctx, planned, dir, index, std::move(result));
+        return produce_fresh(ctx, planned, dir, index, /*overwrite=*/false, std::move(result));
     case ExistingKind::incomplete:
         return produce_update(ctx, planned, dir, index, assessment, std::move(result));
     case ExistingKind::complete:
@@ -941,17 +954,19 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     return std::unexpected(internal_error("unexpected assessment of an existing file"));
 }
 
-/// --dry-run without --overwrite, a path an earlier row of a batch/mdlist run planned
-/// (earlier_plan): decides the file as the real run will find that row's file, without looking
-/// at DIR. Another book: left alone (leave_claimed: exists/foreign, never failed). This book:
-/// the recorded plan is assessed as the file it would be (simulated_held, classify_held) and
-/// reported by plan_assessed, exactly as a file on disk would be. true: decided; false: no
-/// earlier row planned the path, or --overwrite (the caller assesses DIR as usual).
+/// --dry-run, a file decided as without --overwrite (`overwrite`, the file's effective
+/// --overwrite, is false: no --overwrite, or a path claimed_in_run under it) over a path an
+/// earlier row of a batch/mdlist run planned (earlier_plan): decides the file as the real run
+/// will find that row's file, without looking at DIR. Another book: left alone (leave_claimed:
+/// exists/foreign, never failed). This book: the recorded plan is assessed as the file it would
+/// be (simulated_held, classify_held) and reported by plan_assessed, exactly as a file on disk
+/// would be. true: decided; false: no earlier row planned the path, or `overwrite` (the caller
+/// plans the file over DIR, or assesses DIR, as usual).
 [[nodiscard]] Result<bool> plan_over_earlier(const RunContext& ctx, const PlannedEpub& epub,
-                                             FileResult& result) {
+                                             bool overwrite, FileResult& result) {
     const DownloadOptions& options = *ctx.options;
-    if (options.overwrite) {
-        return false; // never asked with --overwrite: it plans the file over whatever is there
+    if (overwrite) {
+        return false; // never asked for a file --overwrite replaces: planned over what is there
     }
     const std::optional<PlannedEpub> earlier = earlier_plan(ctx, result.outcome.path);
     if (!earlier) {
@@ -976,8 +991,10 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
 /// manifest only (D11). Nothing is downloaded, written or created, and the inspection
 /// descriptor is closed before this returns. `dir` is null when DIR does not exist.
 ///
-/// Without --overwrite, a path an earlier row of a batch/mdlist run planned is decided first
-/// (plan_over_earlier), also when DIR does not exist, and DIR is not looked at for it.
+/// A file decided as without --overwrite (no --overwrite, or a path an earlier title of the run
+/// claimed: overwrites_file) over a path an earlier row of a batch/mdlist run planned is decided
+/// first (plan_over_earlier), also when DIR does not exist, and DIR is not looked at for it;
+/// otherwise DIR is assessed. Every other file under --overwrite is planned over what is there.
 [[nodiscard]] Result<FileResult> plan_file(const RunContext& ctx, const OutputDir* dir,
                                            const PlannedEpub& epub) {
     const DownloadOptions& options = *ctx.options;
@@ -992,18 +1009,15 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     };
     EpubOutcome& outcome = result.outcome;
     bool replaces = false;
-    if (options.overwrite && claimed_in_run(ctx, outcome.path)) {
-        leave_claimed(*ctx.observer, outcome); // also when DIR does not exist yet
-        return result;
-    }
-    const Result<bool> earlier = plan_over_earlier(ctx, epub, result); // never with --overwrite
+    const bool overwrite = overwrites_file(ctx, outcome.path);
+    const Result<bool> earlier = plan_over_earlier(ctx, epub, overwrite, result);
     if (!earlier) {
         return std::unexpected(earlier.error());
     }
     if (*earlier) {
         return result; // an earlier row of this run planned the path
     }
-    if (dir != nullptr && options.overwrite) {
+    if (dir != nullptr && overwrite) {
         const Result<EntryKind> found = dir->entry_kind(epub.file_name);
         if (!found) {
             return std::unexpected(found.error());
@@ -1042,8 +1056,9 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
 
 /// --dry-run: every file is planned (or exists, or failed for a plan error). Nothing is
 /// downloaded and nothing is created, not even DIR. With --overwrite an existing target is
-/// planned with `replaced` set; without it an existing file (or an earlier row's planned file)
-/// is assessed as a real run would.
+/// planned with `replaced` set; without it, and under it for a path an earlier title of the run
+/// claimed, an existing file (or an earlier row's planned file) is assessed as a real run
+/// would.
 [[nodiscard]] Result<RunReport> dry_run(RunContext& ctx, const PlanResult& planned,
                                         RunReport report) {
     const DownloadOptions& options = *ctx.options;

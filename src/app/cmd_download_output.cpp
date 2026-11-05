@@ -261,7 +261,7 @@ void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
 }
 
 bool ConsoleObserver::left_to_collision_line(std::string_view message) const {
-    if (row_.claimed == nullptr) {
+    if (row_.collision_line_for == nullptr) {
         return false;
     }
     // Exactly what the engine's foreign_warning (src/core/download/existing.cpp) prints for
@@ -273,7 +273,7 @@ bool ConsoleObserver::left_to_collision_line(std::string_view message) const {
         return false;
     }
     const std::string_view path = message.substr(0, message.size() - suffix.size());
-    return row_.claimed->claimed_by(path).has_value();
+    return row_.collision_line_for->claimed_by(path).has_value();
 }
 
 void ConsoleObserver::on_warning(std::string_view message) {

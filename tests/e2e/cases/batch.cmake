@@ -179,6 +179,45 @@ cli_e2e_case(NAME grow
              EXPECT_EPUB "out/Clean Title.epub"
              EXPECT_NO_GLOB "out/.*.part-*")
 
+# ---- same-path overlap under --overwrite (batch-spec rev4) ------------------------------------------
+# --overwrite never applies to a path an earlier row of the same run claimed: line 3 decides line 2's
+# file exactly as a run without --overwrite does, in a dry run against line 2's planned file. Nothing
+# else changes, except that no "already up to date" note is printed under --overwrite (its remedy
+# would be false). Inline regexes, no golden.
+# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date; only the collision line.
+set(_batch_overwrite_overlap_dry_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub would already be written by line 2; give one of them a 'title' column\n$")
+set(_batch_overwrite_overlap_real_re
+    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub was already written by line 2; give one of them a 'title' column\n$")
+cli_e2e_case(NAME overwrite-overlap-dry-run
+             ARGS batch --overwrite --dry-run ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_overwrite_overlap_dry_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME overwrite-overlap
+             ARGS batch --overwrite ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_overwrite_overlap_real_re}"
+             EXPECT_NO_ANSI
+             EXPECT_FILES ${_batch_clean_files}
+             EXPECT_EPUB ${_batch_clean_files})
+# clean-grow.csv: line 3 updates line 2's single file, exactly as the grow cases above.
+cli_e2e_case(NAME overwrite-grow-dry-run
+             ARGS batch --overwrite --dry-run ${_batch_clean_api} ${_batch_in}/clean-grow.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_grow_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_grow_dry_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME overwrite-grow
+             ARGS batch --overwrite ${_batch_clean_api} ${_batch_in}/clean-grow.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_grow_paths_re}"
+             EXPECT_STDERR_REGEX "${_batch_grow_real_re}"
+             EXPECT_NO_ANSI
+             EXPECT_FILES "out/Clean Title.epub"
+             EXPECT_EPUB "out/Clean Title.epub"
+             EXPECT_NO_GLOB "out/.*.part-*")
+
 # ---- the per-row `dir` column (AC19, AC20) ---------------------------------------------------------------
 set(_batch_row_dir_paths_re
     "^out/series/clean/Clean Title - Vol\\. 01\\.epub\nout/series/clean/Clean Title - Vol\\. 02\\.epub\n$")
