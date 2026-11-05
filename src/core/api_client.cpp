@@ -16,6 +16,11 @@
 //   (as is 404 on a list, or a 401/403 whose body names the CustomList: fetch_list_document),
 //   everything else is Errc::network as `<url>: <reason>` (403/400 with a hint, 429 with the UTC
 //   time the limit ends). A stop request is Errc::interrupted, wherever it lands.
+// - Authorized GETs (get_authorized, follows plan T11): only the two AuthorizedPath URLs, built
+//   here, and only against the official API or a file:// fixture. The Authorization value is
+//   copied into the one request perform() builds and wiped there on every return path; it never
+//   reaches a trace line, an Error or any other request. The final response is returned unmapped,
+//   so the caller sees a 401.
 // - MD@H reports are best-effort and never delay a download: fetch_page only queues the report
 //   body (a bounded queue; a full queue drops the report) and returns. One background thread
 //   (Reporter, started on the first report) sends them in order with 3 s connect/stall limits and
@@ -39,6 +44,7 @@
 #include "mangadex_dl/net/retry.hpp"
 #include "mangadex_dl/net/transport.hpp"
 #include "mangadex_dl/options.hpp"
+#include "mangadex_dl/secret.hpp"
 #include "signal_block.hpp"
 
 #include <algorithm>
@@ -285,6 +291,44 @@ private:
     std::jthread thread_{};           ///< started under mutex_; must stay the last member
 };
 
+/// The `file://` prefix of a fixture tree's endpoints (endpoints_for).
+inline constexpr std::string_view fixture_scheme = "file://";
+
+/// Whether `api` may receive an Authorization header: the official API or a fixture tree only,
+/// so a custom --api-base never sees a token.
+[[nodiscard]] bool accepts_authorization(std::string_view api) noexcept {
+    return api == default_api_base || api.starts_with(fixture_scheme);
+}
+
+/// The URL of an authorized GET, built only from the enum (api_client.hpp). The follows page
+/// size is the fixed 100 (follows_page_limit; T13 pins equality with follows_request_url).
+/// nullopt for an out-of-range enum value.
+[[nodiscard]] std::optional<std::string> authorized_url(std::string_view api, AuthorizedPath path,
+                                                        std::size_t offset) {
+    switch (path) {
+    case AuthorizedPath::user_follows_manga:
+        return std::format("{}/user/follows/manga?limit=100&offset={}", api, offset);
+    case AuthorizedPath::manga_status:
+        return std::format("{}/manga/status", api);
+    }
+    return std::nullopt;
+}
+
+/// Wipes a string (an Authorization copy) when it goes out of scope, on every return path.
+/// Borrows the string, which must outlive this guard (declare the guard after its owner).
+class WipeOnExit {
+public:
+    explicit WipeOnExit(std::string& text) noexcept : text_(&text) {}
+    WipeOnExit(const WipeOnExit&) = delete;
+    WipeOnExit& operator=(const WipeOnExit&) = delete;
+    WipeOnExit(WipeOnExit&&) = delete;
+    WipeOnExit& operator=(WipeOnExit&&) = delete;
+    ~WipeOnExit() { secure_wipe(*text_); }
+
+private:
+    std::string* text_ = nullptr; ///< borrowed; never null
+};
+
 /// One logical GET (possibly several attempts).
 struct GetSpec {
     std::string url{};
@@ -292,6 +336,9 @@ struct GetSpec {
     bool api_limit = true;      ///< wait for the shared API limiter
     bool at_home_limit = false; ///< also wait for the at-home limiter
     bool report = false;        ///< send an MD@H report after every attempt (page images)
+    /// The Authorization value, borrowed for the call; null = no header. Set only by
+    /// get_authorized.
+    const Secret* authorization = nullptr;
 };
 
 } // namespace
@@ -337,14 +384,22 @@ struct ApiClient::State {
 
     /// GETs `spec.url` until success or until the retry policy gives up. The value is the last
     /// response (2xx or not); the error is a transport failure (Errc::network) or a stop
-    /// (Errc::interrupted).
+    /// (Errc::interrupted). `spec.authorization`, when set, is copied into the one request
+    /// (never into anything else) and that copy is wiped on every return path.
     [[nodiscard]] Result<HttpResponse> perform(const GetSpec& spec, std::stop_token stop_token) {
-        const HttpRequest request{
+        // Not const: its Authorization copy is filled in place and wiped by `wipe` (declared
+        // after it, so destroyed first). The request itself is never copied.
+        HttpRequest request{
             .method = HttpMethod::get,
             .url = spec.url,
             .max_body_bytes = spec.max_body_bytes,
             .cancel = std::move(stop_token),
         };
+        const WipeOnExit wipe{request.authorization};
+        if (spec.authorization != nullptr) {
+            // Copied straight into the request: no intermediate string to leave behind.
+            request.authorization.assign(spec.authorization->reveal());
+        }
         const std::stop_token& stop = request.cancel; // the request owns the token
         for (int attempt = 1;; ++attempt) {
             if (!wait_for_slot(spec, stop)) {
@@ -720,6 +775,32 @@ Result<std::string> ApiClient::fetch_list_document(const ListId& id, std::stop_t
         return std::unexpected(s.status_error(url, *response));
     }
     return std::move(response->body);
+}
+
+Result<HttpResponse> ApiClient::get_authorized(AuthorizedPath path, std::size_t offset,
+                                               const Secret& authorization, std::stop_token stop) {
+    State& s = *state_;
+    const std::string_view api = s.config.endpoints.api;
+    // Before any I/O: a custom --api-base never receives a token (check_auth_api_base refuses it
+    // earlier with the user-facing message; this is the client's own guard).
+    if (!accepts_authorization(api)) {
+        return std::unexpected(Error{
+            .code = Errc::usage,
+            .message = "authorized requests go only to the official MangaDex API; --api-base "
+                       "must be the official API",
+        });
+    }
+    std::optional<std::string> url = authorized_url(api, path, offset);
+    if (!url.has_value()) {
+        return std::unexpected(
+            Error{.code = Errc::usage, .message = "unknown authorized MangaDex request"});
+    }
+    // perform, not get_body: the final response (a 401 included) goes back unmapped, and a 401
+    // is answered once (never retried), as every other 4xx.
+    return s.perform(GetSpec{.url = std::move(*url),
+                             .max_body_bytes = max_api_json_bytes,
+                             .authorization = &authorization},
+                     std::move(stop));
 }
 
 } // namespace mangadex_dl

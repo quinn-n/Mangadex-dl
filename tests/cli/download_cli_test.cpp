@@ -443,7 +443,8 @@ TEST_CASE("root usage errors: missing command, unknown command, unknown option, 
         std::string expected{};
     };
     const std::string unknown_pre = "mangadex-dl: error: unknown command '";
-    const std::string unknown_post = "' (commands: download, batch, mdlist)\n" + hint;
+    const std::string unknown_post =
+        "' (commands: download, batch, mdlist, follows, login, logout)\n" + hint;
     const std::string option_pre = "mangadex-dl: error: unknown option '--foo'\n";
     const std::vector<Case> cases{
         {.args = {}, .expected = missing},
