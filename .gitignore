@@ -63,3 +63,4 @@ packaging/aur/*.tar.gz
 
 # Local download output (user data, never committed)
 /Manga/
+*.csv
