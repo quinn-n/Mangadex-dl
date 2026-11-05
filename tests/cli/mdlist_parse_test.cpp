@@ -233,8 +233,8 @@ TEST_CASE("mdlist --help documents LIST, DIR, the list footer and exit rows 4 an
     check_fits_80_columns(r.out);
 }
 
-TEST_CASE("mdlist --help: the options block is batch's plus --dir-per-title, the last of "
-          "mdlist's own options",
+TEST_CASE("mdlist --help: the options block is batch's, byte for byte, with --dir-per-title "
+          "after --fail-fast",
           "[cli][mdlist][help]") {
     const Captured mdlist = run_args({"mdlist", "--help"});
     const Captured batch = run_args({"batch", "--help"});
@@ -265,10 +265,9 @@ TEST_CASE("mdlist --help: the options block is batch's plus --dir-per-title, the
                                          own.end());
     CHECK(after == root_globals);
 
-    // Byte-identical to batch's block once the one new line is removed (V7a).
-    std::vector<std::string> without = own;
-    without.erase(without.begin() + static_cast<std::ptrdiff_t>(at));
-    CHECK(without == options_block(batch.out));
+    // Byte-identical to batch's block, --dir-per-title line included (V7a; batch has the flag
+    // since batch-dir-per-title).
+    CHECK(own == options_block(batch.out));
 }
 
 TEST_CASE("mdlist: the root help lists mdlist, and download and batch point at it",
