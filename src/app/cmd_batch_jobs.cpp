@@ -43,7 +43,7 @@ namespace {
     case Errc::incomplete:
     case Errc::interrupted:
     case Errc::mixed_failures:
-    case Errc::row_dir: // mdlist --dir-per-title only (batch never produces it): the row fails
+    case Errc::row_dir: // --dir-per-title (batch, mdlist, follows): the row fails alone
         return false;
     case Errc::login_required: // follows logs in before any row runs; run_download never
     case Errc::auth_rejected:  // produces these, so a row that did is treated as global
@@ -80,17 +80,19 @@ namespace {
     return false; // only reachable through an out-of-range enum value
 }
 
-/// The app side of the TitleDirResolver seam (mdlist --dir-per-title): claims each title's
-/// directory in the run's TitleDirRegistry for the current item, and remembers the name it
-/// claimed so the runner can report it as the row's `dir`.
+/// The app side of the TitleDirResolver seam (--dir-per-title: batch, mdlist and follows): claims
+/// each title's directory in the run's TitleDirRegistry for the current row, and remembers the
+/// name it claimed so the runner can report it as the row's `dir`. Its warning names rows with
+/// the source's noun: "line" for batch, "item" for mdlist and follows.
 ///
 /// Threads: run_download calls resolve() on its calling thread (the runner's), at most once per
 /// row, so no lock is needed. Lifetime: `registry` is borrowed; it is declared before the runner
-/// that owns this resolver in run_batch_jobs's frame, so it outlives it. Neither copyable nor
-/// movable (the base deletes both).
+/// that owns this resolver in run_batch_jobs's frame, so it outlives it. `source` is a copy.
+/// Neither copyable nor movable (the base deletes both).
 class ConsoleTitleDirResolver final : public TitleDirResolver {
 public:
-    explicit ConsoleTitleDirResolver(TitleDirRegistry& registry) noexcept : registry_(&registry) {}
+    ConsoleTitleDirResolver(TitleDirRegistry& registry, BatchSource source) noexcept
+        : registry_(&registry), source_(source) {}
 
     /// Starts row `item`: forgets the previous row's claim, so a row whose run ends before its
     /// plan (exit 3 or 4: resolve() is never called) reports no directory of its own.
@@ -105,9 +107,15 @@ public:
         TitleDirChoice choice{.name = claim.name};
         if (claim.taken_by) {
             // Raw: the observer's on_warning adds `warning: <prefix>` and sanitizes the line.
-            choice.warning = std::format("directory '{}' already holds item {} (a title with the "
-                                         "same name); using '{}'",
-                                         stem, *claim.taken_by, claim.name);
+            // Only batch reserves names (run_batch_jobs), so mdlist and follows never get the first
+            // form.
+            choice.warning =
+                claim.reserved
+                    ? std::format("directory '{}' is used by the 'dir' of {} {}; using '{}'", stem,
+                                  row_noun(source_), *claim.taken_by, claim.name)
+                    : std::format("directory '{}' already holds {} {} (a title with the same "
+                                  "name); using '{}'",
+                                  stem, row_noun(source_), *claim.taken_by, claim.name);
         }
         claimed_ = std::move(claim.name);
         return choice;
@@ -120,8 +128,9 @@ public:
     }
 
 private:
-    TitleDirRegistry* registry_ = nullptr; ///< borrowed, never null
-    std::size_t item_ = 0;                 ///< the current row's line (its list position)
+    TitleDirRegistry* registry_ = nullptr;  ///< borrowed, never null
+    BatchSource source_ = BatchSource::csv; ///< the run's source: picks the row noun
+    std::size_t item_ = 0;                  ///< the current row's line (its list position)
     std::optional<std::string> claimed_{};
 };
 
@@ -140,7 +149,7 @@ public:
                        const std::string& agent, Io& io, const OutputPolicy& policy,
                        OutputRegistry& registry, TitleDirRegistry& dirs) noexcept
         : settings_(&settings), backend_(&backend), agent_(&agent), io_(&io), policy_(&policy),
-          registry_(&registry), resolver_(dirs) {}
+          registry_(&registry), resolver_(dirs, settings.source) {}
 
     [[nodiscard]] RowOutcome run(const BatchJob& job, std::size_t position,
                                  std::size_t total) override {
@@ -317,6 +326,19 @@ template <class ToJson>
     // DownloadServices, reporter, pool and bridge are created and joined inside run_title.
     OutputRegistry registry{};
     TitleDirRegistry dirs{};
+    if (settings.dir_per_title) {
+        // batch --dir-per-title: every explicit `dir` cell reserves its first segment up front,
+        // in file order, before the first row claims a derived name, so the directory a derived
+        // row gets depends only on the list (never on row order or results). Duplicates never
+        // run, so they reserve nothing. Lifetime: reserve() copies the segment and the manga id;
+        // `job.sub_dir` (the validated cell) is only borrowed for the call. mdlist and follows
+        // leave settings.dir_per_title false (their sub_dir is always empty anyway).
+        for (const BatchJob& job : jobs) {
+            if (!job.duplicate_of && !job.sub_dir.empty()) {
+                dirs.reserve(job.sub_dir, job.options.manga, job.line);
+            }
+        }
+    }
     ConsoleTitleRunner runner{settings, backend, agent, io, policy, registry, dirs};
     const BatchResult result = run_batch(jobs, runner, settings.fail_fast);
 
