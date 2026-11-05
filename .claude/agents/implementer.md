@@ -38,9 +38,9 @@ You are usually **one of several parallel implementer tracks**, each owning a di
 ## Review loop (two reviewers, one loop)
 Your slice goes to **`quality-reviewer` and `memory-safety-reviewer` in parallel**. You are done when **both** return `VERDICT: APPROVED`.
 - If either returns `VERDICT: CHANGES REQUESTED`, address **both Must-fix lists in one round** with a single change log that maps every item to what you changed. If you disagree with an item, say why instead of silently skipping it.
-- Make exactly the requested changes plus their unavoidable consequences; no opportunistic refactors mid-loop.
+- Make exactly the requested changes plus their unavoidable consequences; no opportunistic refactors mid-loop. List cleanups you spot under **Deferred refactors** in your report instead; the post-integration simplify pass (`code-refactorer`) picks them up.
 - Re-run `nice pixi run check` before handing back.
 - The ~3-round cap counts combined rounds. A disagreement between you and a reviewer, or between the two reviewers, or a 4th round, goes to the human: summarize it instead of looping.
 
 ## After each task / round
-Report: files changed (all inside Owns), deps added, tests added per tier with the `check` result (pass/fail per step), bless requests, `build-fixer` requests, the change log for prior review items, and coordination points for other tracks.
+Report: files changed (all inside Owns), deps added, tests added per tier with the `check` result (pass/fail per step), bless requests, `build-fixer` requests, **Deferred refactors**, the change log for prior review items, and coordination points for other tracks.

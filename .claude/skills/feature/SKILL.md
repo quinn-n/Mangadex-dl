@@ -1,6 +1,6 @@
 ---
 name: feature
-description: "User-invoked orchestration command (/feature) that runs the full C++ CLI feature pipeline in the current working tree. Steps are design, plan and fact-check, then parallel implementer tracks, each with a dual quality + memory-safety review loop. After that come an installed-binary test, a conditional platform pass, the feature review board, fixes, a golden re-bless gate, and a closing User Test Plan. Invoke it explicitly with a feature or command description. Claude never auto-runs it."
+description: "User-invoked orchestration command (/feature) that runs the full C++ CLI feature pipeline in the current working tree. Steps are design, plan and fact-check, then parallel implementer tracks, each with a dual quality + memory-safety review loop. After that come a simplify pass over the whole feature diff, an installed-binary test, a conditional platform pass, the feature review board, fixes, a golden re-bless gate, and a closing User Test Plan. Invoke it explicitly with a feature or command description. Claude never auto-runs it."
 argument-hint: "<feature / command / flag description>"
 disable-model-invocation: true
 ---
@@ -116,6 +116,21 @@ After the **last** batch:
 
 An unintended golden diff is a defect, never a bless.
 
+## 4b. Simplify pass
+Once every batch is integrated and green, delegate to **one** `code-refactorer` in pipeline mode. Use one refactorer, not one per track, because duplication *across* tracks is what this pass is for. Give it:
+- **Scope:** the feature's whole diff, as the list of files the tracks changed. It edits only those files.
+  - It is the only agent editing at this point, so serialization points in that list (`src/app/cli.cpp`, shared headers) are in scope.
+  - Never goldens under `tests/e2e/golden/`, the build surface (CMake, presets, `pixi.toml`, `scripts/`, `.github/`), or vendored and generated code.
+- **Inputs:** the implementers' **Deferred refactors** lists, plus any simplicity, duplication or dead-code **Should-fix** items from both track reviewers.
+- **Bar:** behaviour and the CLI contract stay unchanged: flag names, stdout/stderr text, `--json` keys, exit codes, config keys and env-var names.
+  - A failing golden case means behaviour changed. Revert that step; it is never a bless request.
+  - `nice pixi run check` stays green before and after, plus `nice pixi run -e gcc check` when it touched casts, conversions, references or views and the gcc env is installed.
+- **"Nothing worth simplifying"** is a valid result and ends the step.
+- **Review loop:** if it changed anything, run that diff through `quality-reviewer` + `memory-safety-reviewer` in parallel, with the refactorer in the implementer's seat, until **both** APPROVE (~3 combined rounds). Only `quality-reviewer` runs the full gate.
+  - If a change can't win approval, revert that change instead of escalating. The pass is optional polish, never a blocker.
+- **Hand-offs:** bugs it found go to step 8. Contract-changing simplifications and out-of-scope duplication become follow-ups in step 10.
+- **Priority:** run its gates at low OS priority with long timeouts, exactly as in step 4 (see the Execution rules).
+
 ## 5. Installed-binary test
 Delegate to `cli-tester` on the integrated feature.
 - It runs `nice pixi run test` so the sanitized dev install exists. Then it drives the real installed binary through its checklist: exit codes, stream split, `/dev/full`, SIGPIPE, stdin, non-TTY/no-ANSI, `--json`, locale, precedence, SIGINT, `--dry-run`/`--yes`, pseudo-TTY via `script`.
@@ -157,7 +172,7 @@ For any **CHANGES REQUESTED**, run the same loop until that reviewer APPROVES:
 - Same ~3-round cap. ⏸ Surface disagreements.
 
 ## 8. Fix
-Route the remaining defects from steps 5–7:
+Route the remaining defects from steps 4b–7:
 - runtime, test, crash and sanitizer findings → `bug-fixer`. It reproduces on the installed binary, writes a failing regression test at the right tier, makes a minimal fix and proves it green.
 - build/link/toolchain and gcc-only failures → `build-fixer`.
 
@@ -173,6 +188,7 @@ Then confirm `nice pixi run check` is green.
 - what was built;
 - which tracks ran in parallel per batch;
 - review rounds per track, for **both** reviewers;
+- what the simplify pass changed (or that it found nothing) and what it deferred;
 - gate results: `check`, plus `-e gcc check` or why not;
 - cli-tester results;
 - the platform-tester tier grid;

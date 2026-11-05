@@ -1,6 +1,6 @@
 ---
 name: implement
-description: "User-invoked orchestration command (/implement) that executes an already-approved C++ CLI plan. It runs parallel file-disjoint implementer batches, each track looping with quality-reviewer and memory-safety-reviewer until both APPROVE, with build-fixer routing for build/link failures. Then it runs the installed-binary cli-tester, an optional platform pass, the review board and fixes, and ends with a summary and a User Test Plan. Invoke it explicitly with the plan. Claude never auto-runs it."
+description: "User-invoked orchestration command (/implement) that executes an already-approved C++ CLI plan. It runs parallel file-disjoint implementer batches, each track looping with quality-reviewer and memory-safety-reviewer until both APPROVE, with build-fixer routing for build/link failures. Then it runs a simplify pass over the whole diff, the installed-binary cli-tester, an optional platform pass, the review board and fixes, and ends with a summary and a User Test Plan. Invoke it explicitly with the plan. Claude never auto-runs it."
 argument-hint: "<plan file path or description of the approved plan>"
 disable-model-invocation: true
 ---
@@ -58,6 +58,13 @@ After the last batch, also run `nice pixi run -e gcc check` if `.pixi/envs/gcc` 
 - A failure there goes to `build-fixer` if it is compiler-specific, or to the owning implementer otherwise.
 - If the gcc env isn't installed, say so. CI covers it.
 
+## 2b. Simplify pass
+After the last batch integrates green, run **one** `code-refactorer` in pipeline mode over the feature's whole diff. Give it the list of changed files and the implementers' **Deferred refactors** lists, plus any simplicity/duplication/dead-code Should-fix items from the track reviews.
+- It keeps behaviour and the CLI contract (flags, stdout/stderr text, `--json` keys, exit codes) unchanged and `nice pixi run check` green. It never touches goldens or the build surface; a failing golden case means it reverts that step.
+- If it changed anything, loop its diff through `quality-reviewer` + `memory-safety-reviewer` until **both** APPROVE (~3 combined rounds). Revert any change that can't win approval rather than escalating.
+- Run its gates as `nice pixi run …` with long timeouts (see the Execution rules).
+- "Nothing worth simplifying" is a valid result. Bugs it finds go to step 6. Report what it changed and what it deferred in the step 7 summary.
+
 ## 3. Installed-binary test
 Delegate to `cli-tester` on the integrated feature. It returns:
 - ✅/❌ per acceptance criterion;
@@ -97,6 +104,7 @@ Loop each through `quality-reviewer` + `memory-safety-reviewer` until both APPRO
 Summarize:
 - the parallel tracks;
 - review rounds per track (both reviewers);
+- what the simplify pass changed (or that it found nothing) and what it deferred;
 - gate results (`check`, plus `-e gcc check` or why not);
 - cli-tester results;
 - the platform tier grid;
