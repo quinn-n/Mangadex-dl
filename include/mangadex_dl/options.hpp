@@ -99,8 +99,8 @@ struct DownloadOptions {
     unsigned jobs = 8;
     ApiBase api_base{};
     bool report = true;         ///< send MD@H reliability reports (official API only)
-    bool dir_per_title = false; ///< mdlist --dir-per-title: files go to dir/<title directory>;
-                                ///< download and batch never set it
+    bool dir_per_title = false; ///< batch and mdlist --dir-per-title: files go to
+                                ///< dir/<title directory>; download never sets it
 
     /// Member-wise; batch uses it to spot rows that would repeat an earlier row's download.
     friend bool operator==(const DownloadOptions&, const DownloadOptions&) = default;
