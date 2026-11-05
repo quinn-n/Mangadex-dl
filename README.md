@@ -171,8 +171,9 @@ directory, so that file fails before anything is downloaded for it
 `failed` / `"foreign"`), the directory is left as it was, the other files are still written,
 and the run ends with exit 6. `--dry-run` reports it the same way (`... would fail`).
 
-In one `batch` or `mdlist` run, `--overwrite` never applies to a file an earlier row of the same
-run wrote (or, with `--dry-run`, planned): that file is looked at exactly as above, as if
+In one `batch` or `mdlist` run, `--overwrite` never applies to a file an earlier row (or `mdlist`
+item) of the same run wrote or kept (or, with `--dry-run`, planned): that file is looked at
+exactly as above, as if
 `--overwrite` were not given (see [What a batch prints](#what-a-batch-prints-and-when-it-stops)).
 Files left by earlier runs are still replaced.
 
@@ -185,8 +186,9 @@ mangadex-dl: 3 files are already up to date; pass --overwrite to download them a
 
 With exactly one file the note reads
 `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`.
-`batch` and `mdlist` never print it with `--overwrite`: then only a file an earlier row of the
-same run wrote can be up to date, and passing `--overwrite` would not download it again.
+`batch` and `mdlist` never print it with `--overwrite`: then only a file an earlier row (or
+item) of the same run wrote or kept can be up to date, and passing `--overwrite` would not
+download it again.
 
 Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
 
@@ -445,9 +447,9 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   `<path>: left alone: holds a different book; use another DIR or --title` and the warning above.
   The same book is decided as a real re-run decides it: up to date (counted in the "N files are
   already up to date" note, which is not printed with `--overwrite`), updated (the path is
-  listed again, as the real update lists it), or left alone as diverged, with the real warning. Two things only a real run can know: exact
-  page counts (a dry run takes them from MangaDex's chapter list, the real run from the image
-  server) and damaged pages in an existing file. A `--dry-run` keeps each planned file's chapter
+  listed again, as the real update lists it), or left alone as diverged, with the real warning.
+  Two things only a real run can know: exact page counts (a dry run takes them from MangaDex's
+  chapter list, the real run from the image server) and damaged pages in an existing file. A `--dry-run` keeps each planned file's chapter
   list in memory until it ends, roughly 60 KB per typical title (about
   what `--json` keeps; about 60 MB for 1 000 titles).
 - A full success prints nothing on stderr. Otherwise the batch ends with one closing line, even
