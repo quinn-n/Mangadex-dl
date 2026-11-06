@@ -70,12 +70,14 @@ struct RunContext {
     /// resolve_title_dir, on the calling thread. Never reached by a FetchPool worker.
     TitleDirResolver* title_dir = nullptr;
     /// &DownloadServices::claimed (run_download always sets it; the function may be empty):
-    /// asked by the execute phase, on the calling thread, before --overwrite replaces a file.
-    /// Never reached by a FetchPool worker.
+    /// asked by the execute phase under --overwrite only, once per file, on the calling thread,
+    /// before anything is decided for it. A path it owns is decided exactly as without
+    /// --overwrite (batch-spec rev4). Never reached by a FetchPool worker.
     const std::function<bool(std::string_view)>* claimed = nullptr;
     /// &DownloadServices::planned_in_run (run_download always sets it; the function may be
-    /// empty): asked by plan_file only (dry run, no --overwrite), on the calling thread. A dry run
-    /// never calls FetchPool::run, so no worker reaches it.
+    /// empty): asked by plan_file only (dry run), on the calling thread, for a file decided as
+    /// without --overwrite: always without --overwrite, and under it only for a path `claimed`
+    /// owns. A dry run never calls FetchPool::run, so no worker reaches it.
     const std::function<std::optional<PlannedEpub>(std::string_view)>* planned_in_run = nullptr;
 };
 
@@ -121,10 +123,12 @@ struct PlanResult {
 /// planned file instead, as the real run would find it). Otherwise, in order, each file is
 /// assessed (unless --overwrite; download/existing.hpp) and then written when absent, left alone
 /// (exists) when complete, diverged or foreign, or rebuilt with page reuse and replaced when
-/// incomplete. A per-file network or media failure marks that file failed (an existing file is
-/// kept) and the run continues; a local file-system failure (Errc::failure) or a stop
-/// (Errc::interrupted) aborts the run, and every temporary is discarded on the way out. The
-/// report's skipped list is reconciled with the held releases the files keep.
+/// incomplete. --overwrite applies per file: a path an earlier title of the run claimed
+/// (ctx.claimed) is decided exactly as without it, in a dry run too. A per-file network or media
+/// failure marks that file failed (an existing file is kept) and the run continues; a local
+/// file-system failure (Errc::failure) or a stop (Errc::interrupted) aborts the run, and every
+/// temporary is discarded on the way out. The report's skipped list is reconciled with the held
+/// releases the files keep.
 [[nodiscard]] Result<RunReport> execute_phase(RunContext& ctx, const PlanResult& planned);
 
 } // namespace mangadex_dl::detail

@@ -59,20 +59,23 @@ struct RowContext {
     std::size_t position = 0;  ///< 1-based; 0 = no "(i/n) " progress counter
     std::size_t total = 0;     ///< the n of "(i/n) "
     bool exists_notice = true; ///< false: finish() leaves the "up to date" note to the caller
-    /// mdlist only (null for `download` and `batch`): the run's OutputRegistry, holding the paths
-    /// of the earlier rows (a row claims its own only after its run). The engine's "<path>: left
-    /// alone: holds a different book; ..." warning is dropped for a path in it, because the
-    /// runner's collision line for that path says it instead. run_title also hands it to the
-    /// engine as DownloadServices::claimed, so --overwrite leaves such a path alone instead of
-    /// replacing it. Borrowed and only read: the registry is declared before the runner and
-    /// outlives every observer and every run_title call.
-    const OutputRegistry* claimed = nullptr;
-    /// batch and mdlist (null for `download`): the run's OutputRegistry, holding the files the
-    /// earlier rows of a dry run planned. run_title hands it to the engine as
-    /// DownloadServices::planned_in_run (OutputRegistry::planned_at), so a dry run without
-    /// --overwrite decides such a path as the real run will find it. The observer never reads
-    /// it; `claimed` stays mdlist-only. Borrowed and only read, like `claimed`.
-    const OutputRegistry* planned = nullptr;
+    /// batch and mdlist (null for `download`): the run's OutputRegistry, holding the paths the
+    /// earlier rows claimed (a row claims its own only after its run) and the files they planned.
+    /// Three uses. run_title hands it to the engine as DownloadServices::claimed
+    /// (OutputRegistry::claimed_by) and DownloadServices::planned_in_run
+    /// (OutputRegistry::planned_at), so --overwrite decides a path an earlier row claimed exactly
+    /// as a run without it, and a dry run decides a path an earlier row planned as the real run
+    /// will find it (batch-spec rev4). And the observer does not count a file left alone as up
+    /// to date at a path an earlier row claimed toward the "already up to date" note
+    /// (OutputRegistry::claimed_by; batch-spec rev5), so the note counts only files from earlier
+    /// runs, each path once. Borrowed and only read: the registry is declared before the runner
+    /// and outlives every observer and every run_title call.
+    const OutputRegistry* registry = nullptr;
+    /// mdlist only (null for `download` and `batch`): the same OutputRegistry, for the observer's
+    /// filter alone. The engine's "<path>: left alone: holds a different book; ..." warning is
+    /// dropped for a path an earlier row claimed, because the runner's collision line for that
+    /// path says it instead. The engine never sees it. Borrowed and only read, like `registry`.
+    const OutputRegistry* collision_line_for = nullptr;
 
     friend bool operator==(const RowContext&, const RowContext&) = default;
 };
@@ -92,8 +95,10 @@ struct RowContext {
 ///   before any other stderr line and at finish(). No cursor escapes.
 /// - `row` (owned copy): its prefix goes after `warning:`/`error:` (verbose and trace lines stay
 ///   unprefixed), its position/total add a `(i/n) ` counter in front of the progress line,
-///   exists_notice=false leaves the "already up to date" note to the caller, and a non-null
-///   `claimed` drops the "holds a different book" warning for a path an earlier row claimed.
+///   exists_notice=false leaves the "already up to date" note to the caller, a non-null
+///   `registry` keeps a file left up to date at a path an earlier row claimed out of the note's
+///   count (up_to_date()), and a non-null `collision_line_for` drops the "holds a different
+///   book" warning for a path an earlier row claimed.
 class ConsoleObserver final : public DownloadObserver {
 public:
     ConsoleObserver(Io& io, const OutputPolicy& policy, RowContext row = {})
@@ -115,20 +120,23 @@ public:
     /// before print_error / print_report_json: clears the progress line and prints the single
     /// "N files are already up to date" note (no `warning:` prefix, never colored; not with -q,
     /// nor when row.exists_notice is false). It counts files left alone as up to date
-    /// (existing == complete) only. Idempotent.
+    /// (existing == complete) only, and with a non-null row.registry only those at a path no
+    /// earlier row claimed. Idempotent.
     void finish();
 
-    /// Files left alone so far because they hold every chapter: what the note counts. Kept on
-    /// every path, so a caller that prints the note itself (row.exists_notice false) can count
-    /// the files of a run that then ended with an Error.
+    /// Files left alone so far because they hold every chapter (with a non-null row.registry,
+    /// only those at a path no earlier row claimed): what the note counts. Kept on every path,
+    /// so a caller that prints the note itself (row.exists_notice false) can count the files of
+    /// a run that then ended with an Error.
     [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
 
 private:
     /// The stderr detail for a file left alone (status exists): counts it toward the note when
-    /// it is up to date, warns when it appeared during the run.
+    /// it is up to date (and no earlier row claimed its path), warns when it appeared during the
+    /// run.
     void left_alone(const EpubOutcome& outcome);
     /// Is `message` the engine's "<path>: left alone: holds a different book; ..." warning for a
-    /// path that row_.claimed holds (so the runner's collision line reports it)?
+    /// path that row_.collision_line_for holds (so the runner's collision line reports it)?
     [[nodiscard]] bool left_to_collision_line(std::string_view message) const;
     void warning(std::string_view message);
     /// "mangadex-dl: <message>" on stderr, terminal_safe, uncolored (-v lines and the note).
@@ -149,7 +157,7 @@ private:
     std::size_t pages_total_ = 0;
     std::size_t drawn_width_ = 0; ///< bytes of the progress line on screen; 0 = nothing drawn
 
-    std::size_t up_to_date_ = 0; ///< files left alone because they hold every chapter
+    std::size_t up_to_date_ = 0; ///< what up_to_date() returns
     bool up_to_date_reported_ = false;
 };
 

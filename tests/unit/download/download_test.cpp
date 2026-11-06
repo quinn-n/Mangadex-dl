@@ -593,13 +593,19 @@ TEST_CASE("download --overwrite: a directory that takes the name mid-build fails
           std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
 }
 
-TEST_CASE("download --overwrite never replaces a path DownloadServices::claimed owns",
+TEST_CASE("download --overwrite decides a path DownloadServices::claimed owns as without "
+          "--overwrite",
           "[download][overwrite]") {
+    // batch-spec rev4: --overwrite does not apply to a path an earlier title of the same run
+    // claimed. That file is assessed on disk (real run), or against planned_in_run, else DIR
+    // (dry run), exactly as without --overwrite; every other path is still replaced.
     Harness h{mdx::clean_fixture()};
     const std::string vol1 = (h.out("out") / clean_vol1).string();
     const std::string vol2 = (h.out("out") / clean_vol2).string();
-    const std::string left_alone =
+    const std::string other_book_line =
         vol1 + ": left alone: holds a different book; use another DIR or --title";
+    const std::string not_ours_line =
+        vol1 + ": left alone: not an EPUB made by mangadex-dl; use another DIR or --title";
     // Records every question and its thread; owns vol1 only. The vector outlives every run.
     std::vector<std::pair<std::string, std::thread::id>> asked{};
     const std::function<bool(std::string_view)> claims_vol1 =
@@ -609,25 +615,36 @@ TEST_CASE("download --overwrite never replaces a path DownloadServices::claimed 
         };
     md::DownloadOptions overwrite = h.options();
     overwrite.overwrite = true;
+    md::DownloadOptions dry_overwrite = overwrite;
+    dry_overwrite.dry_run = true;
 
-    SECTION("a real run: the claimed file is left alone as foreign, the other one replaced") {
+    SECTION("a real run: the claimed file is assessed as without --overwrite, the other one "
+            "replaced") {
         RecordingObserver first;
         REQUIRE(h.run(h.options(), first).has_value());
         const std::string original_vol2 = read_file(vol2);
         write_file(vol1, "item 1's book");
         write_file(vol2, "stale");
+        // What a run without --overwrite makes of the same files (it leaves both alone).
+        RecordingObserver plain;
+        const auto without = h.run(h.options(), plain);
+        REQUIRE(without.has_value());
+        REQUIRE(statuses(*without) == std::vector{md::EpubStatus::exists, md::EpubStatus::exists});
+        REQUIRE(!plain.warnings().empty());
+        CHECK(plain.warnings().front() == not_ours_line);
 
         RecordingObserver observer;
         const auto result = h.run_claimed(overwrite, observer, claims_vol1);
         REQUIRE(result.has_value());
         CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::written});
+        CHECK(result->epubs[0] == without->epubs[0]);
         CHECK(result->epubs[0].existing == md::ExistingKind::foreign);
         CHECK_FALSE(result->epubs[0].replaced);
         CHECK(result->epubs[0].pages == 0);
         CHECK(result->epubs[1].existing == md::ExistingKind::unchecked);
         CHECK(result->epubs[1].replaced);
         CHECK(md::exit_code_for(*result) == 0);
-        CHECK(observer.warnings() == std::vector<std::string>{left_alone});
+        CHECK(observer.warnings() == std::vector<std::string>{not_ours_line});
         CHECK(observer.begins() == std::vector<std::string>{std::string{clean_vol2}});
         CHECK(observer.ends() == result->epubs);
         CHECK(read_file(vol1) == "item 1's book");
@@ -642,21 +659,130 @@ TEST_CASE("download --overwrite never replaces a path DownloadServices::claimed 
             CHECK(thread == std::this_thread::get_id());
         }
     }
-    SECTION("a dry run: the claimed file is left alone, also before DIR exists") {
-        md::DownloadOptions dry = overwrite;
-        dry.dry_run = true;
+    SECTION("a real run: a claimed file of this book that is up to date is left alone") {
+        RecordingObserver first;
+        REQUIRE(h.run(h.options(), first).has_value());
+        const std::string original_vol1 = read_file(vol1);
         RecordingObserver observer;
-        const auto result = h.run_claimed(dry, observer, claims_vol1);
+        const auto result = h.run_claimed(overwrite, observer, claims_vol1);
+        REQUIRE(result.has_value());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::written});
+        CHECK(result->epubs[0].existing == md::ExistingKind::complete);
+        CHECK_FALSE(result->epubs[0].replaced);
+        CHECK(result->epubs[0].pages == 5);
+        CHECK(result->epubs[1].existing == md::ExistingKind::unchecked);
+        CHECK(result->epubs[1].replaced);
+        CHECK(observer.warnings().empty());
+        CHECK(observer.begins() == std::vector<std::string>{std::string{clean_vol2}});
+        CHECK(read_file(vol1) == original_vol1);
+        CHECK(asked.size() == 2);
+    }
+    SECTION("a real run: a claimed path with nothing under it is published without clobbering") {
+        // The assessment finds nothing; then, while Vol. 01's pages are fetched (on a pool
+        // worker), another program writes a file under its name. A file decided as without
+        // --overwrite never replaces it. The hook borrows `vol1` and `fired`; it is cleared right
+        // after the run, so it never outlives `fired`.
+        std::atomic<bool> fired{false};
+        h.transport().set_on_fetch(
+            [page = h.page_url(0, 0), path = &vol1, flag = &fired](const auto& request) {
+                if (request.url == page && !flag->exchange(true)) {
+                    std::ofstream{*path, std::ios::binary} << "another program's file";
+                }
+            });
+        RecordingObserver observer;
+        const auto result = h.run_claimed(overwrite, observer, claims_vol1);
+        h.transport().set_on_fetch({});
+        REQUIRE(result.has_value());
+        CHECK(fired.load());
+        CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::written});
+        CHECK(result->epubs[0].existing == md::ExistingKind::none);
+        CHECK_FALSE(result->epubs[0].replaced);
+        CHECK(result->epubs[1].existing == md::ExistingKind::none);
+        CHECK_FALSE(result->epubs[1].replaced);
+        CHECK(read_file(vol1) == "another program's file");
+        // No temporary is left behind.
+        CHECK(list_dir(h.out("out")) ==
+              std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
+    }
+    SECTION("a dry run without planned_in_run: the claimed file is assessed in DIR, also before "
+            "DIR exists") {
+        RecordingObserver fresh;
+        const auto planned = h.run_claimed(dry_overwrite, fresh, claims_vol1);
+        REQUIRE(planned.has_value());
+        CHECK(statuses(*planned) == std::vector{md::EpubStatus::planned, md::EpubStatus::planned});
+        CHECK(planned->epubs[0].existing == md::ExistingKind::none);
+        CHECK_FALSE(planned->epubs[0].replaced);
+        CHECK(planned->epubs[1].existing == md::ExistingKind::none);
+        CHECK_FALSE(planned->epubs[1].replaced);
+        CHECK(fresh.warnings().empty());
+        CHECK_FALSE(std::filesystem::exists(h.out("out")));
+        CHECK(asked.size() == 2);
+
+        REQUIRE(std::filesystem::create_directory(h.out("out")));
+        write_file(vol1, "item 1's book");
+        write_file(vol2, "stale");
+        RecordingObserver observer;
+        const auto result = h.run_claimed(dry_overwrite, observer, claims_vol1);
         REQUIRE(result.has_value());
         CHECK(statuses(*result) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
         CHECK(result->epubs[0].existing == md::ExistingKind::foreign);
         CHECK_FALSE(result->epubs[0].replaced);
-        CHECK(result->epubs[1].existing == md::ExistingKind::none);
-        CHECK_FALSE(result->epubs[1].replaced);
-        CHECK(observer.warnings() == std::vector<std::string>{left_alone});
+        CHECK(result->epubs[1].existing == md::ExistingKind::unchecked);
+        CHECK(result->epubs[1].replaced);
+        CHECK(observer.warnings() == std::vector<std::string>{not_ours_line});
         CHECK(observer.ends() == result->epubs);
-        CHECK_FALSE(std::filesystem::exists(h.out("out")));
-        CHECK(asked.size() == 2);
+        CHECK(read_file(vol1) == "item 1's book");
+        CHECK(read_file(vol2) == "stale");
+        CHECK(asked.size() == 4);
+    }
+    SECTION("a dry run: planned_in_run decides the claimed file over what DIR holds") {
+        md::DownloadOptions dry = h.options();
+        dry.dry_run = true;
+        RecordingObserver plain;
+        const auto plan = h.run(dry, plain);
+        REQUIRE(plan.has_value());
+        REQUIRE(plan->epubs.size() == 2);
+        const md::PlannedEpub vol1_plan = plan->epubs[0].epub;
+        md::PlannedEpub other_book = vol1_plan;
+        other_book.identifier = "urn:mangadex:22222222-2222-4222-8222-222222222222:en:vol-1";
+        REQUIRE(std::filesystem::create_directory(h.out("out")));
+        write_file(vol1, "not an EPUB");
+        // Records every path planned_in_run is asked about; the vector outlives every run.
+        std::vector<std::string> planned_asked{};
+        const auto record_of = [log = &planned_asked, path = vol1](md::PlannedEpub recorded) {
+            return std::function<std::optional<md::PlannedEpub>(std::string_view)>{
+                [log, path, book = std::move(recorded)](std::string_view asked_path) {
+                    log->emplace_back(asked_path);
+                    return asked_path == path ? std::optional<md::PlannedEpub>{book} : std::nullopt;
+                }};
+        };
+
+        RecordingObserver other;
+        const auto left = h.run_planned(dry_overwrite, other, record_of(other_book), claims_vol1);
+        REQUIRE(left.has_value());
+        CHECK(statuses(*left) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        CHECK(left->epubs[0].existing == md::ExistingKind::foreign);
+        CHECK_FALSE(left->epubs[0].replaced);
+        CHECK(left->epubs[0].pages == 0);
+        CHECK(left->epubs[0].epub == vol1_plan);
+        CHECK(other.warnings() == std::vector<std::string>{other_book_line});
+        // Asked only for the claimed path: --overwrite plans vol2 over what is there.
+        CHECK(planned_asked == std::vector<std::string>{vol1});
+
+        RecordingObserver same;
+        const auto up_to_date =
+            h.run_planned(dry_overwrite, same, record_of(vol1_plan), claims_vol1);
+        REQUIRE(up_to_date.has_value());
+        CHECK(statuses(*up_to_date) ==
+              std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
+        CHECK(up_to_date->epubs[0].existing == md::ExistingKind::complete);
+        CHECK(up_to_date->epubs[0].pages == vol1_plan.planned_pages);
+        CHECK(up_to_date->epubs[0].epub == vol1_plan);
+        CHECK_FALSE(up_to_date->epubs[0].replaced);
+        CHECK(same.warnings().empty());
+        CHECK(planned_asked == std::vector<std::string>{vol1, vol1});
+        CHECK(read_file(vol1) == "not an EPUB");
+        CHECK(asked.size() == 4);
     }
     SECTION("without --overwrite the question is never asked") {
         RecordingObserver observer;
@@ -743,7 +869,7 @@ TEST_CASE("download --dry-run over a path an earlier row planned for another boo
         CHECK(observer.warnings().empty());
         CHECK(read_file(vol1) == "not an EPUB");
     }
-    SECTION("never asked in a real run, nor with --overwrite") {
+    SECTION("never asked in a real run, nor with --overwrite for an unclaimed path") {
         RecordingObserver real;
         const auto written = h.run_planned(h.options(), real, other_at_vol1);
         REQUIRE(written.has_value());
@@ -758,8 +884,10 @@ TEST_CASE("download --dry-run over a path an earlier row planned for another boo
         CHECK(statuses(*replaced) == std::vector{md::EpubStatus::planned, md::EpubStatus::planned});
         CHECK(replaced->epubs[0].replaced);
         CHECK(replacing.warnings().empty());
+        CHECK(asked.empty());
 
-        // --overwrite with a claimed path: DownloadServices::claimed decides, as before.
+        // --overwrite with a claimed path (batch-spec rev4): decided as without --overwrite, so
+        // planned_in_run is asked for that path only, once, and leaves the other book alone.
         const std::function<bool(std::string_view)> claims_vol1 =
             [path = vol1](std::string_view asked_path) { return asked_path == path; };
         RecordingObserver claimed;
@@ -767,8 +895,11 @@ TEST_CASE("download --dry-run over a path an earlier row planned for another boo
         REQUIRE(left.has_value());
         CHECK(statuses(*left) == std::vector{md::EpubStatus::exists, md::EpubStatus::planned});
         CHECK(left->epubs[0].existing == md::ExistingKind::foreign);
+        CHECK(left->epubs[1].replaced); // unclaimed: planned over the real run's file
         CHECK(claimed.warnings() == std::vector<std::string>{left_alone});
-        CHECK(asked.empty());
+        REQUIRE(asked.size() == 1);
+        CHECK(asked[0].first == vol1);
+        CHECK(asked[0].second == std::this_thread::get_id());
     }
     SECTION("an empty function, or no record, changes nothing") {
         RecordingObserver empty;

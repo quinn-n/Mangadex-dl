@@ -779,28 +779,103 @@ TEST_CASE("batch: two rows writing the same file warn once naming both lines, al
                     list.string(), (out / clean_vol1).string());
 
     SECTION("the second row finds the file the first one wrote") {
+        // batch-spec rev5: line 3's Vol. 01 is up to date, but line 2 claimed it, so the note does
+        // not count it (--overwrite would not download it again): the collision line only.
         const Captured r = run_command(tree.args(list, out));
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
-        CHECK(r.err == collision + "mangadex-dl: 1 file is already up to date; pass --overwrite to "
-                                   "download it again\n");
+        CHECK(r.err == collision);
+
+        const fs::path json_out = tree.path("out-json");
+        const Captured json =
+            run_command(tree.args(list, json_out), Context{.globals = {.json = true}});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == std::format("mangadex-dl: warning: {}:3: {} was already written by line "
+                                      "2; give one of them a 'title' column\n",
+                                      list.string(), (json_out / clean_vol1).string()));
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        // The report still says what happened to the file: left alone, up to date.
+        const Json& vol1 = doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(vol1.at("status") == "exists");
+        CHECK(vol1.at("existing") == "complete");
     }
-    SECTION("--overwrite: the second row replaces it, and still warns") {
+    SECTION("a re-run over a DIR an earlier run filled counts each file once") {
+        // Line 2 finds Vol. 01 and line 3 Vol. 02 up to date, both from the earlier run: counted.
+        // Line 3's Vol. 01 is the path line 2 claimed: not counted again (2 files, not 3).
+        REQUIRE(run_command(tree.args(list, out)).exit_code == 0);
+        const std::string note = "mangadex-dl: 2 files are already up to date; pass --overwrite to "
+                                 "download them again\n";
+
+        const Captured again = run_command(tree.args(list, out));
+        CHECK(again.exit_code == 0);
+        CHECK(again.out.empty());
+        CHECK(again.err == collision + note);
+
+        md::RawBatchArgs dry = tree.args(list, out);
+        dry.defaults.dry_run = true;
+        const Captured planned = run_command(dry);
+        CHECK(planned.exit_code == 0);
+        CHECK(planned.out.empty());
+        CHECK(planned.err == dry_collision + note);
+
+        const Captured quiet =
+            run_command(tree.args(list, out), Context{.globals = {.quiet = true}});
+        CHECK(quiet.exit_code == 0);
+        CHECK(quiet.err.empty());
+    }
+    SECTION("--overwrite over a DIR an earlier run filled: no note, nothing left up to date is "
+            "counted") {
+        // Line 2 replaces Vol. 01 and line 3 Vol. 02 (earlier runs' files); line 3's Vol. 01 is
+        // line 2's, up to date and claimed, so it is not counted: the collision line only.
+        REQUIRE(run_command(tree.args(list, out)).exit_code == 0);
         md::RawBatchArgs args = tree.args(list, out);
         args.defaults.overwrite = true;
         const Captured r = run_command(args);
         CHECK(r.exit_code == 0);
-        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol1, clean_vol2}));
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
         CHECK(r.err == collision);
+
+        args.defaults.dry_run = true;
+        const Captured planned = run_command(args);
+        CHECK(planned.exit_code == 0);
+        CHECK(planned.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(planned.err == dry_collision);
+    }
+    SECTION("--overwrite: the second row finds the file the first one wrote, as without "
+            "--overwrite") {
+        // batch-spec rev4: --overwrite never applies to a path an earlier row of the run claimed.
+        // Line 3's Vol. 01 is up to date, and not counted in the note (rev5): line 2 claimed it.
+        md::RawBatchArgs args = tree.args(list, out);
+        args.defaults.overwrite = true;
+        const Captured r = run_command(args);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == collision);
+
+        const Captured json = run_command(args, Context{.globals = {.json = true}});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == collision);
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        const Json& epubs = doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(epubs.size() == 2);
+        CHECK(epubs.at(0).at("status") == "exists");
+        CHECK(epubs.at(0).at("existing") == "complete");
+        CHECK(epubs.at(0).at("replaced") == false);
+        CHECK(epubs.at(1).at("status") == "written");
+        const Json& files = doc.at("summary").at("files");
+        CHECK(files.at("written") == 2);
+        CHECK(files.at("exists") == 1);
     }
     SECTION("--dry-run: the second row finds the first row's planned file up to date") {
+        // As the real run: the collision line only (the note does not count a claimed path).
         md::RawBatchArgs args = tree.args(list, out);
         args.defaults.dry_run = true;
         const Captured r = run_command(args);
         CHECK(r.exit_code == 0);
         CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
-        CHECK(r.err == dry_collision + "mangadex-dl: 1 file is already up to date; pass "
-                                       "--overwrite to download it again\n");
+        CHECK(r.err == dry_collision);
         CHECK(!fs::exists(out));
 
         const Captured json = run_command(args, Context{.globals = {.json = true}});
@@ -820,14 +895,28 @@ TEST_CASE("batch: two rows writing the same file warn once naming both lines, al
         CHECK(vol1.at("pages") == real_vol1.at("pages"));
         CHECK(vol1 == real_vol1);
     }
-    SECTION("--overwrite --dry-run: both rows plan Vol. 01, in the dry wording") {
+    SECTION("--overwrite --dry-run: the second row would find the first row's Vol. 01 up to "
+            "date") {
         md::RawBatchArgs args = tree.args(list, out);
         args.defaults.overwrite = true;
         args.defaults.dry_run = true;
         const Captured r = run_command(args);
         CHECK(r.exit_code == 0);
-        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol1, clean_vol2}));
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
         CHECK(r.err == dry_collision);
+        CHECK(!fs::exists(out));
+
+        const Captured json = run_command(args, Context{.globals = {.json = true}});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == dry_collision);
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        const Json& epubs = doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(epubs.size() == 2);
+        CHECK(epubs.at(0).at("status") == "exists");
+        CHECK(epubs.at(0).at("existing") == "complete");
+        CHECK(epubs.at(0).at("replaced") == false);
+        CHECK(epubs.at(1).at("status") == "planned");
         CHECK(!fs::exists(out));
     }
 }
@@ -984,8 +1073,8 @@ TEST_CASE("batch: --dry-run over chained rows decides each against the latest pl
     const Tree tree{mdx::clean_fixture()};
     const fs::path out = tree.path("out");
     const fs::path file = out / clean_single;
-    const std::string up_to_date =
-        "mangadex-dl: 1 file is already up to date; pass --overwrite to download it again\n";
+    // Line 4 finds the file up to date, but line 2 claimed it: no "already up to date" note
+    // (batch-spec rev5), in the dry run as in the real run.
 
     SECTION("three rows on a fresh DIR") {
         const fs::path list =
@@ -997,10 +1086,10 @@ TEST_CASE("batch: --dry-run over chained rows decides each against the latest pl
         CHECK(r.real.exit_code == 0);
         CHECK(r.dry.out == path_lines(out, {clean_single, clean_single}));
         CHECK(r.real.out == r.dry.out);
-        CHECK(r.dry.err == csv_collision(list, 3, file, 2, true) +
-                               csv_collision(list, 4, file, 2, true) + up_to_date);
-        CHECK(r.real.err == csv_collision(list, 3, file, 2, false) +
-                                csv_collision(list, 4, file, 2, false) + up_to_date);
+        CHECK(r.dry.err ==
+              csv_collision(list, 3, file, 2, true) + csv_collision(list, 4, file, 2, true));
+        CHECK(r.real.err ==
+              csv_collision(list, 3, file, 2, false) + csv_collision(list, 4, file, 2, false));
     }
     SECTION("the first row already on disk from an earlier batch") {
         const fs::path first =
@@ -1020,8 +1109,150 @@ TEST_CASE("batch: --dry-run over chained rows decides each against the latest pl
         CHECK(written.exit_code == 0);
         CHECK(planned.out == path_lines(out, {clean_single}));
         CHECK(written.out == planned.out);
-        CHECK(planned.err == csv_collision(list, 3, file, 2, true) + up_to_date);
-        CHECK(written.err == csv_collision(list, 3, file, 2, false) + up_to_date);
+        // Line 2 updates the earlier batch's file; line 3 finds it up to date, claimed by line 2.
+        CHECK(planned.err == csv_collision(list, 3, file, 2, true));
+        CHECK(written.err == csv_collision(list, 3, file, 2, false));
+    }
+}
+
+// ---- --overwrite over an earlier row's file (batch-spec rev4) ----------------------------------
+
+TEST_CASE("batch --overwrite: a row over an earlier row's single file updates it exactly as "
+          "without --overwrite",
+          "[cli][batch][collision][overwrite]") {
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path list = tree.csv(
+        "grow.csv", std::format("manga,volumes,layout\n{0},1,single\n{0},1-2,single\n", clean_id));
+    // The same list without --overwrite, into its own DIR, is the reference.
+    const fs::path plain_out = tree.path("plain");
+    const fs::path out = tree.path("out");
+    const md::RawBatchArgs plain = tree.args(list, plain_out);
+    md::RawBatchArgs overwrite = tree.args(list, out);
+    overwrite.defaults.overwrite = true;
+
+    SECTION("a real run: the same stdout, stderr and file bytes") {
+        const Captured without = run_command(plain);
+        const Captured with = run_command(overwrite);
+        CHECK(without.exit_code == 0);
+        CHECK(with.exit_code == 0);
+        CHECK(without.out == path_lines(plain_out, {clean_single, clean_single}));
+        CHECK(with.out == path_lines(out, {clean_single, clean_single}));
+        CHECK(without.err == csv_collision(list, 3, plain_out / clean_single, 2, false));
+        CHECK(with.err == csv_collision(list, 3, out / clean_single, 2, false));
+        // A bool, so a failure does not print two EPUBs.
+        const bool same_bytes =
+            fs_util::read_file(out / clean_single) == fs_util::read_file(plain_out / clean_single);
+        CHECK(same_bytes);
+        CHECK(fs_util::list_dir(out) == std::vector<std::string>{std::string{clean_single}});
+    }
+    SECTION("--json: line 3 updates line 2's file, as without --overwrite") {
+        const Captured without = run_command(plain, Context{.globals = {.json = true}});
+        const Captured with = run_command(overwrite, Context{.globals = {.json = true}});
+        REQUIRE(without.exit_code == 0);
+        REQUIRE(with.exit_code == 0);
+        CHECK(with.err == csv_collision(list, 3, out / clean_single, 2, false));
+        const Json doc = parse_document(with.out);
+        const Json plain_doc = parse_document(without.out);
+        REQUIRE(!doc.is_discarded());
+        REQUIRE(!plain_doc.is_discarded());
+        const Json& first = doc.at("titles").at(0).at("report").at("epubs").at(0);
+        CHECK(first.at("status") == "written");
+        CHECK(first.at("existing").is_null()); // nothing was there
+        CHECK(first.at("replaced") == false);
+        Json update = doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(update.at("status") == "written");
+        CHECK(update.at("existing") == "incomplete");
+        CHECK(update.at("replaced") == true);
+        CHECK(update.at("new_chapters") == Json::array({mdx::clean_chapter_id(3)}));
+        CHECK(update.at("reused_chapters") ==
+              Json::array({mdx::clean_chapter_id(1), mdx::clean_chapter_id(2)}));
+        // Equal to the run without --overwrite, apart from the DIR in the path.
+        Json plain_update = plain_doc.at("titles").at(1).at("report").at("epubs").at(0);
+        CHECK(update.at("path") == (out / clean_single).string());
+        CHECK(plain_update.at("path") == (plain_out / clean_single).string());
+        update.erase("path");
+        plain_update.erase("path");
+        CHECK(update == plain_update);
+        CHECK(doc.at("summary") == plain_doc.at("summary"));
+    }
+    SECTION("--dry-run: the same stdout and stderr, and nothing is created") {
+        md::RawBatchArgs dry_plain = plain;
+        dry_plain.defaults.dry_run = true;
+        md::RawBatchArgs dry = overwrite;
+        dry.defaults.dry_run = true;
+        const Captured without = run_command(dry_plain);
+        const Captured with = run_command(dry);
+        CHECK(without.exit_code == 0);
+        CHECK(with.exit_code == 0);
+        CHECK(without.out == path_lines(plain_out, {clean_single, clean_single}));
+        CHECK(with.out == path_lines(out, {clean_single, clean_single}));
+        CHECK(without.err == csv_collision(list, 3, plain_out / clean_single, 2, true));
+        CHECK(with.err == csv_collision(list, 3, out / clean_single, 2, true));
+        CHECK(!fs::exists(plain_out));
+        CHECK(!fs::exists(out));
+    }
+}
+
+TEST_CASE("batch --overwrite: a row whose file differs only in its bytes finds an earlier row's "
+          "file up to date and leaves it alone",
+          "[cli][batch][collision][overwrite]") {
+    // clean_fixture's original language is ja, so line 2 reads right to left; line 3 asks for
+    // ltr. The book (identifier and chapters) is the same, so line 3's assessment of line 2's
+    // Vol. 01 finds it complete, exactly as without --overwrite: exists, never replaced.
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path list = tree.csv(
+        "ltr.csv", std::format("manga,volumes,direction\n{0},1,auto\n{0},1-2,ltr\n", clean_id));
+    // Each line's own bytes, each list alone in its own DIR.
+    const fs::path rtl_ref = tree.path("ref-rtl");
+    const fs::path ltr_ref = tree.path("ref-ltr");
+    REQUIRE(run_command(
+                tree.args(tree.csv("rtl-alone.csv", std::format("manga,volumes\n{},1\n", clean_id)),
+                          rtl_ref))
+                .exit_code == 0);
+    REQUIRE(run_command(
+                tree.args(tree.csv("ltr-alone.csv",
+                                   std::format("manga,volumes,direction\n{},1-2,ltr\n", clean_id)),
+                          ltr_ref))
+                .exit_code == 0);
+    const std::string rtl_vol1 = fs_util::read_file(rtl_ref / clean_vol1);
+    const std::string ltr_vol1 = fs_util::read_file(ltr_ref / clean_vol1);
+    const std::string ltr_vol2 = fs_util::read_file(ltr_ref / clean_vol2);
+    const bool different = rtl_vol1 != ltr_vol1;
+    REQUIRE(different);
+
+    const fs::path out = tree.path("out");
+    md::RawBatchArgs args = tree.args(list, out);
+    args.defaults.overwrite = true;
+    const std::string collision = csv_collision(list, 3, out / clean_vol1, 2, /*dry_run=*/false);
+
+    const Captured r = run_command(args, Context{.globals = {.json = true}});
+    CHECK(r.exit_code == 0);
+    // Only the collision line: line 2 claimed the up-to-date Vol. 01, so the note does not count
+    // it.
+    CHECK(r.err == collision);
+    const Json doc = parse_document(r.out);
+    REQUIRE(!doc.is_discarded());
+    const Json& epubs = doc.at("titles").at(1).at("report").at("epubs");
+    REQUIRE(epubs.size() == 2);
+    CHECK(epubs.at(0).at("status") == "exists");
+    CHECK(epubs.at(0).at("existing") == "complete");
+    CHECK(epubs.at(0).at("replaced") == false);
+    CHECK(epubs.at(1).at("status") == "written");
+    CHECK(epubs.at(1).at("replaced") == false);
+    // Line 2's Vol. 01 is kept; Vol. 02 is line 3's own. Bools, so a failure prints no EPUB.
+    const bool vol1_kept = fs_util::read_file(out / clean_vol1) == rtl_vol1;
+    const bool vol2_ltr = fs_util::read_file(out / clean_vol2) == ltr_vol2;
+    CHECK(vol1_kept);
+    CHECK(vol2_ltr);
+
+    SECTION("the human output: each path once, the collision line only") {
+        const fs::path again = tree.path("again");
+        md::RawBatchArgs human_args = args;
+        human_args.defaults.dir = again.string();
+        const Captured human = run_command(human_args);
+        CHECK(human.exit_code == 0);
+        CHECK(human.out == path_lines(again, {clean_vol1, clean_vol2}));
+        CHECK(human.err == csv_collision(list, 3, again / clean_vol1, 2, /*dry_run=*/false));
     }
 }
 
