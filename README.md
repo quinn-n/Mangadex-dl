@@ -439,14 +439,17 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   later row gets a note instead, without `warning:`: `titles.csv:3: <path>: already up to date
   (the same book as line 2)` when the file already holds its chapters, or `titles.csv:3: <path>:
   updated with this line's chapters (the same book as line 2)` when it adds some (with
-  `--dry-run`, `would already be up to date` and `would be updated with this line's chapters`). A
-  file both rows leave alone because it is not theirs gets only its own `left alone` warning.
+  `--dry-run`, `would already be up to date` and `would be updated with this line's chapters`).
+  A same-book file the later row leaves alone because updating it would drop chapters keeps the
+  warning, after that row's own "left it alone" warning. A file both rows leave alone because it
+  is not theirs gets no cross-row line, only each row's own `left alone` warning.
 - **`--overwrite` never applies to a file an earlier row of the same run wrote.** That file is
   handled exactly as without `--overwrite`: a different book there (another title with the same
   name, or the same title in another language) is left alone, with
   `<path>: left alone: holds a different book; use another DIR or --title` and the warning above;
-  the same book is left alone when it is up to date (only the `already up to date` note above) or
-  updated when the later row adds chapters (the path is listed again, with the `updated` note).
+  the same book is left alone when it is up to date (only the `already up to date` note above),
+  updated when the later row adds chapters (the path is listed again, with the `updated` note),
+  or left alone as diverged, with both warnings.
   `--overwrite` still replaces files left by earlier runs, without looking at them.
 - **`--dry-run` prints what the real run will print**, apart from the two caveats below.
   When a later row would write a file an earlier row already planned, the dry run treats that
