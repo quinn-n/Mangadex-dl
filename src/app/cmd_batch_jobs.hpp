@@ -37,9 +37,8 @@ void print_warning(Io& io, const OutputPolicy& policy, std::string_view message)
 void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 
 /// Phase 2 of a multi-title run over non-empty `jobs`: the runner (the read-only row-dir
-/// pre-flight, then run_title per row), run_batch, then (unless interrupted) the up-to-date note
-/// (not with --overwrite), the closing line and, with --json, the document. Returns the aggregate
-/// exit code.
+/// pre-flight, then run_title per row), run_batch, then (unless interrupted) the up-to-date note,
+/// the closing line and, with --json, the document. Returns the aggregate exit code.
 ///
 /// Wording follows `settings.source`:
 /// - csv: rows are "<label>:<line>: ", "same as line <k>", "was already written by line <k>; give

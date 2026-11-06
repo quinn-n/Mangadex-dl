@@ -186,9 +186,10 @@ mangadex-dl: 3 files are already up to date; pass --overwrite to download them a
 
 With exactly one file the note reads
 `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`.
-`batch` and `mdlist` never print it with `--overwrite`: then only a file an earlier row (or
-item) of the same run wrote or kept can be up to date, and passing `--overwrite` would not
-download it again.
+In `batch` and `mdlist`, a file an earlier row (or item) of the same run wrote or kept is never
+counted, even when a later row finds it up to date: passing `--overwrite` would not download it
+again. So the note counts only files from earlier runs, each file once, and as a consequence it
+never appears with `--overwrite`.
 
 Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
 
@@ -429,8 +430,9 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   begins with `titles.csv:4: <uuid>`; with `--dir-per-title`, a row without a `dir` also prints
   `output directory: <DIR>/<name>`. When stderr is a terminal, the progress line gains the
   title's position: `(2/15) [1/2] Vol. 1: 3/5 pages`. The "N files are already up to date" note
-  is printed once, at the end, and never with `--overwrite`. Two rows that would write the same
-  file get a warning naming both lines
+  is printed once, at the end. It counts only files from earlier runs, never a file an earlier
+  row of the same run wrote or kept, so it never appears with `--overwrite`. Two rows that would
+  write the same file get a warning naming both lines
   (`titles.csv:3: <path> was already written by line 2; give one of them a 'title' column`;
   with `--dry-run`, `would already be written by line 2`).
 - **`--overwrite` never applies to a file an earlier row of the same run wrote.** That file is
@@ -445,9 +447,10 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   file as already written (with `--overwrite` too, as the real run does). A different book there
   (another title with the same name, or the same title in another language) is left alone, with
   `<path>: left alone: holds a different book; use another DIR or --title` and the warning above.
-  The same book is decided as a real re-run decides it: up to date (counted in the "N files are
-  already up to date" note, which is not printed with `--overwrite`), updated (the path is
-  listed again, as the real update lists it), or left alone as diverged, with the real warning.
+  The same book is decided as a real re-run decides it: up to date (only the warning above; as
+  in the real run, the "N files are already up to date" note does not count it), updated (the
+  path is listed again, as the real update lists it), or left alone as diverged, with the real
+  warning.
   Two things only a real run can know: exact page counts (a dry run takes them from MangaDex's
   chapter list, the real run from the image server) and damaged pages in an existing file. A `--dry-run` keeps each planned file's chapter
   list in memory until it ends, roughly 60 KB per typical title (about

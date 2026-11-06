@@ -25,6 +25,9 @@ batch-spec rev4 (`--overwrite` within one run, shared with `batch`) 2026-11-05: 
 - A `--dry-run --overwrite` now also keeps each planned file's chapter list in memory for the run, as without `--overwrite`.
 - With `--overwrite`, the end-of-run "already up to date" note is never printed (`batch` and `mdlist` alike). In flat `mdlist` runs no file can be up to date under `--overwrite`, so its output does not change.
 
+batch-spec rev5 (up-to-date note, shared with `batch`) 2026-11-05:
+- The end-of-run "N files are already up to date" note counts a file left alone as up to date only when no earlier item of the same run claimed its path (wrote, planned or left it alone), so it counts only files from earlier runs, each path once. The rev4 bullet above now follows from this rule. In flat mode the only change: when an earlier item left another title's file alone at a path and a later item (the title with the same name) finds its own file there up to date, that file is no longer counted (only the collision line is printed for it).
+
 Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`download-spec.md`](download-spec.md),
 [`skip-existing-spec.md`](skip-existing-spec.md) (re-runs).
 

@@ -68,6 +68,7 @@ struct TitleRun {
     std::string closing_error{};
     /// Files left alone as up to date, counted by the observer on every path (also when the run
     /// ended with an Error and so has no report): what the "already up to date" note counts.
+    /// With a non-null row.registry, a path an earlier row claimed is not counted.
     std::size_t up_to_date = 0;
 };
 

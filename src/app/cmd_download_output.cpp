@@ -238,7 +238,13 @@ void ConsoleObserver::on_epub_end(const EpubOutcome& outcome) {
 void ConsoleObserver::left_alone(const EpubOutcome& outcome) {
     switch (outcome.existing) {
     case ExistingKind::complete:
-        ++up_to_date_;
+        // batch/mdlist: a path an earlier row of the run claimed (written, planned or kept by
+        // it) is not counted, so the note names only files from earlier runs, each once
+        // (batch-spec rev5). This row claims its own paths only after its run, so the lookup sees
+        // earlier rows alone. The -v line below is a fact about the file and is printed anyway.
+        if (row_.registry == nullptr || !row_.registry->claimed_by(outcome.path).has_value()) {
+            ++up_to_date_;
+        }
         if (!policy_.quiet && policy_.verbose >= 1) {
             plain_line(std::format("{}: up to date ({})", outcome.path,
                                    count_of(outcome.epub.chapters.size(), "chapter", "chapters")));

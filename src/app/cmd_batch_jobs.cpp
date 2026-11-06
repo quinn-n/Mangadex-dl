@@ -208,8 +208,9 @@ public:
                                   row_noun(settings_->source), job.duplicate_of.value_or(0)));
     }
 
-    /// Files left alone across every row so far because they hold every chapter: the count for
-    /// the single end-of-batch note.
+    /// Files left alone across every row so far because they hold every chapter, at a path no
+    /// earlier row claimed (ConsoleObserver::up_to_date): the count for the single end-of-batch
+    /// note.
     [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
 
     [[nodiscard]] bool output_failed() override {
@@ -347,10 +348,12 @@ int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings
         // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
         return batch_exit_code(result);
     }
-    // Not under --overwrite (batch and mdlist alike): only a path an earlier row claimed can be
-    // up to date then, and the note's remedy ("pass --overwrite") would be false.
-    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date());
-        note && !settings.base.overwrite) {
+    // The count leaves out every path an earlier row claimed (ConsoleObserver, RowContext::
+    // registry), so the note names only files from earlier runs, which --overwrite would download
+    // again. --overwrite needs no special case: under it only a claimed path is ever decided as
+    // without it (overwrites_file), so nothing it leaves up to date is counted and no note is
+    // printed.
+    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
         print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
     }
     if (const std::optional<std::string> closing =

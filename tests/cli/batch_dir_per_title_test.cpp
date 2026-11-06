@@ -580,8 +580,9 @@ TEST_CASE("batch --dir-per-title: a manga's own dir cell does not move its deriv
     const Captured r = run_command(tree.args(list, out));
     CHECK(r.exit_code == 0);
     CHECK(r.out == path_lines(out / clean_dir, {clean_vol1, clean_vol2}));
-    CHECK(r.err == collisions + "mangadex-dl: 2 files are already up to date; pass --overwrite to "
-                                "download them again\n");
+    // Line 3 finds both files up to date, but line 2 claimed them: the note does not count them
+    // (batch-spec rev5), so the collision lines are all.
+    CHECK(r.err == collisions);
     CHECK(!r.err.contains("directory 'Clean Title'"));
     CHECK(listing(out) == std::vector<std::string>{std::string{clean_dir}});
 
@@ -598,6 +599,63 @@ TEST_CASE("batch --dir-per-title: a manga's own dir cell does not move its deriv
         REQUIRE(epubs.size() == 2);
         CHECK(epubs.at(0).at("status") == "exists");
         CHECK(epubs.at(1).at("status") == "exists");
+    }
+}
+
+// ---- the "already up to date" note skips a path an earlier row kept (batch-spec rev5) ---------
+
+TEST_CASE("batch: a later row's up-to-date file at a path an earlier row left alone is not "
+          "counted in the note",
+          "[cli][batch][collision][up-to-date]") {
+    // A flat run (no --dir-per-title) of two titles with the same name, over a DIR that already
+    // holds the twin's files: line 1 (clean) leaves them alone as another book and so claims
+    // their paths; line 2 (the twin) finds its own files up to date there. Neither run counts
+    // them: line 1 kept them, so --overwrite would not download them again.
+    const Tree tree{CleanTwin{}};
+    const fs::path out = tree.path("out");
+    md::RawBatchArgs twin_only = tree.args(tree.csv("twin.csv", std::format("{}\n", twin_id)), out);
+    twin_only.dir_per_title = false;
+    REQUIRE(run_command(twin_only).exit_code == 0);
+
+    const fs::path list = tree.csv("titles.csv", std::format("{}\n{}\n", clean_id, twin_id));
+    md::RawBatchArgs args = tree.args(list, out);
+    args.dir_per_title = false;
+    const auto expected_err = [&list, &out](std::string_view written) {
+        return std::format("mangadex-dl: warning: {0}:1: {1}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:1: {2}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:2: {1} {3} by line 1; give one of them a "
+                           "'title' column\n"
+                           "mangadex-dl: warning: {0}:2: {2} {3} by line 1; give one of them a "
+                           "'title' column\n",
+                           list.string(), (out / clean_vol1).string(), (out / clean_vol2).string(),
+                           written);
+    };
+
+    SECTION("a real run: the warnings only, no note") {
+        const Captured r = run_command(args);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out.empty());
+        CHECK(r.err == expected_err("was already written"));
+    }
+    SECTION("--dry-run: the same") {
+        args.defaults.dry_run = true;
+        const Captured r = run_command(args);
+        CHECK(r.exit_code == 0);
+        CHECK(r.out.empty());
+        CHECK(r.err == expected_err("would already be written"));
+    }
+    SECTION("--json: line 2's files are still reported up to date") {
+        const Captured r = run_command(args, Context{.globals = {.json = true}});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == expected_err("was already written"));
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "complete");
+        }
     }
 }
 
