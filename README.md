@@ -186,8 +186,8 @@ mangadex-dl: 3 files are already up to date; pass --overwrite to download them a
 
 With exactly one file the note reads
 `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`.
-In `batch` and `mdlist`, a file an earlier row (or item) of the same run wrote or kept is never
-counted, even when a later row finds it up to date: passing `--overwrite` would not download it
+In `batch` and `mdlist`, a file an earlier row (or item) of the same run wrote or kept (or, with
+`--dry-run`, planned) is never counted, even when a later row finds it up to date: passing `--overwrite` would not download it
 again. So the note counts only files from earlier runs, each file once, and as a consequence it
 never appears with `--overwrite`.
 
@@ -503,7 +503,8 @@ and 3 to 7, never on exit 2):
 `dir` is the title's directory, as typed: `DIR`, `DIR/<dir>` for a row with a `dir`, or with
 `--dir-per-title` `DIR/<name>` (`DIR` when the title's name was never learned: a duplicate, a
 title not run, or one that ended before it had anything to download: exit 3 or 4 before it was
-planned, or 5).
+planned, or 5). `summary.files` adds up every row's files, so a file two rows met counts twice;
+the stderr "already up to date" note counts each file once.
 
 **Exit status of a batch:** 0 when every title succeeded (or was a skipped duplicate), and for an
 empty list. When titles failed and they all failed the same way, the batch exits with that code
