@@ -569,19 +569,18 @@ TEST_CASE("batch --dir-per-title: a manga's own dir cell does not move its deriv
     const fs::path out = tree.path("out");
     const fs::path list =
         tree.csv("titles.csv", std::format("manga,dir\n{0},Clean Title\n{0},\n", clean_id));
-    const std::string collisions = std::format(
-        "mangadex-dl: warning: {0}:3: {1} was already written by line 2; give one of them a "
-        "'title' column\n"
-        "mangadex-dl: warning: {0}:3: {2} was already written by line 2; give one of them a "
-        "'title' column\n",
-        list.string(), (out / clean_dir / clean_vol1).string(),
-        (out / clean_dir / clean_vol2).string());
+    // batch-spec rev6: line 3 finds the same book line 2 wrote, up to date: a note per file.
+    const std::string collisions =
+        std::format("mangadex-dl: {0}:3: {1}: already up to date (the same book as line 2)\n"
+                    "mangadex-dl: {0}:3: {2}: already up to date (the same book as line 2)\n",
+                    list.string(), (out / clean_dir / clean_vol1).string(),
+                    (out / clean_dir / clean_vol2).string());
 
     const Captured r = run_command(tree.args(list, out));
     CHECK(r.exit_code == 0);
     CHECK(r.out == path_lines(out / clean_dir, {clean_vol1, clean_vol2}));
-    // Line 3 finds both files up to date, but line 2 claimed them: the note does not count them
-    // (batch-spec rev5), so the collision lines are all.
+    // Line 3 finds both files up to date, but line 2 claimed them: the aggregated note does not
+    // count them (batch-spec rev5), so the two same-book notes are all.
     CHECK(r.err == collisions);
     CHECK(!r.err.contains("directory 'Clean Title'"));
     CHECK(listing(out) == std::vector<std::string>{std::string{clean_dir}});
@@ -645,6 +644,23 @@ TEST_CASE("batch: a later row's up-to-date file at a path an earlier row left al
         CHECK(r.exit_code == 0);
         CHECK(r.out.empty());
         CHECK(r.err == expected_err("would already be written"));
+    }
+    SECTION("--color=always: a different book keeps today's colored warnings (batch-spec rev6)") {
+        // Line 2 finds its own book up to date, but line 1 claimed the paths for another book: the
+        // collision warning, never the same-book note.
+        const Captured r = run_command(args, Context{.globals = {.color = app::ColorMode::always}});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out.empty());
+        const std::vector<std::string> lines = lines_of(r.err);
+        REQUIRE(lines.size() == 4);
+        for (const std::string& line : lines) {
+            CHECK(line.starts_with("mangadex-dl: \x1b[33mwarning:\x1b[0m "));
+        }
+        CHECK(lines.at(2).ends_with(" was already written by line 1; give one of them a 'title' "
+                                    "column"));
+        CHECK(lines.at(3).ends_with(" was already written by line 1; give one of them a 'title' "
+                                    "column"));
+        CHECK(!r.err.contains("the same book"));
     }
     SECTION("--json: line 2's files are still reported up to date") {
         const Captured r = run_command(args, Context{.globals = {.json = true}});

@@ -247,6 +247,13 @@ static_assert(
 static_assert(
     std::is_same_v<decltype(&md::OutputRegistry::claimed_by),
                    std::optional<std::size_t> (md::OutputRegistry::*)(std::string_view) const>);
+// batch-spec rev6: the claim with the book identifier is a new name, so claim() keeps one
+// overload (its pin above takes its address).
+static_assert(std::is_same_v<decltype(&md::OutputRegistry::claim_book),
+                             std::optional<md::PathClaim> (md::OutputRegistry::*)(
+                                 std::string, std::size_t, std::string)>);
+static_assert(std::is_aggregate_v<md::PathClaim>);
+static_assert(md::PathClaim{} == md::PathClaim{.line = 0, .same_book = false});
 // Dry-run records of an earlier row's planned file: new names (no overloads), a copy out.
 static_assert(std::is_same_v<decltype(&md::OutputRegistry::record_planned),
                              void (md::OutputRegistry::*)(std::string, md::PlannedEpub)>);

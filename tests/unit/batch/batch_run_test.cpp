@@ -20,6 +20,7 @@
 #include <format>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -692,6 +693,77 @@ TEST_CASE("OutputRegistry: claimed_by looks a path up without claiming it", "[ba
     // A later claim does not move the first one.
     CHECK(registry.claim("out/A.epub", 4) == std::optional<std::size_t>{2});
     CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{2});
+}
+
+// ---- OutputRegistry::claim_book (batch-spec rev6) ----------------------------------------------
+
+namespace {
+
+constexpr std::string_view book_a = "urn:mangadex:11111111-1111-4111-8111-111111111111:en:vol-1";
+constexpr std::string_view book_b = "urn:mangadex:11111111-1111-4111-8111-111111111111:ja:vol-1";
+
+} // namespace
+
+TEST_CASE("OutputRegistry::claim_book: the first claim and a re-claim by its line are no "
+          "collision",
+          "[batch][registry]") {
+    md::OutputRegistry registry{};
+    CHECK(!registry.claim_book("out/A.epub", 2, std::string{book_a}).has_value());
+    CHECK(!registry.claim_book("out/A.epub", 2, std::string{book_a}).has_value());
+    // The same line with another identifier is still its own claim, and keeps the first one.
+    CHECK(!registry.claim_book("out/A.epub", 2, std::string{book_b}).has_value());
+    CHECK(registry.claim_book("out/A.epub", 3, std::string{book_a}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = true}});
+}
+
+TEST_CASE("OutputRegistry::claim_book: a later line learns the first claimant and whether it is "
+          "the same book",
+          "[batch][registry]") {
+    md::OutputRegistry registry{};
+    CHECK(!registry.claim_book("out/A.epub", 2, std::string{book_a}).has_value());
+    CHECK(registry.claim_book("out/A.epub", 3, std::string{book_a}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = true}});
+    CHECK(registry.claim_book("out/A.epub", 4, std::string{book_b}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = false}});
+    // A third row is compared with the first claimant, not with the latest one: line 4's
+    // identifier was not recorded.
+    CHECK(registry.claim_book("out/A.epub", 5, std::string{book_b}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = false}});
+    CHECK(registry.claim_book("out/A.epub", 6, std::string{book_a}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = true}});
+    CHECK(registry.claimed_by("out/A.epub") == std::optional<std::size_t>{2});
+}
+
+TEST_CASE("OutputRegistry::claim_book: keyed as claim() keys it", "[batch][registry]") {
+    md::OutputRegistry registry{};
+    CHECK(!registry.claim_book("out/A.epub", 2, std::string{book_a}).has_value());
+    for (const std::string_view spelling :
+         {"out//A.epub", "out/./A.epub", "./out/A.epub", "out/sub/../A.epub"}) {
+        INFO(spelling);
+        CHECK(registry.claim_book(std::string{spelling}, 3, std::string{book_a}) ==
+              std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = true}});
+        CHECK(registry.claim(std::string{spelling}, 4) == std::optional<std::size_t>{2});
+    }
+    // Different files stay different.
+    CHECK(!registry.claim_book("out/a.epub", 7, std::string{book_a}).has_value());
+    CHECK(!registry.claim_book("out/sub/A.epub", 8, std::string{book_a}).has_value());
+}
+
+TEST_CASE("OutputRegistry::claim_book: an unknown (empty) identifier is never the same book",
+          "[batch][registry]") {
+    md::OutputRegistry registry{};
+    // claim() records no identifier.
+    CHECK(!registry.claim("out/A.epub", 2).has_value());
+    CHECK(registry.claim_book("out/A.epub", 3, std::string{book_a}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = false}});
+    CHECK(registry.claim_book("out/A.epub", 4, std::string{}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = false}});
+    // An empty identifier on the later side never matches a known one either.
+    CHECK(!registry.claim_book("out/B.epub", 2, std::string{book_a}).has_value());
+    CHECK(registry.claim_book("out/B.epub", 3, std::string{}) ==
+          std::optional<md::PathClaim>{md::PathClaim{.line = 2, .same_book = false}});
+    // And claim() after claim_book still answers the first claimant's line.
+    CHECK(registry.claim("out/B.epub", 4) == std::optional<std::size_t>{2});
 }
 
 namespace {
