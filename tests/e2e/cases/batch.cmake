@@ -138,14 +138,16 @@ cli_e2e_case(NAME json-dry-run
 
 # ---- same-path overlap: a dry run reports what the real run does -------------------------------------
 # Line 3 writes a path line 2 already wrote. The dry run decides it against line 2's planned file, as
-# the real run will find it: one collision line ("would already be written" in a dry run), then the
-# real run's outcome. Inline regexes, no golden.
-# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date. Only the collision line: the "already
-# up to date" note never counts a path an earlier row of the run claimed (batch-spec rev5).
+# the real run will find it. Line 3's file is the same book as line 2's, so the cross-row line is a
+# note (batch-spec rev6: no `warning:`), worded "would ..." in a dry run. Inline regexes, no golden.
+# FILE is absolute ({{INPUTS}}), so `mangadex-dl: /` anchors the note: a regression back to the
+# `warning:` form fails.
+# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date. Only that note: the aggregated
+# "already up to date" note never counts a path an earlier row of the run claimed (batch-spec rev5).
 set(_batch_overlap_dry_re
-    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub would already be written by line 2; give one of them a 'title' column\n$")
+    "^mangadex-dl: /[^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub: would already be up to date \\(the same book as line 2\\)\n$")
 set(_batch_overlap_real_re
-    "^mangadex-dl: warning: [^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub was already written by line 2; give one of them a 'title' column\n$")
+    "^mangadex-dl: /[^\n]*/batch/clean-overlap\\.csv:3: out/Clean Title - Vol\\. 01\\.epub: already up to date \\(the same book as line 2\\)\n$")
 cli_e2e_case(NAME overlap-dry-run
              ARGS batch --dry-run ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
              EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"
@@ -159,11 +161,12 @@ cli_e2e_case(NAME overlap
              EXPECT_NO_ANSI
              EXPECT_FILES ${_batch_clean_files}
              EXPECT_EPUB ${_batch_clean_files})
-# clean-grow.csv: line 3 updates line 2's single file, so the path is listed twice in both runs.
+# clean-grow.csv: line 3 updates line 2's single file (the same book), so the path is listed twice in
+# both runs and the note says so.
 set(_batch_grow_dry_re
-    "^mangadex-dl: warning: [^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub would already be written by line 2; give one of them a 'title' column\n$")
+    "^mangadex-dl: /[^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub: would be updated with this line's chapters \\(the same book as line 2\\)\n$")
 set(_batch_grow_real_re
-    "^mangadex-dl: warning: [^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub was already written by line 2; give one of them a 'title' column\n$")
+    "^mangadex-dl: /[^\n]*/batch/clean-grow\\.csv:3: out/Clean Title\\.epub: updated with this line's chapters \\(the same book as line 2\\)\n$")
 set(_batch_grow_paths_re "^out/Clean Title\\.epub\nout/Clean Title\\.epub\n$")
 cli_e2e_case(NAME grow-dry-run
              ARGS batch --dry-run ${_batch_clean_api} ${_batch_in}/clean-grow.csv out
@@ -184,7 +187,7 @@ cli_e2e_case(NAME grow
 # --overwrite never applies to a path an earlier row of the same run claimed: line 3 decides line 2's
 # file exactly as a run without --overwrite does, in a dry run against line 2's planned file, so the
 # output is the same as without --overwrite. Inline regexes, no golden.
-# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date; only the collision line, as above.
+# clean-overlap.csv: line 3's Vol. 01 is line 2's, up to date; only the same-book note, as above.
 cli_e2e_case(NAME overwrite-overlap-dry-run
              ARGS batch --overwrite --dry-run ${_batch_clean_api} ${_batch_in}/clean-overlap.csv out
              EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "${_batch_clean_paths_re}"

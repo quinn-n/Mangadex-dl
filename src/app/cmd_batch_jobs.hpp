@@ -42,14 +42,20 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 ///
 /// Wording follows `settings.source`:
 /// - csv: rows are "<label>:<line>: ", "same as line <k>", "was already written by line <k>; give
-///   one of them a 'title' column", and the closing line says "line"/"lines";
+///   one of them a 'title' column", and the closing line says "line"/"lines". When the later
+///   row's file is the same book (identifier) as line <k>'s (batch-spec rev6), an up-to-date file
+///   gets the note "<path>: already up to date (the same book as line <k>)", an update the note
+///   "<path>: updated with this line's chapters (the same book as line <k>)" (notes: no
+///   `warning:`, never colored, hidden by -q), and a foreign file left alone no cross-row line
+///   (its own "left alone" warning says it); a diverged file keeps the warning;
 /// - mdlist: rows are "<label>:<line>: <uuid>: ", "same as item <k>", "was already written by
 ///   item <k> (another title with the same name); pass --dir-per-title to give each title its own
 ///   directory, or download one of them on its own with 'mangadex-dl download <title> --title
 ///   ...'" (the only line for that file: the engine's "holds a different book" warning for it is
 ///   dropped), and the closing line says "item"/"items".
 /// Either way the -v start line is "<label>:<line>: <uuid>", and a dry run's collision line says
-/// "would already be written by" instead of "was already written by".
+/// "would already be written by" instead of "was already written by" (csv notes: "would already
+/// be up to date", "would be updated with this line's chapters").
 ///
 /// A job with options.dir_per_title gets its directory below DIR from the run's TitleDirRegistry
 /// (first claim wins, in job order; a later title with the same name is moved aside with the
