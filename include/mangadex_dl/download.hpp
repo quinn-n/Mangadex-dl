@@ -62,16 +62,17 @@ struct DownloadServices {
     /// --dir-per-title only; borrowed for the run_download call, nullable (null = the plain
     /// stem); called only on the calling thread.
     TitleDirResolver* title_dir = nullptr;
-    /// batch and mdlist (empty for `download`): does an earlier title of the same run already
-    /// own `path` (EpubOutcome::path as the report builds it)? Asked only with --overwrite, once
-    /// per file. --overwrite does not apply to a file whose path it owns: that file is decided
+    /// batch, mdlist and follows (empty for `download`): does an earlier title of the same run
+    /// already own `path` (EpubOutcome::path as the report builds it)? Asked only with --overwrite,
+    /// once per file. --overwrite does not apply to a file whose path it owns: that file is decided
     /// exactly as without --overwrite (batch-spec rev4), assessed on disk in a real run, and in a
     /// dry run against planned_in_run (else DIR). Another book is left alone (status exists,
     /// existing foreign, with the "holds a different book" warning); the same book is up to
     /// date, updated or diverged. Called only on the calling thread, during run_download; the
     /// views are valid only during the call.
     std::function<bool(std::string_view path)> claimed{};
-    /// batch and mdlist (empty for `download`): in a dry run, for a file decided as without
+    /// batch, mdlist and follows (empty for `download`): in a dry run, for a file decided as
+    /// without
     /// --overwrite (no --overwrite, or a path `claimed` owns), what will an earlier row of the
     /// same run have left at `path` (EpubOutcome::path as the report builds it)? A value is that
     /// row's planned file (its EpubOutcome::epub). The engine then decides this file as a real

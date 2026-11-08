@@ -59,9 +59,9 @@ struct RowContext {
     std::size_t position = 0;  ///< 1-based; 0 = no "(i/n) " progress counter
     std::size_t total = 0;     ///< the n of "(i/n) "
     bool exists_notice = true; ///< false: finish() leaves the "up to date" note to the caller
-    /// batch and mdlist (null for `download`): the run's OutputRegistry, holding the paths the
-    /// earlier rows claimed (a row claims its own only after its run) and the files they planned.
-    /// Three uses. run_title hands it to the engine as DownloadServices::claimed
+    /// batch, mdlist and follows (null for `download`): the run's OutputRegistry, holding the paths
+    /// the earlier rows claimed (a row claims its own only after its run) and the files they
+    /// planned. Three uses. run_title hands it to the engine as DownloadServices::claimed
     /// (OutputRegistry::claimed_by) and DownloadServices::planned_in_run
     /// (OutputRegistry::planned_at), so --overwrite decides a path an earlier row claimed exactly
     /// as a run without it, and a dry run decides a path an earlier row planned as the real run
@@ -71,10 +71,11 @@ struct RowContext {
     /// runs, each path once. Borrowed and only read: the registry is declared before the runner
     /// and outlives every observer and every run_title call.
     const OutputRegistry* registry = nullptr;
-    /// mdlist only (null for `download` and `batch`): the same OutputRegistry, for the observer's
-    /// filter alone. The engine's "<path>: left alone: holds a different book; ..." warning is
-    /// dropped for a path an earlier row claimed, because the runner's collision line for that
-    /// path says it instead. The engine never sees it. Borrowed and only read, like `registry`.
+    /// mdlist and follows (null for `download` and `batch`): the same OutputRegistry, for the
+    /// observer's filter alone. The engine's "<path>: left alone: holds a different book; ..."
+    /// warning is dropped for a path an earlier row claimed, because the runner's collision line
+    /// for that path says it instead. The engine never sees it. Borrowed and only read, like
+    /// `registry`.
     const OutputRegistry* collision_line_for = nullptr;
 
     friend bool operator==(const RowContext&, const RowContext&) = default;

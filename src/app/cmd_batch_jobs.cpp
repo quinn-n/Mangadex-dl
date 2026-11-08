@@ -43,28 +43,47 @@ namespace {
     case Errc::incomplete:
     case Errc::interrupted:
     case Errc::mixed_failures:
-    case Errc::row_dir: // --dir-per-title (batch and mdlist): the row fails alone
+    case Errc::row_dir: // --dir-per-title (batch, mdlist, follows): the row fails alone
         return false;
+    case Errc::login_required: // follows logs in before any row runs; run_download never
+    case Errc::auth_rejected:  // produces these, so a row that did is treated as global
+        return true;
     }
     return true; // only reachable through an out-of-range enum value
 }
 
-/// What one row is called in row-scoped messages: "line" (a CSV line) or "item" (a list
-/// position). Points at static storage.
+/// What one row is called in row-scoped messages: "line" (a CSV line) or "item" (a list or
+/// follows position). Points at static storage.
 [[nodiscard]] constexpr std::string_view row_noun(BatchSource source) noexcept {
     switch (source) {
     case BatchSource::csv:
         return "line";
     case BatchSource::mdlist:
+    case BatchSource::follows:
         return "item";
     }
     return "line"; // only reachable through an out-of-range enum value
 }
 
-/// The app side of the TitleDirResolver seam (--dir-per-title, batch and mdlist): claims each
-/// title's directory in the run's TitleDirRegistry for the current row, and remembers the name it
-/// claimed so the runner can report it as the row's `dir`. Its warning names rows with the
-/// source's noun: "line" for batch, "item" for mdlist.
+/// Does `source` hand each row the run's OutputRegistry (RowContext::claimed), so a row with
+/// --overwrite never replaces a file an earlier row of the same run wrote? mdlist and follows
+/// do; csv keeps its current behaviour (pinned by a batch test). A switch rather than a
+/// comparison, so -Wswitch makes every new source decide (follows plan V27).
+[[nodiscard]] constexpr bool claims_paths(BatchSource source) noexcept {
+    switch (source) {
+    case BatchSource::csv:
+        return false;
+    case BatchSource::mdlist:
+    case BatchSource::follows:
+        return true;
+    }
+    return false; // only reachable through an out-of-range enum value
+}
+
+/// The app side of the TitleDirResolver seam (--dir-per-title: batch, mdlist and follows): claims
+/// each title's directory in the run's TitleDirRegistry for the current row, and remembers the
+/// name it claimed so the runner can report it as the row's `dir`. Its warning names rows with
+/// the source's noun: "line" for batch, "item" for mdlist and follows.
 ///
 /// Threads: run_download calls resolve() on its calling thread (the runner's), at most once per
 /// row, so no lock is needed. Lifetime: `registry` is borrowed; it is declared before the runner
@@ -88,7 +107,8 @@ public:
         TitleDirChoice choice{.name = claim.name};
         if (claim.taken_by) {
             // Raw: the observer's on_warning adds `warning: <prefix>` and sanitizes the line.
-            // Only batch reserves names (run_batch_jobs), so mdlist never gets the first form.
+            // Only batch reserves names (run_batch_jobs), so mdlist and follows never get the first
+            // form.
             choice.warning =
                 claim.reserved
                     ? std::format("directory '{}' is used by the 'dir' of {} {}; using '{}'", stem,
@@ -173,8 +193,7 @@ public:
                        .total = total,
                        .exists_notice = false,
                        .registry = registry_,
-                       .collision_line_for =
-                           settings_->source == BatchSource::mdlist ? registry_ : nullptr},
+                       .collision_line_for = claims_paths(settings_->source) ? registry_ : nullptr},
             title_dir);
 
         RowOutcome outcome{.exit_code = run.exit_code, .error = std::move(run.closing_error)};
@@ -221,13 +240,15 @@ public:
     }
 
 private:
-    /// csv "<label>:<line>: "; mdlist "<label>:<line>: <uuid>: ", because the user wrote no file
-    /// to look a position up in (raw: print_error/print_warning sanitize it with the message).
+    /// csv "<label>:<line>: "; mdlist and follows "<label>:<line>: <uuid>: ", because the user
+    /// wrote no file to look a position up in (raw: print_error/print_warning sanitize it with the
+    /// message).
     [[nodiscard]] std::string row_prefix(const BatchJob& job) const {
         switch (settings_->source) {
         case BatchSource::csv:
             break;
         case BatchSource::mdlist:
+        case BatchSource::follows:
             return std::format("{}:{}: {}: ", settings_->label, job.line, job.options.manga.str());
         }
         return std::format("{}:{}: ", settings_->label, job.line);
@@ -243,6 +264,7 @@ private:
         case BatchSource::csv:
             break;
         case BatchSource::mdlist:
+        case BatchSource::follows:
             return std::format("{}{} {} by item {} (another title with the same name); pass "
                                "--dir-per-title to give each title its own directory, or "
                                "download one of them on its own with '{} download <title> "
@@ -255,9 +277,9 @@ private:
 
     /// Every file this row produced (written, planned or already there) is claimed for its
     /// line; a path an earlier row claimed gets one warning. Failed files produced nothing.
-    /// mdlist: this is the only line for such a path (the observer dropped the engine's "holds a
-    /// different book" warning for it, RowContext::collision_line_for); batch also keeps the
-    /// engine's. A dry run also records each planned file (the plan, or an update's final plan;
+    /// mdlist and follows: this is the only line for such a path (the observer dropped the engine's
+    /// "holds a different book" warning for it, RowContext::collision_line_for); batch also keeps
+    /// the engine's. A dry run also records each planned file (the plan, or an update's final plan;
     /// the latest row wins), so a later row decides that path as the real run will find it
     /// (RowContext::registry). Also under --overwrite: a later row decides a claimed path as
     /// without --overwrite, and a record is consulted only for such a path, so an unclaimed one is
@@ -293,6 +315,57 @@ private:
     std::size_t up_to_date_ = 0;
 };
 
+/// run_batch_jobs's body. `to_json(result, dry_run)` builds the --json document; it is called
+/// at most once, before this returns, and is never stored.
+template <class ToJson>
+[[nodiscard]] int run_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
+                           const Backend& backend, const std::string& agent, Io& io,
+                           const OutputPolicy& policy, const ToJson& to_json) {
+    const bool dry_run = settings.base.dry_run;
+    // Lifetime: declared in borrow order (registry -> dirs -> runner), after the caller's
+    // handlers, agent and backend, so each lives until run_batch below has returned. Each row's
+    // DownloadServices, reporter, pool and bridge are created and joined inside run_title.
+    OutputRegistry registry{};
+    TitleDirRegistry dirs{};
+    if (settings.dir_per_title) {
+        // batch --dir-per-title: every explicit `dir` cell reserves its first segment up front,
+        // in file order, before the first row claims a derived name, so the directory a derived
+        // row gets depends only on the list (never on row order or results). Duplicates never
+        // run, so they reserve nothing. Lifetime: reserve() copies the segment and the manga id;
+        // `job.sub_dir` (the validated cell) is only borrowed for the call. mdlist and follows
+        // leave settings.dir_per_title false (their sub_dir is always empty anyway).
+        for (const BatchJob& job : jobs) {
+            if (!job.duplicate_of && !job.sub_dir.empty()) {
+                dirs.reserve(job.sub_dir, job.options.manga, job.line);
+            }
+        }
+    }
+    ConsoleTitleRunner runner{settings, backend, agent, io, policy, registry, dirs};
+    const BatchResult result = run_batch(jobs, runner, settings.fail_fast);
+
+    if (result.stop == BatchStop::interrupted) {
+        // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
+        return batch_exit_code(result);
+    }
+    // The count leaves out every path an earlier row claimed (ConsoleObserver, RowContext::
+    // registry), so the note names only files from earlier runs, which --overwrite would download
+    // again. --overwrite needs no special case: under it only a claimed path is ever decided as
+    // without it (overwrites_file), so nothing it leaves up to date is counted and no note is
+    // printed.
+    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
+        print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
+    }
+    if (const std::optional<std::string> closing =
+            batch_closing_message(result, dry_run, settings.source)) {
+        print_error(io, policy, *closing); // even with -q and --json
+    }
+    if (policy.json) {
+        // Built whole, written once, never colored.
+        std::print(io.out, "{}", to_json(result, dry_run));
+    }
+    return batch_exit_code(result);
+}
+
 } // namespace
 
 void print_usage_line(Io& io, std::string_view message) {
@@ -322,49 +395,22 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message) {
 int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
                    const Backend& backend, const std::string& agent, Io& io,
                    const OutputPolicy& policy, const std::optional<ListSummary>& list) {
-    const bool dry_run = settings.base.dry_run;
-    // Lifetime: declared in borrow order (registry -> dirs -> runner), after the caller's
-    // handlers, agent and backend, so each lives until run_batch below has returned. Each row's
-    // DownloadServices, reporter, pool and bridge are created and joined inside run_title.
-    OutputRegistry registry{};
-    TitleDirRegistry dirs{};
-    if (settings.dir_per_title) {
-        // batch --dir-per-title: every explicit `dir` cell reserves its first segment up front,
-        // in file order, before the first row claims a derived name, so the directory a derived
-        // row gets depends only on the list (never on row order or results). Duplicates never
-        // run, so they reserve nothing. Lifetime: reserve() copies the segment and the manga id;
-        // `job.sub_dir` (the validated cell) is only borrowed for the call. mdlist leaves
-        // settings.dir_per_title false (its sub_dir is always empty anyway).
-        for (const BatchJob& job : jobs) {
-            if (!job.duplicate_of && !job.sub_dir.empty()) {
-                dirs.reserve(job.sub_dir, job.options.manga, job.line);
-            }
-        }
-    }
-    ConsoleTitleRunner runner{settings, backend, agent, io, policy, registry, dirs};
-    const BatchResult result = run_batch(jobs, runner, settings.fail_fast);
+    // The lambda borrows `settings` and `list`, both alive for the whole call; it never escapes.
+    return run_jobs(jobs, settings, backend, agent, io, policy,
+                    [&settings, &list](const BatchResult& result, bool dry_run) {
+                        return batch_to_json(result, settings.file, dry_run, list);
+                    });
+}
 
-    if (result.stop == BatchStop::interrupted) {
-        // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
-        return batch_exit_code(result);
-    }
-    // The count leaves out every path an earlier row claimed (ConsoleObserver, RowContext::
-    // registry), so the note names only files from earlier runs, which --overwrite would download
-    // again. --overwrite needs no special case: under it only a claimed path is ever decided as
-    // without it (overwrites_file), so nothing it leaves up to date is counted and no note is
-    // printed.
-    if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
-        print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
-    }
-    if (const std::optional<std::string> closing =
-            batch_closing_message(result, dry_run, settings.source)) {
-        print_error(io, policy, *closing); // even with -q and --json
-    }
-    if (policy.json) {
-        // Built whole, written once, never colored.
-        std::print(io.out, "{}", batch_to_json(result, settings.file, dry_run, list));
-    }
-    return batch_exit_code(result);
+int run_batch_jobs(std::span<const BatchJob> jobs, const BatchSettings& settings,
+                   const Backend& backend, const std::string& agent, Io& io,
+                   const OutputPolicy& policy, const FollowsSummary& follows) {
+    // The lambda borrows `settings` and `follows`, both alive for the whole call; it never
+    // escapes.
+    return run_jobs(jobs, settings, backend, agent, io, policy,
+                    [&settings, &follows](const BatchResult& result, bool dry_run) {
+                        return batch_to_json(result, settings.file, dry_run, follows);
+                    });
 }
 
 } // namespace mangadex_dl::app

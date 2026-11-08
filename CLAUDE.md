@@ -23,7 +23,7 @@ Training data goes stale, and this stack moves fast (compiler majors, CLI11/Catc
 ## Golden workflow
 Never jump straight to code for a non-trivial change. Follow:
 
-**design → plan → fact-check → ⏸ plan approval → implement (parallel file-disjoint tracks, each looping with `quality-reviewer` + `memory-safety-reviewer`) → real installed-binary test (`cli-tester`) → conditional platform pass (`platform-tester`) → feature review board → fix → re-check → `## User Test Plan`**
+**design → plan → fact-check → ⏸ plan approval → implement (parallel file-disjoint tracks, each looping with `quality-reviewer` + `memory-safety-reviewer`) → simplify pass (`code-refactorer`) → real installed-binary test (`cli-tester`) → conditional platform pass (`platform-tester`) → feature review board → fix → re-check → `## User Test Plan`**
 
 The commands run it (they are user-invoked skills; see "Commands" below). `/feature` runs the whole pipeline in the current tree; `/plan`, `/implement`, `/review`, `/fix`, `/harden` and `/platform-test` run pieces of it; `/setup` bootstraps a project from the studio's scaffolds. `/features <file.md>` fans the whole pipeline out over **many features at once**: one **git worktree per feature** (`feature/<slug>` in `../<repo>-worktrees/<slug>`), each with its own `pixi install --locked` env and per-worktree job caps, running concurrently, then **one PR per feature**. It checks each feature off in the source Markdown file as its PR lands, and forwards every ⏸ gate, subagent question and **golden re-bless request** to you, labeled by feature + worktree + phase.
 
@@ -52,6 +52,9 @@ Writing the code is not "done". Every C++ track loops:
 5. Build/link/toolchain failures inside a track go to `build-fixer`, scoped to the track's `Owns` plus the build files the plan designates.
 
 The feature-level board (`security-reviewer`, `cli-ux-reviewer`, a final `quality-reviewer` and a final `memory-safety-reviewer`) gates the same way. Reviewers approve on "high quality, gate green, no real blockers", not unreachable perfection.
+
+### Simplify before testing
+Code that passes review per track can still be more complex than it needs to be once the tracks meet. So after the last batch integrates, one `code-refactorer` runs a behaviour- and contract-preserving **simplify pass** over the feature's whole diff: cross-track duplication, repeated CLI11 option registration, single-use abstractions, dead code, and the refactors the implementers deferred. It never touches goldens or the build surface. Its changes loop through `quality-reviewer` + `memory-safety-reviewer` to APPROVED before the installed-binary test. It may find nothing worth changing, and it never blocks the feature.
 
 ## Everything runs through pixi
 Run every tool through a pixi task so it uses the project's pinned toolchain. **Never use a host compiler, host `clang-format`/`clang-tidy`, or a raw `cmake`/`ctest`/`clang-tidy` pipeline as a substitute for a task.** Add dependencies with `pixi add <pkg>` (conda-forge). **Never hand-edit `pixi.lock`**; commit it. `CMakeLists.txt` stays **manager-agnostic** (`find_package(... CONFIG REQUIRED)`, no pixi paths), so the project also builds outside pixi.
@@ -85,7 +88,7 @@ Run every tool through a pixi task so it uses the project's pinned toolchain. **
 - **memory-safety-reviewer** (opus, read-only) — on **every** C++ change: ownership, lifetime and UB against the `memory-safety` hazard table, with sanitizer evidence (positive controls fired, changed paths exercised) and a suppression-diff audit. Emits a verdict.
 - **security-reviewer** (sonnet, read-only) — runs `nice pixi run audit` and reviews against the `cpp-security` checklist. Emits a verdict (Critical/High block).
 - **cli-ux-reviewer** (opus) — reviews help, naming, errors, defaults, output, color/TTY, `--json` and prompt safety on the real binary. Emits a verdict; when asked, implements help-text, message and format-only fixes, and requests a golden re-bless instead of touching goldens.
-- **code-refactorer** (sonnet, edit) — behaviour-preserving cleanup with `check` (including the release `-Werror` build) green before and after; never touches goldens or the CLI contract.
+- **code-refactorer** (sonnet, edit) — behaviour-preserving cleanup with `check` (including the release `-Werror` build) green before and after; never touches goldens or the CLI contract. Runs as the post-integration simplify pass in `/feature` and `/implement`, and in `/harden`.
 - **bug-fixer** (opus, edit) — runtime bugs, failing tests, crashes and sanitizer findings: reproduce on the installed binary or exact test, root-cause, failing regression test, minimal fix, prove with `check`.
 - **build-fixer** (opus, edit) — the build surface: pixi solve/lock, configure, compile/link, conda flag leaks, lint infrastructure, CTest discovery, the E2E install fixture, `release-check`, CI.
 - **platform-tester** (sonnet, read-only) — the conditional capability: probes what is present, climbs tiers per target, reports a tier grid with retryable/terminal reasons. Never installs, pulls, blocks or emits a verdict.
@@ -138,7 +141,7 @@ The 9 orchestration commands are written as skills (`.claude/skills/<name>/SKILL
 - `/feature <description>` — the full golden workflow in the current tree, ending with the User Test Plan.
 - `/features <file.md>` — the full workflow per feature in parallel worktrees, one PR each.
 - `/plan <description>` — design + plan + fact-check, then stop before code.
-- `/implement <approved plan>` — parallel batches with dual review loops, installed-binary test, platform pass, board, fixes.
+- `/implement <approved plan>` — parallel batches with dual review loops, simplify pass, installed-binary test, platform pass, board, fixes.
 - `/review [path | range]` — run `check` once and the four-reviewer board on a diff; consolidated verdicts, no code changes.
 - `/fix <symptom>` — route to `build-fixer` or `bug-fixer`, regression test, prove with `check`.
 - `/harden [area]` — tests backfill, extended verification (release-test, extended UB pass, TSan if threaded, cov, audit, platform pass), parallel review, refactor, re-check; behaviour unchanged.

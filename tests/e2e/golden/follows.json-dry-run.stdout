@@ -1,0 +1,133 @@
+{
+  "format_version": 1,
+  "dry_run": true,
+  "source": "follows",
+  "follows": {
+    "username": "fixture-user",
+    "titles": 1,
+    "statuses": null,
+    "selected": 1
+  },
+  "titles": [
+    {
+      "line": 1,
+      "manga_id": "11111111-1111-4111-8111-111111111111",
+      "dir": "out",
+      "status": "ok",
+      "exit_code": 0,
+      "error": null,
+      "duplicate_of": null,
+      "report": {
+        "format_version": 1,
+        "dry_run": true,
+        "layout": "volumes",
+        "manga": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "title": "Clean Title",
+          "url": "https://mangadex.org/title/11111111-1111-4111-8111-111111111111",
+          "language": "en",
+          "direction": "rtl"
+        },
+        "epubs": [
+          {
+            "path": "out/Clean Title - Vol. 01.epub",
+            "kind": "volume",
+            "volume": "1",
+            "chapter": null,
+            "status": "planned",
+            "replaced": false,
+            "existing": null,
+            "new_chapters": [],
+            "reused_chapters": [],
+            "pages": 5,
+            "bytes": 0,
+            "error": null,
+            "chapters": [
+              {
+                "id": "11111111-0001-4000-8000-000000000001",
+                "volume": "1",
+                "chapter": "1",
+                "title": "Beginnings",
+                "groups": [
+                  {
+                    "id": "11111111-0002-4000-8000-000000000001",
+                    "name": "Clean Scans"
+                  }
+                ],
+                "pages": 3
+              },
+              {
+                "id": "11111111-0001-4000-8000-000000000002",
+                "volume": "1",
+                "chapter": "2",
+                "title": "Middles",
+                "groups": [
+                  {
+                    "id": "11111111-0002-4000-8000-000000000001",
+                    "name": "Clean Scans"
+                  }
+                ],
+                "pages": 2
+              }
+            ]
+          },
+          {
+            "path": "out/Clean Title - Vol. 02.epub",
+            "kind": "volume",
+            "volume": "2",
+            "chapter": null,
+            "status": "planned",
+            "replaced": false,
+            "existing": null,
+            "new_chapters": [],
+            "reused_chapters": [],
+            "pages": 2,
+            "bytes": 0,
+            "error": null,
+            "chapters": [
+              {
+                "id": "11111111-0001-4000-8000-000000000003",
+                "volume": "2",
+                "chapter": "3",
+                "title": "Endings",
+                "groups": [
+                  {
+                    "id": "11111111-0002-4000-8000-000000000001",
+                    "name": "Clean Scans"
+                  }
+                ],
+                "pages": 2
+              }
+            ]
+          }
+        ],
+        "skipped_chapters": [],
+        "summary": {
+          "planned": 2,
+          "written": 0,
+          "exists": 0,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "summary": {
+    "titles": {
+      "total": 1,
+      "ok": 1,
+      "not_found": 0,
+      "no_chapters": 0,
+      "incomplete": 0,
+      "network": 0,
+      "failed": 0,
+      "duplicate": 0,
+      "not_run": 0
+    },
+    "files": {
+      "planned": 2,
+      "written": 0,
+      "exists": 0,
+      "failed": 0
+    }
+  }
+}

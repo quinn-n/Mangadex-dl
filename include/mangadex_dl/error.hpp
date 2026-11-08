@@ -22,10 +22,17 @@ enum class Errc {
     no_chapters, ///< nothing downloadable matched the language and selection
     incomplete,  ///< at least one output file failed while others may have been written
     interrupted, ///< SIGINT/SIGTERM arrived; the run unwound and cleaned up its temporaries
-    mixed_failures, ///< batch/mdlist: the titles that did not complete failed in more than one way
+    /// batch/mdlist/follows: the titles that did not complete failed in more than one way
+    mixed_failures,
     /// --dir-per-title: this title's own directory below DIR is unusable (exit 1; the run
     /// continues with the next title)
     row_dir,
+    /// follows, login: no usable saved login and the missing detail can't be asked for, no API
+    /// client set up, or the saved login expired and no password source exists (exit 8)
+    login_required,
+    /// follows, login: MangaDex refused the login details, or a freshly obtained access token
+    /// (exit 9)
+    auth_rejected,
 };
 
 [[nodiscard]] constexpr int exit_code_for(Errc code) noexcept {
@@ -46,6 +53,10 @@ enum class Errc {
         return exit_code::incomplete;
     case Errc::mixed_failures:
         return exit_code::mixed_failures;
+    case Errc::login_required:
+        return exit_code::login_required;
+    case Errc::auth_rejected:
+        return exit_code::auth_rejected;
     case Errc::interrupted:
         // Only a fallback: main() re-raises the pending signal after finish_stdout(), so the shell
         // sees the signal death (130/143). The code is returned only if re-raising is impossible.

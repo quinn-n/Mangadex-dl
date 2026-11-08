@@ -135,8 +135,8 @@ TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
     services.user_agent = agent;
     services.title_dir = title_dir; // borrowed for run_download only; null = the plain stem
     if (row.registry != nullptr) {
-        // batch and mdlist: --overwrite decides a path an earlier row claimed exactly as a run
-        // without it (claimed), and a dry run decides a path an earlier row planned as the real
+        // batch, mdlist and follows: --overwrite decides a path an earlier row claimed exactly as a
+        // run without it (claimed), and a dry run decides a path an earlier row planned as the real
         // run will find it (planned_in_run). Both capture the registry pointer by value; the
         // registry outlives this call (RowContext::registry) and is not written during it.
         services.claimed = [registry = row.registry](std::string_view path) {

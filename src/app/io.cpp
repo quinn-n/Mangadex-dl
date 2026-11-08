@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 
+#include <fcntl.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers): sigaction and pthread_sigmask are POSIX <signal.h>
 #include <signal.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers): strerror_r is POSIX, declared only in <string.h>
@@ -44,8 +45,18 @@ void write_stderr(std::string_view text) noexcept {
     return std::string_view{value};
 }
 
-[[nodiscard]] EnvSnapshot read_env() noexcept {
-    // All three variables treat "set but empty" like "unset".
+/// An owned copy of `name`'s value; nullopt when it is unset or empty.
+[[nodiscard]] std::optional<std::string> env_copy(const char* name) {
+    const std::optional<std::string_view> value = env_value(name);
+    if (!value || value->empty()) {
+        return std::nullopt;
+    }
+    return std::string{*value};
+}
+
+/// Not noexcept: the three directory variables are copied into owned strings.
+[[nodiscard]] EnvSnapshot read_env() {
+    // Every variable treats "set but empty" like "unset".
     const std::string_view no_color = env_value("NO_COLOR").value_or(std::string_view{});
     const std::string_view force = env_value("CLICOLOR_FORCE").value_or(std::string_view{});
     const std::string_view term = env_value("TERM").value_or(std::string_view{});
@@ -53,6 +64,9 @@ void write_stderr(std::string_view text) noexcept {
         .no_color = !no_color.empty(),
         .clicolor_force = !force.empty() && force != "0",
         .term_dumb = term == "dumb",
+        .home = env_copy("HOME"),
+        .xdg_config_home = env_copy("XDG_CONFIG_HOME"),
+        .xdg_state_home = env_copy("XDG_STATE_HOME"),
     };
 }
 
@@ -127,6 +141,18 @@ StdoutRecorder& stdout_recorder() noexcept {
     return recorder;
 }
 
+/// STDIN_FILENO, or -1 when fd 0 is closed. It must run before the program opens any descriptor:
+/// each open takes the lowest free number, so once fd 0 is free, the next file, directory, pipe or
+/// socket the tool opens becomes "fd 0" and would otherwise be read as stdin (a password from one
+/// of its own files). Never reopens fd 0 (e.g. on /dev/null): a closed stdin stays an error.
+[[nodiscard]] int stdin_descriptor() noexcept {
+    const int saved = clear_errno();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl is variadic in C
+    const bool closed = ::fcntl(STDIN_FILENO, F_GETFD) == -1 && errno == EBADF;
+    errno = saved;
+    return closed ? -1 : STDIN_FILENO;
+}
+
 [[nodiscard]] constexpr int sgr_code(Style style) noexcept {
     switch (style) {
     case Style::bold:
@@ -184,15 +210,16 @@ int RecordingStdioBuf::sync() {
 }
 
 Io process_io() {
+    const int stdin_fd = stdin_descriptor(); // first, before anything can open a descriptor
     static_cast<void>(stdout_recorder());
     return Io{
         .out = std::cout,
         .err = std::cerr,
-        .stdin_tty = ::isatty(STDIN_FILENO) == 1,
+        .stdin_tty = stdin_fd >= 0 && ::isatty(stdin_fd) == 1,
         .stdout_tty = ::isatty(STDOUT_FILENO) == 1,
         .stderr_tty = ::isatty(STDERR_FILENO) == 1,
         .env = read_env(),
-        .stdin_fd = STDIN_FILENO,
+        .stdin_fd = stdin_fd,
     };
 }
 
