@@ -40,6 +40,7 @@ Delegate to `implementation-planner` with the approved design. The plan must con
   - release-test.
 - **A memory-safety watch-list:** views, CLI11 bound variables, callbacks, iterators.
 - **A Parallelization plan** of ordered execution batches with the serialization points called out. Registration in `src/app/cli.cpp` is its own late task.
+- **PR slices:** ordered, path-disjoint review slices for a stacked-PR split, each green alone, or `Single PR — <reason>` (see the `stacked-prs` skill).
 
 ## 3. Fact-check (fan out)
 The `[VERIFY]` items are independent lookups. In a single turn, launch **one `fact-checker` per verification cluster** from the plan (multiple Task calls), giving each only its cluster's items.
@@ -57,7 +58,7 @@ If anything is **refuted**:
 2. Re-run only the relevant `fact-checker`(s).
 3. Repeat until the plan rests only on confirmed facts.
 
-⏸ Present the final plan, test plan and parallelization plan for approval.
+⏸ Present the final plan, test plan, parallelization plan and **PR slices** for approval. You approve the slicing here, alongside the batches; it decides how the work is split if it later ships as a stack of PRs.
 
 ## 4. Implement in parallel batches, each track gated by a dual review loop
 Work through the plan's batches **in order**.
@@ -245,7 +246,7 @@ Then confirm `nice pixi run check` is green.
 - **When nothing is needed, say so in one sentence naming what covered it.** Never write a bare "N/A". For example: *"Nothing required: `nice pixi run check` is green, cli-tester verified all 5 acceptance criteria including the exit-2 usage path and SIGPIPE, and this subcommand has no prompts, color or credentials."*
 - **It is not an escape hatch.** Something testable-but-untested is a coverage gap: flag it as a follow-up for `test-engineer`, don't hand it to me. If the honest list runs past ~5 items, say so: the feature needed more automated coverage.
 - **No credentials, tokens, real endpoints or `.platform-runs/` artifact paths.** This block may travel into a public PR body, and the diff-secret hook never sees PR bodies.
-- **If this work is later committed and pushed, this block is the PR's `## User Test Plan` verbatim.** If the repo has a PR template (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`), fold the section into it rather than fighting it.
+- **If this work is later committed and pushed, this block is the PR's `## User Test Plan` verbatim.** If it ships as a stack (the `stacked-prs` skill, using the plan's PR slices), the block goes on the top PR and each lower PR gets the skill's explicit empty case. If the repo has a PR template (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`), fold the section into it rather than fighting it.
 
 Give a one-paragraph status at each batch and loop: which tracks are running, current verdicts from both reviewers, and round counts.
 

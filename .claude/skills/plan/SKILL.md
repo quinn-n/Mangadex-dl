@@ -29,7 +29,8 @@ Delegate to `implementation-planner` with the approved spec. The plan includes:
 - a **Parallelization plan** of ordered batches;
 - the per-tier test plan: unit, in-process CLI, E2E cases, edge-suite and sanitizer-control additions, release-test;
 - the memory-safety watch-list;
-- rollout and risk.
+- rollout and risk;
+- **PR slices:** ordered, path-disjoint review slices for a stacked-PR split, or `Single PR — <reason>` (see the `stacked-prs` skill).
 
 **Serialization points never go in two tracks of one batch:**
 - top-level `CMakeLists.txt`;
@@ -62,6 +63,7 @@ Present:
 - the plan;
 - the per-tier test plan;
 - the parallelization plan;
+- the PR slices;
 - the fact-check report (Claim / Verdict / Evidence / Fix).
 
 Do **not** implement. Stop here for my review; `/implement` takes it from here.
