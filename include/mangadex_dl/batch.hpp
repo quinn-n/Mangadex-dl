@@ -224,13 +224,31 @@ struct FollowsSummary {
 [[nodiscard]] std::string batch_to_json(const BatchResult& result, std::string_view source,
                                         bool dry_run, const FollowsSummary& follows);
 
+/// OutputRegistry::claim_book's answer for a path an earlier line already claimed.
+struct PathClaim {
+    std::size_t line = 0; ///< the path's first claimant
+    /// Both identifiers are non-empty and equal: the later file is the same book as the first.
+    bool same_book = false;
+
+    friend bool operator==(const PathClaim&, const PathClaim&) = default;
+};
+
 /// Cross-row collision detection, and (dry run) what an earlier row's planned file will hold.
 /// Owns its keys and records.
 class OutputRegistry {
 public:
     /// Records `path` for `line`; returns the earlier line that already claimed it. Keyed on
     /// std::filesystem::path(path).lexically_normal().generic_string() of the joined path.
+    /// Records no book identifier: the same as claim_book(path, line, "").
     [[nodiscard]] std::optional<std::size_t> claim(std::string path, std::size_t line);
+
+    /// claim(), plus the book (EpubOutcome::epub.identifier, urn:mangadex:<id>:<lang>:<unit>)
+    /// this line's file at `path` is. The first claimant's line and identifier are kept; a
+    /// re-claim by that line returns nullopt. A later line gets the first claimant's line and
+    /// whether its identifier equals `identifier`; an empty identifier (on either side) is
+    /// unknown and never the same book. Keyed exactly as claim() keys it.
+    [[nodiscard]] std::optional<PathClaim> claim_book(std::string path, std::size_t line,
+                                                      std::string identifier);
 
     /// The line that claimed `path` so far (keyed as claim() keys it), or nullopt. Records
     /// nothing.
@@ -248,7 +266,13 @@ public:
     [[nodiscard]] std::optional<PlannedEpub> planned_at(std::string_view path) const;
 
 private:
-    std::map<std::string, std::size_t, std::less<>> by_path_{};
+    /// A path's first claimant.
+    struct Claimant {
+        std::size_t line = 0;
+        std::string identifier{}; ///< empty: unknown (claim())
+    };
+
+    std::map<std::string, Claimant, std::less<>> by_path_{};    ///< normalized path -> claimant
     std::map<std::string, PlannedEpub, std::less<>> planned_{}; ///< normalized path -> planned book
 };
 

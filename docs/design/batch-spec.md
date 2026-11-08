@@ -48,6 +48,19 @@ path can be complete) instead of being a special case. The `-v` `<path>: up to d
 line, stdout, `--json` (the file stays `exists`/`complete`; `summary.files` is unchanged), exit
 codes and flags are unchanged, and `download` (no other rows) is unchanged. Marked **rev5
 (up-to-date note)** inline.
+rev6 (same-book note) 2026-11-06: in `batch` (csv lists; `mdlist` is byte-identical), the
+cross-row line for a path an earlier row claimed depends on whether the later row's file is the
+same book as the path's first claimant's: the registry keeps the first claimant's book identifier
+(`urn:mangadex:<id>:<lang>:<unit>`, the comparison the engine uses for "holds a different book").
+The same book found up to date (`exists`/`complete`) gets the note `<file>:<line>: <path>: already
+up to date (the same book as line <k>)`; the same book updated (`written`/`planned` +
+`incomplete`) the note `<file>:<line>: <path>: updated with this line's chapters (the same book as
+line <k>)`; in a dry run `would already be up to date` / `would be updated with this line's
+chapters`. Notes have no `warning:`, are never colored, are hidden by `-q` and are printed with
+`--json`. The same book left alone as foreign gets no cross-row line (the row's own `left alone`
+warning says it). Another book, the same book diverged, and the publish races (nothing found at a
+claimed path) keep the collision warning byte for byte. Exit codes, stdout, `--json`, help and
+goldens are unchanged. Marked **rev6 (same-book note)** inline.
 
 **Intent:** run the existing `download` engine once for each title listed in a CSV file (or on
 stdin), in file order. The CSV can override a few per-title options on each row. The run ends with
@@ -206,7 +219,14 @@ can write to. Each title costs several API requests: a long list is a long run.
   up to date" note is never printed with `--overwrite`. **rev5 (up-to-date note):** the note never
   counts a file at a path an earlier row claimed, so it counts only files from earlier runs, each
   path once; that it never appears with `--overwrite` follows from this. A later row that finds an
-  earlier row's file up to date prints only the collision line.
+  earlier row's file up to date prints only the collision line. **rev6 (same-book note):** when the
+  later row's file is the same book (identifier) as the path's first claimant's, that line is a
+  note instead: `<file>:<line>: <path>: already up to date (the same book as line <k>)` (up to
+  date), `<file>:<line>: <path>: updated with this line's chapters (the same book as line <k>)`
+  (updated), or nothing (a foreign file left alone: its own `left alone` warning says it); dry
+  runs say `would already be up to date` / `would be updated with this line's chapters`. Notes have
+  no `warning:`, are never colored and are hidden by `-q`. Another book and the same book diverged
+  keep the collision warning.
   Empty on full success. Otherwise one closing `error:` line (even with `-q`/`--json`), line list
   capped at 10:
   - `<n> of <m> titles did not complete (lines 4, 9, 12); run the same command again to retry them`
@@ -355,6 +375,13 @@ row and README rows.
     row's file up to date prints only the collision line. A re-run of the same list over a DIR an
     earlier run filled counts each distinct file once (`2 files are already up to date` for two
     files, not 3).
+    **rev6 (same-book note):** for the same book, the second row's line is the note `<path>:
+    already up to date (the same book as line <k>)` (up to date) or `<path>: updated with this
+    line's chapters (the same book as line <k>)` (an update), `would already be up to date` /
+    `would be updated with this line's chapters` in a dry run, identical with `--overwrite`, hidden
+    by `-q`, never colored, also printed with `--json`; a foreign file left alone gets no cross-row
+    line. Another book and a diverged file keep the collision warning byte for byte; stdout,
+    `--json` and exit codes are unchanged.
 13. `[cli]` Row-scoped stderr lines carry `<file>:<line>: `; aggregated "already exist" warning
     once at end; `-q` suppresses warnings but keeps the closing error line.
 14. `[e2e]` `batch --help` golden (synopsis, CSV footer, exit table incl. 7, no `--api-base`).

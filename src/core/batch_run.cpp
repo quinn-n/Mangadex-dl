@@ -357,12 +357,28 @@ std::optional<std::string> batch_closing_message(const BatchResult& result, bool
 }
 
 std::optional<std::size_t> OutputRegistry::claim(std::string path, std::size_t line) {
-    std::string key = registry_key(std::move(path));
-    const auto [it, inserted] = by_path_.try_emplace(std::move(key), line);
-    if (inserted || it->second == line) {
+    const std::optional<PathClaim> earlier = claim_book(std::move(path), line, std::string{});
+    if (!earlier) {
         return std::nullopt;
     }
-    return it->second;
+    return earlier->line;
+}
+
+std::optional<PathClaim> OutputRegistry::claim_book(std::string path, std::size_t line,
+                                                    std::string identifier) {
+    std::string key = registry_key(std::move(path));
+    const auto it = by_path_.find(key);
+    if (it == by_path_.end()) {
+        by_path_.emplace(std::move(key),
+                         Claimant{.line = line, .identifier = std::move(identifier)});
+        return std::nullopt;
+    }
+    const Claimant& first = it->second;
+    if (first.line == line) {
+        return std::nullopt;
+    }
+    return PathClaim{.line = first.line,
+                     .same_book = !identifier.empty() && identifier == first.identifier};
 }
 
 std::optional<std::size_t> OutputRegistry::claimed_by(std::string_view path) const {
@@ -371,7 +387,7 @@ std::optional<std::size_t> OutputRegistry::claimed_by(std::string_view path) con
     if (it == by_path_.end()) {
         return std::nullopt;
     }
-    return it->second;
+    return it->second.line;
 }
 
 void OutputRegistry::record_planned(std::string path, PlannedEpub book) {

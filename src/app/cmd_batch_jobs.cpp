@@ -65,6 +65,36 @@ namespace {
     return "line"; // only reachable through an out-of-range enum value
 }
 
+/// What a later csv row adds for a file at a path an earlier row claimed for the same book
+/// (batch-spec rev6).
+enum class SameBookLine {
+    up_to_date, ///< the note "already up to date (the same book as line <k>)"
+    updated,    ///< the note "updated with this line's chapters (the same book as line <k>)"
+    none,       ///< nothing: the engine's own "left alone" warning for the foreign file says it
+    collision,  ///< the collision warning, as for another book (diverged, publish races)
+};
+
+/// Decides SameBookLine from the later row's outcome for the file (never failed: a failed file
+/// claims nothing).
+[[nodiscard]] constexpr SameBookLine same_book_line(EpubStatus status,
+                                                    ExistingKind existing) noexcept {
+    switch (existing) {
+    case ExistingKind::complete:
+        return status == EpubStatus::exists ? SameBookLine::up_to_date : SameBookLine::collision;
+    case ExistingKind::incomplete:
+        return status == EpubStatus::written || status == EpubStatus::planned
+                   ? SameBookLine::updated
+                   : SameBookLine::collision;
+    case ExistingKind::foreign:
+        return status == EpubStatus::exists ? SameBookLine::none : SameBookLine::collision;
+    case ExistingKind::none:      // nothing at a claimed path: only a race with another writer
+    case ExistingKind::diverged:  // left alone with the engine's warning: keep the cross-row one
+    case ExistingKind::unchecked: // --overwrite never applies to a claimed path (rev4)
+        return SameBookLine::collision;
+    }
+    return SameBookLine::collision; // only reachable through an out-of-range enum value
+}
+
 /// Does `source` print one line per cross-row collision (RowContext::collision_line_for: the
 /// observer drops the engine's "holds a different book" warning for a path an earlier row
 /// claimed, and the runner's collision line says it instead)? mdlist and follows do; csv keeps
@@ -278,8 +308,41 @@ private:
                            written, earlier);
     }
 
+    /// The cross-row line for `file`, whose path line/item `earlier.line` claimed first. csv and
+    /// the same book (batch-spec rev6): a note, or nothing, per same_book_line; otherwise (another
+    /// book, a diverged file, a race, and always for mdlist and follows) the collision warning.
+    /// Notes go through print_note: no `warning:`, never colored, hidden by -q, printed with
+    /// --json.
+    void report_collision(const std::string& prefix, const EpubOutcome& file, PathClaim earlier) {
+        if (settings_->source == BatchSource::csv && earlier.same_book) {
+            const bool dry_run = settings_->base.dry_run;
+            switch (same_book_line(file.status, file.existing)) {
+            case SameBookLine::up_to_date:
+                print_note(
+                    *io_, *policy_,
+                    std::format("{}{}: {} (the same book as line {})", prefix, file.path,
+                                dry_run ? "would already be up to date" : "already up to date",
+                                earlier.line));
+                return;
+            case SameBookLine::updated:
+                print_note(*io_, *policy_,
+                           std::format("{}{}: {} with this line's chapters (the same book as "
+                                       "line {})",
+                                       prefix, file.path, dry_run ? "would be updated" : "updated",
+                                       earlier.line));
+                return;
+            case SameBookLine::none:
+                return;
+            case SameBookLine::collision:
+                break;
+            }
+        }
+        print_warning(*io_, *policy_, collision_message(prefix, file.path, earlier.line));
+    }
+
     /// Every file this row produced (written, planned or already there) is claimed for its
-    /// line; a path an earlier row claimed gets one warning. Failed files produced nothing.
+    /// line, with its book identifier; a path an earlier row claimed gets at most one line
+    /// (report_collision). Failed files produced nothing.
     /// mdlist and follows: this is the only line for such a path (the observer dropped the engine's
     /// "holds a different book" warning for it, RowContext::collision_line_for); batch also keeps
     /// the engine's. A dry run also records each planned file (the plan, or an update's final plan;
@@ -293,9 +356,9 @@ private:
             case EpubStatus::planned:
             case EpubStatus::written:
             case EpubStatus::exists:
-                if (const std::optional<std::size_t> earlier =
-                        registry_->claim(file.path, job.line)) {
-                    print_warning(*io_, *policy_, collision_message(prefix, file.path, *earlier));
+                if (const std::optional<PathClaim> earlier =
+                        registry_->claim_book(file.path, job.line, file.epub.identifier)) {
+                    report_collision(prefix, file, *earlier);
                 }
                 if (file.status == EpubStatus::planned) {
                     registry_->record_planned(file.path, file.epub);
