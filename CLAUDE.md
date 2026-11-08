@@ -25,10 +25,10 @@ Never jump straight to code for a non-trivial change. Follow:
 
 **design → plan → fact-check → ⏸ plan approval → implement (parallel file-disjoint tracks, each looping with `quality-reviewer` + `memory-safety-reviewer`) → simplify pass (`code-refactorer`) → real installed-binary test (`cli-tester`) → conditional platform pass (`platform-tester`) → feature review board → fix → re-check → `## User Test Plan`**
 
-The commands run it (they are user-invoked skills; see "Commands" below). `/feature` runs the whole pipeline in the current tree; `/plan`, `/implement`, `/review`, `/fix`, `/harden` and `/platform-test` run pieces of it; `/setup` bootstraps a project from the studio's scaffolds. `/features <file.md>` fans the whole pipeline out over **many features at once**: one **git worktree per feature** (`feature/<slug>` in `../<repo>-worktrees/<slug>`), each with its own `pixi install --locked` env and per-worktree job caps, running concurrently, then **one PR per feature**. It checks each feature off in the source Markdown file as its PR lands, and forwards every ⏸ gate, subagent question and **golden re-bless request** to you, labeled by feature + worktree + phase.
+The commands run it (they are user-invoked skills; see "Commands" below). `/feature` runs the whole pipeline in the current tree; `/plan`, `/implement`, `/review`, `/fix`, `/harden` and `/platform-test` run pieces of it; `/setup` bootstraps a project from the studio's scaffolds. `/features <file.md>` fans the whole pipeline out over **many features at once**: one **git worktree per feature** (`feature/<slug>` in `../<repo>-worktrees/<slug>`), each with its own `pixi install --locked` env and per-worktree job caps, running concurrently, then **one PR per feature**, or a **stack of small PRs** when a feature is over the stacked-PR threshold and its plan's PR slices split cleanly (`stacked-prs`). It checks each feature off in the source Markdown file as its PR (a stack's top PR) lands, and forwards every ⏸ gate, subagent question and **golden re-bless request** to you, labeled by feature + worktree + phase.
 
 ### The User Test Plan
-`/feature`, `/implement` and every `/features` PR body end with a section headed exactly `## User Test Plan`. It is **never omitted**: when nothing needs hands-on checking it says so and names what covered it. It is **derived, not brainstormed**, from:
+`/feature`, `/implement` and every `/features` PR body end with a section headed exactly `## User Test Plan`. On a stack, the full plan is on the top PR and each lower PR's section is the explicit empty case (`stacked-prs`). It is **never omitted**: when nothing needs hands-on checking it says so and names what covered it. It is **derived, not brainstormed**, from:
 - acceptance criteria not marked passing (every `human`- and `tty-pty`-tagged criterion);
 - `cli-tester`'s "Could not verify from here";
 - the `platform-tester` tier grid ("Not covered, with reasons", "Still human, unconditionally");
@@ -79,7 +79,7 @@ Run every tool through a pixi task so it uses the project's pinned toolchain. **
 
 ## Specialized subagents (delegate proactively)
 - **cli-designer** (opus, read-only) — turns an idea into a precise CLI11 command spec: surface, streams, exit codes, edge cases, data/state; every acceptance criterion tagged with the tier that verifies it. Use before planning.
-- **implementation-planner** (opus, read-only) — ordered plan with per-task `Owns` sets, parallel batches, called-out serialization points, pixi/CMake changes, a per-tier test plan, a memory-safety watch-list and a clustered `[VERIFY]` list.
+- **implementation-planner** (opus, read-only) — ordered plan with per-task `Owns` sets, parallel batches, called-out serialization points, pixi/CMake changes, a per-tier test plan, a memory-safety watch-list, a clustered `[VERIFY]` list and the `PR slices` for a stacked-PR split (or `Single PR — <reason>`).
 - **fact-checker** (sonnet, read-only on source) — confirms/refutes every `[VERIFY]` item against the installed pixi env (`pixi list`, headers, `cxx-probe`), then current docs. The orchestrator fans these out, one per independent cluster. It writes only probe scratch under `.platform-runs/`.
 - **implementer** (opus, edit) — executes its slice of an approved, fact-checked plan with tests, stays inside its `Owns` set, reports cross-track needs as coordination points, and loops until **both** track reviewers APPROVE.
 - **cli-tester** (sonnet, read-only) — runs the **real installed binary** (sanitized dev install; the release install on request and always in `/harden`): exit codes, stdout/stderr split, pipes and SIGPIPE, `/dev/full`, stdin, pseudo-TTY, `--json`, env/config precedence. Ends with "Could not verify from here".
@@ -139,7 +139,7 @@ Run every tool through a pixi task so it uses the project's pinned toolchain. **
 The 9 orchestration commands are written as skills (`.claude/skills/<name>/SKILL.md` with `disable-model-invocation: true`), so you invoke them as `/<name>` and Claude never auto-runs them. There is no `.claude/commands/` directory.
 - `/setup <tool name> — <purpose>` — bootstrap from the scaffolds: ecryptfs warning, names, `pixi.toml` pinned from `pixi search`, scaffolds, C++23 feature probe, sanitizer usability probe, green `check`, initial goldens, verify-at-use-time checklist, optional CI.
 - `/feature <description>` — the full golden workflow in the current tree, ending with the User Test Plan.
-- `/features <file.md>` — the full workflow per feature in parallel worktrees, one PR each.
+- `/features <file.md>` — the full workflow per feature in parallel worktrees, one PR or one stack of small PRs each.
 - `/plan <description>` — design + plan + fact-check, then stop before code.
 - `/implement <approved plan>` — parallel batches with dual review loops, simplify pass, installed-binary test, platform pass, board, fixes.
 - `/review [path | range]` — run `check` once and the four-reviewer board on a diff; consolidated verdicts, no code changes.
@@ -148,7 +148,7 @@ The 9 orchestration commands are written as skills (`.claude/skills/<name>/SKILL
 - `/platform-test [probe|local|ci|all]` — re-run the conditional platform pass on demand (e.g. after pulling a docker image or once CI finishes).
 
 ## Skills available (knowledge)
-`cli-design` (CLI11 idioms and the CLI contract), `modern-cpp-conventions` (C++23 house conventions), `cpp-security` (security checklist + the `audit` task), `cpp-quality` (the gate, clang-format/clang-tidy, warnings, NOLINT, definition of done), `build-workflow` (pixi + CMake presets, targets, caps and lock, release builder, CI), `cpp-testing` (test tiers, the E2E driver, edge suite, goldens, sanitizer controls), `memory-safety` (the hazard table, option C, sanitizer flags/options, hardening, evidence standard), `platform-testing` (the probe ladder, tiers and reasons that `/platform-test` and `platform-tester` follow; not the command itself), `low-priority-execution` (bare `nice`, timeouts, caps vs niceness). Consult them when relevant. Several carry supporting `scaffold.md` / `ci-release.md` files that `/setup` reads.
+`cli-design` (CLI11 idioms and the CLI contract), `modern-cpp-conventions` (C++23 house conventions), `cpp-security` (security checklist + the `audit` task), `cpp-quality` (the gate, clang-format/clang-tidy, warnings, NOLINT, definition of done), `build-workflow` (pixi + CMake presets, targets, caps and lock, release builder, CI), `cpp-testing` (test tiers, the E2E driver, edge suite, goldens, sanitizer controls), `memory-safety` (the hazard table, option C, sanitizer flags/options, hardening, evidence standard), `platform-testing` (the probe ladder, tiers and reasons that `/platform-test` and `platform-tester` follow; not the command itself), `low-priority-execution` (bare `nice`, timeouts, caps vs niceness), `stacked-prs` (PR slicing rules, the size threshold, building and gating a stack, stack-map PR bodies, restacking, stack-tool detection). Consult them when relevant. Several carry supporting `scaffold.md` / `ci-release.md` files that `/setup` reads.
 
 ## Review routing
 | Change | Reviewers |
@@ -175,6 +175,7 @@ Everything here is CLI and exit-coded, so there is no `.mcp.json`. Capabilities 
 ## Conventions
 - Match existing patterns: read neighbours before writing. Kebab-case long flags; `snake_case` functions and variables; trailing `_` on private data members; `<proj>` namespace (see `modern-cpp-conventions`).
 - Small, reviewable diffs. Note out-of-scope improvements for the right agent rather than doing them inline.
+- **Big features ship as a stack when they split cleanly** (`stacked-prs`): over the stacked-PR threshold, with ≥ 2 approved PR slices, each tip gated green; otherwise one PR. The studio **never merges**, and a restack force-pushes your branches only after you confirm each push.
 - clang-format owns formatting and include order; don't hand-sort or fight it.
 
 ## Project specifics
@@ -196,5 +197,6 @@ Filled by `/setup` on 2026-10-17; agents read them at use-time.
 - Docker images for platform smoke runs (you pull them yourself): none (docker not installed)
 - Extra toolchain presets (mingw / aarch64), if any: none
 - GitHub remote + default (base) branch: no remote configured yet; default branch `main`
+- Stacked-PR threshold: 400 changed lines (excl. lockfiles/generated/goldens) — set `never` to always open one PR
 
 Claude Code formats evolve: if your version differs, run `/agents` to confirm every subagent loaded and `/help` to confirm the commands.

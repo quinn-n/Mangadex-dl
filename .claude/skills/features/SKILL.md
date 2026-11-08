@@ -1,6 +1,6 @@
 ---
 name: features
-description: "User-invoked orchestration command (/features). It takes a Markdown file that lists several CLI features and builds each one in its own git worktree, concurrently, with its own pixi env, per-worktree job caps and a full /feature pipeline run. It then opens one PR per feature, each with a tier-tagged, self-contained User Test Plan. Gates, questions and golden re-bless requests are forwarded to you, labeled by feature. Invoke it explicitly with the file path. Claude never auto-runs it."
+description: "User-invoked orchestration command (/features). It takes a Markdown file that lists several CLI features and builds each one in its own git worktree, concurrently, with its own pixi env, per-worktree job caps and a full /feature pipeline run. It then opens one PR per feature, or a stack of small PRs when a big feature splits cleanly, each feature with a tier-tagged, self-contained User Test Plan. Gates, questions and golden re-bless requests are forwarded to you, labeled by feature. Invoke it explicitly with the file path. Claude never auto-runs it."
 argument-hint: "<path/to/features.md>"
 disable-model-invocation: true
 ---
@@ -9,7 +9,7 @@ Build **every feature listed in the Markdown file at `$ARGUMENTS`**. Each featur
 
 design → plan → fact-check → parallel implement↔dual-review loops → simplify pass → installed-binary test → platform pass → review board → fix → golden gate
 
-Then open **one pull request per feature**.
+Then open **one pull request per feature**, or **one stack of small PRs** when the feature is over the stacked-PR threshold and its plan splits cleanly (the `stacked-prs` skill).
 
 Worktrees give true isolation. Parallel features can't collide on:
 - files;
@@ -35,6 +35,12 @@ Correctness still beats concurrency:
 - Run `gh --version` and `gh auth status`.
 - Run `git remote get-url origin` and confirm it points at `github.com` (or at the host `gh` is configured for).
 - If `gh` is missing or unauthenticated, or there's no GitHub remote, we still do all the work but **fall back** to pushing each branch and printing its compare URL. Tell me up front which path we're on.
+
+**Stack tooling (probe once, here in the base checkout; detect, never install)** per the `stacked-prs` skill §5:
+- `gh stack --help` (only if `gh` is present): GitHub native stacks, public preview since 2026-07-30, needs `gh` ≥ 2.90.
+- Graphite: `test -e "$(git rev-parse --git-path .graphite_repo_config)"`.
+- git-spice: `git show-ref --verify --quiet refs/spice/data` (a missing ref doesn't prove it's unused).
+- Say which stack path is in use: a detected tool (offered at the ⏸ gate below, native stacks recommended), or plain git + `gh` (always works), or the compare-URL fallback. Also read the **stacked-PR threshold** from `CLAUDE.md` → Project specifics (default 400 changed lines; `never` = always one PR).
 
 **Toolchain and host**
 - `pixi --version`. Abort and ask if pixi is missing; never install it.
@@ -101,7 +107,8 @@ Items already marked done (`- [x]`, or a trailing `DONE`/`COMPLETE`/`✅`) are *
 - how you parsed the file;
 - how each item will be marked done;
 - which items you're skipping as already done;
-- the computed `cap`/`load`, and whether ccache will be used.
+- the computed `cap`/`load`, and whether ccache will be used;
+- the PR path (`gh` or the compare-URL fallback), the stack path from preflight and the stacked-PR threshold. If a stack tool was detected, ask whether to submit stacks with it.
 
 ## 2. Create and prepare one worktree per feature (serial)
 Create the worktrees **one at a time**: git multi-worktree operations aren't guaranteed to be concurrency-safe. For each feature:
@@ -165,7 +172,7 @@ Show me the final mapping: feature → branch → worktree path → envs install
   - capped rounds.
 - Launch the current phase for all unblocked features in the same turn, so they progress concurrently.
 
-**Forward gates and questions to me, labeled by feature.** Every pipeline has ⏸ gates: design, final plan, and reviewer disagreements or a 4th round. In addition, any subagent may hit a real question or blocker, and every **golden re-bless request** needs my approval.
+**Forward gates and questions to me, labeled by feature.** Every pipeline has ⏸ gates: design, final plan (with its batches and **PR slices**), and reviewer disagreements or a 4th round. In addition, any subagent may hit a real question or blocker, and every **golden re-bless request** needs my approval.
 - **Collect these across all running features and surface them together.**
 - Tag each one with **feature name + worktree + phase + the exact question + the context I need**: the spec/plan excerpt, the options, the agent's recommendation and, for a golden, the expected-vs-actual output.
 - Never silently decide a genuine choice for me.
@@ -174,31 +181,50 @@ Show me the final mapping: feature → branch → worktree path → envs install
 
 Give a **one-paragraph status per round** covering every feature: phase, current verdicts (both reviewers per track), round counts, and what's blocked on me.
 
-## 4. Open a PR per feature
+## 4. Open a PR, or a stack of PRs, per feature
 A feature is ready when, in its worktree:
 - `nice pixi run check` is green;
 - cli-tester's criteria pass;
 - the board is APPROVED.
 
-For each ready feature:
+For each ready feature, working inside its worktree (`cd <wt> && …`):
 
-**Commit and push**
-1. Commit its work on its branch with a clear message. Never use `--no-verify`.
-2. **Push first.** `gh pr create` won't push for you in this non-interactive context. From inside the worktree: `cd <wt> && git push -u origin <branch>`.
+**Decide: one PR or a stack** (`stacked-prs` §2)
+1. Pin the start sha: run `git merge-base <base-branch> HEAD` and use the printed sha as a literal `<start-sha>` (shell variables don't persist between Bash calls; never use the live base ref, which may have advanced). Then stage everything and measure:
+   ```
+   git add -A && git diff --cached --numstat <start-sha> -- . ':(exclude)pixi.lock' ':(exclude)tests/e2e/golden/**' ':(exclude)third_party/**'
+   ```
+   Sum the added + deleted columns (binary files show `-`; count 0).
+2. **Stack only if** the total is over the stacked-PR threshold **and** the feature's approved `### PR slices` has ≥ 2 slices. Otherwise take the one-PR path.
 
-**Open the PR**
-- Write a real body file (not `--fill`), then run `gh pr create --base <base-branch> --head <branch> --title "<feature name>" --body-file <body-file>`. Capture the PR URL that `gh pr create` prints and report it.
-- **The body contains:**
-  - what was built;
-  - new pixi deps;
-  - CMake/preset changes;
-  - tests added per tier;
-  - review rounds per track, for **both** `quality-reviewer` and `memory-safety-reviewer`, plus the board verdicts;
-  - the platform tier grid, **without artifact paths** (nothing from `.platform-runs/`);
-  - goldens blessed (by name);
-  - a closing `## User Test Plan`.
+**One PR**
+1. Commit its work (already staged) on its branch with a clear message. Never use `--no-verify`.
+2. **Push first.** `gh pr create` won't push for you in this non-interactive context: `cd <wt> && git push -u origin <branch>`.
+3. Write a real body file (not `--fill`), then run `gh pr create --base <base-branch> --head <branch> --title "<feature name>" --body-file <body-file>`. Capture the PR URL that `gh pr create` prints and report it.
 
-**The PR body's `## User Test Plan`** is never omitted. It uses the same derivation, five-part shape, tier tags (`[human: <reason> · retryable|terminal]`), `removed: "<item>" — licensed by <target> @ <tier>` lines and rules as the feature pipeline's step 10. It is not an escape hatch: testable-but-untested is a coverage gap to flag, not to hand to me. Batch mode differs from a single `/feature` run in four ways:
+**A stack** (`stacked-prs` §3–4; build it from the approved tree, never re-implement)
+1. Unstage with `git reset --quiet`. Then commit slice by slice by path (`git add -A -- <slice paths>`, `git commit -m "<feature name> (k/n): <purpose>"`, never `--no-verify`). Each lower slice gets the branch `feature/<slug>-pt<k>-<slice-slug>`; the top slice stays on `feature/<slug>`. After the last commit `git status --porcelain` must be empty, so the top tip is byte-for-byte the tree the tester and board approved.
+2. **Gate every lower tip in this worktree:** `git switch --detach <tip>` → `nice pixi run check` (plus `nice pixi run -e gcc check` if the gcc env is installed) → `git switch <branch>`, switching back even when the gate fails. Use long timeouts as for every gate run; a tip killed by the tool timeout is rerun, never counted as gated. If a tip's `pixi.lock` differs from the top's, run `pixi install --locked` after each switch.
+   - A failing tip folds into the slice above it: `git reset --mixed <start-sha>`, delete only the `-pt<k>-` branches this run created (`git branch -D` by full name), recommit.
+   - If everything collapses to one slice, take the one-PR path.
+3. **Push every branch first:** `git push -u origin feature/<slug>-pt1-<slice-slug> … <branch>`.
+4. **Open the PRs bottom-up.** PR 1 targets `<base-branch>`; PR k targets slice k−1's branch: `gh pr create --base <parent-branch> --head <slice-branch> --title "<feature name> (k/n): <purpose>" --body-file <file>`. Capture every URL.
+5. **Each body opens with a stack map:** all n slices by branch name (not URL), this one marked, and "Merge bottom-up; review only this PR's diff."
+   - **Lower PRs:** what this slice does, any pixi deps or CMake/preset changes it carries, and its tip's gate result. They carry **gate evidence only**. Their `## User Test Plan` is the explicit empty case: "Nothing required for this slice alone — `nice pixi run check` green at its tip; the feature's hands-on checks are on `<feature name> (n/n)`."
+   - **The top PR:** the full body below, including the full `## User Test Plan`.
+6. If I chose a detected stack tool at the §1 gate, submit the same slices with it instead of steps 3–4, reading its `--help` at use-time and hardcoding no flags beyond its documented basics.
+
+**The PR body (the top PR's, on a stack) contains:**
+- what was built;
+- new pixi deps;
+- CMake/preset changes;
+- tests added per tier;
+- review rounds per track, for **both** `quality-reviewer` and `memory-safety-reviewer`, plus the board verdicts;
+- the platform tier grid, **without artifact paths** (nothing from `.platform-runs/`);
+- goldens blessed (by name);
+- a closing `## User Test Plan`.
+
+**The PR body's `## User Test Plan`** is never omitted. On a stack it is the **top** PR's; each lower PR carries the explicit empty case above. It uses the same derivation, five-part shape, tier tags (`[human: <reason> · retryable|terminal]`), `removed: "<item>" — licensed by <target> @ <tier>` lines and rules as the feature pipeline's step 10. It is not an escape hatch: testable-but-untested is a coverage gap to flag, not to hand to me. Batch mode differs from a single `/feature` run in four ways:
 
 - **It is self-contained.** The worktree is deleted at cleanup, but the PR outlives it. So **Get it running** starts from a fresh checkout, with `<tool>` read from `CLAUDE.md` → Project specifics at use-time (`<fill in: tool name>` if it is still a placeholder):
   ```
@@ -212,18 +238,20 @@ For each ready feature:
 - **Scope every item to this feature only.** Never mention a sibling feature, its branch or its worktree.
 - **No credentials, tokens, real endpoints or `.platform-runs/` content in the body.** A PR body is public, and the diff-secret hook scans the working diff, not the PR body. If the repo has a PR template (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`), fold the section into it rather than fighting it.
 
-**Fallback (no `gh` or remote from preflight).** After `git push -u origin <branch>`, print the compare URL for manual PR creation: `https://github.com/<owner>/<repo>/compare/<base>...<branch>?expand=1`. The `?expand=1` is best-effort UX.
+**Fallback (no `gh` or remote from preflight).** After pushing (every slice branch, on a stack), print the compare URL for manual PR creation, one per PR: `https://github.com/<owner>/<repo>/compare/<parent>...<branch>?expand=1`, where `<parent>` is the base for one PR or for slice 1, and slice k−1's branch above that. The `?expand=1` is best-effort UX.
 
-**One PR per feature.** Never fold two features into one branch or PR.
+**One PR or one stack per feature.** Never fold two features into one branch, PR or stack; stacks never cross features, and no PR names a sibling feature.
 
-**Then mark that feature done in the source file.** Once its PR is open (or, in the fallback, its branch is pushed and its compare URL printed):
+**Merging is yours.** I never merge. Merge a stack bottom-up. If you ask me to restack after a squash merge, I follow `stacked-prs` §6 and confirm each force-push with you first.
+
+**Then mark that feature done in the source file.** Once its PR is open (for a stack, once its last, top PR is open; in the fallback, once its branches are pushed and their compare URLs printed):
 - Edit `$ARGUMENTS` in place to mark **only that feature's item** complete, using the convention chosen in §1.
 - **Re-read the file immediately before each edit**, so features finishing around the same time don't clobber each other's check-offs. Leave every other line unchanged.
 - If the file can't be written, report it and move on. Never fail a finished feature over a check-off.
 
 ## 5. Summary and cleanup
 **Report a table:**
-- feature → branch → worktree → PR URL (or compare URL);
+- feature → branch → worktree → PR URL (or compare URL); for a stack, list its PRs bottom-up (`1/n … n/n`);
 - gate results (`check` / `-e gcc check`);
 - review rounds (both reviewers);
 - platform tiers reached;
@@ -236,7 +264,7 @@ For each ready feature:
 - **Lead with the interactive-terminal items** (prompts, real terminal rendering, `NO_COLOR`/`TERM=dumb` in a real terminal). The automated tests drove the piped and pseudo-TTY paths, so that is where the real gaps are.
 - Give each feature its own **Get it running** line.
 - Name explicitly the features that need nothing.
-- This digest doesn't replace the per-PR sections. Each PR keeps its own self-contained copy.
+- This digest doesn't replace the per-PR sections. Each single-PR feature's PR, and each stack's top PR, keeps its own self-contained copy; a stack's lower PRs keep only the explicit empty case.
 
 **The check-offs.** Completed features are now checked off in `$ARGUMENTS`; unfinished, failed and still-blocked ones are left unmarked. That edit is an **uncommitted change in the base working tree**, separate from the per-feature branches. Commit or revert it as you prefer.
 
@@ -244,7 +272,7 @@ For each ready feature:
 1. `git worktree remove <path>`, with `-f` only if I confirm it's dirty.
 2. Then `git worktree prune`.
 
-Each worktree's `build/` dirs and `.pixi/` env go with it. Leave branches and PRs intact. Never run `pixi clean cache`: other worktrees and projects hard-link from that cache, and `guard-bash` blocks it.
+Each worktree's `build/` dirs and `.pixi/` env go with it. Leave branches and PRs intact, including every slice branch of a stack. Never run `pixi clean cache`: other worktrees and projects hard-link from that cache, and `guard-bash` blocks it.
 
 **Execution rules**
 - **Low priority.** Run heavy commands at low OS priority locally as `cd <wt> && nice pixi run …`: `nice pixi run check`, `nice pixi run -e gcc check`, `test`, `lint`, `release`, `release-test`, `bless`, `cxx-probe`.
@@ -260,6 +288,6 @@ Each worktree's `build/` dirs and `.pixi/` env go with it. Leave branches and PR
   - a feature's preconditions fail;
   - a pipeline loop won't converge;
   - a worktree can't be prepared (`pixi install --locked` fails, `dev-local` missing);
-  - a PR can't be created.
+  - a PR or a stack can't be created.
 
   Surface it; don't paper over it.

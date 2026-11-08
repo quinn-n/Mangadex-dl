@@ -1,6 +1,6 @@
 ---
 name: implementation-planner
-description: "Use PROACTIVELY after a CLI design exists (or for any non-trivial C++ change) to produce an ordered implementation and test plan - tasks with exclusive Owns sets, parallel batches, called-out serialization points, pixi/CMake changes, a per-tier test plan, a memory-safety watch-list, and a clustered [VERIFY] list for the fact-checkers. Returns a plan document, not code."
+description: "Use PROACTIVELY after a CLI design exists (or for any non-trivial C++ change) to produce an ordered implementation and test plan - tasks with exclusive Owns sets, parallel batches, called-out serialization points, pixi/CMake changes, a per-tier test plan, a memory-safety watch-list, a clustered [VERIFY] list for the fact-checkers, and PR slices for a stacked-PR split. Returns a plan document, not code."
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 model: opus
 skills:
@@ -69,4 +69,14 @@ CLI-contract compatibility (renamed flags, changed exit codes or `--json` keys b
 ### Refactor triggers
 For each `[VERIFY]` item: which tasks change if the fact-checker refutes it.
 
-Done only when every `[VERIFY]` item is listed and clustered, every task has Owns and "Done when", and no batch contains two tasks touching the same serialization point.
+### PR slices
+How the finished feature splits into a stack of small PRs for review (rules: `.claude/skills/stacked-prs/SKILL.md` §1). List ordered slices, each with a number, a one-line purpose, its tasks (T-ids) and the exact paths it changes:
+- **path-disjoint:** each file's whole change in exactly one slice; a rename or deletion lists both the old and the new path;
+- **dependency-ordered:** slice k depends only on slices below it (build surface → `<proj>_core` + unit tests → `cmd_<sub>.cpp` + `cli.cpp` registration + CLI/E2E tests and their goldens → docs);
+- **green and safe alone:** every tip passes `nice pixi run check` and exposes no half-built subcommand, flag, `--json` key or exit code;
+- **dependencies together:** `pixi.toml` + `pixi.lock` (and the `find_package` that uses them) in the lowest slice that needs them;
+- goldens in the slice whose output they capture.
+
+Slices are for review, not execution; they needn't match the batches. If the feature shouldn't stack, write the single line `Single PR — <reason>` (e.g. small, one tightly-coupled change, no slice is safe alone).
+
+Done only when every `[VERIFY]` item is listed and clustered, every task has Owns and "Done when", no batch contains two tasks touching the same serialization point, and `### PR slices` is present (slices or `Single PR — <reason>`).
