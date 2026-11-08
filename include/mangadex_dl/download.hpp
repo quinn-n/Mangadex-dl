@@ -63,13 +63,15 @@ struct DownloadServices {
     /// stem); called only on the calling thread.
     TitleDirResolver* title_dir = nullptr;
     /// batch, mdlist and follows (empty for `download`): does an earlier title of the same run
-    /// already own `path` (EpubOutcome::path as the report builds it)? Asked only with --overwrite,
-    /// once per file. --overwrite does not apply to a file whose path it owns: that file is decided
+    /// already own `path` (EpubOutcome::path as the report builds it)? With --overwrite, asked
+    /// once per file; without it, asked once, and only for a file found diverged (to word its
+    /// warning). --overwrite does not apply to a file whose path it owns: that file is decided
     /// exactly as without --overwrite (batch-spec rev4), assessed on disk in a real run, and in a
     /// dry run against planned_in_run (else DIR). Another book is left alone (status exists,
     /// existing foreign, with the "holds a different book" warning); the same book is up to
-    /// date, updated or diverged. Called only on the calling thread, during run_download; the
-    /// views are valid only during the call.
+    /// date, updated or diverged, and a diverged one's warning ends at "left it alone", without
+    /// the --overwrite advice (batch-spec rev7). Called only on the calling thread, during
+    /// run_download; the views are valid only during the call.
     std::function<bool(std::string_view path)> claimed{};
     /// batch, mdlist and follows (empty for `download`): in a dry run, for a file decided as
     /// without

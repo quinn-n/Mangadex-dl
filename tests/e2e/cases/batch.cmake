@@ -182,6 +182,30 @@ cli_e2e_case(NAME grow
              EXPECT_FILES "out/Clean Title.epub"
              EXPECT_EPUB "out/Clean Title.epub"
              EXPECT_NO_GLOB "out/.*.part-*")
+# clean-diverge.csv: line 3 (Vol. 2) finds line 2's single file (Vol. 1, the same book) diverged and
+# leaves it alone. Line 2 claimed the path, so the warning ends at "left it alone" (batch-spec rev7:
+# --overwrite would not rebuild it there) and the collision line that follows names the fix. Only line
+# 2's file is on stdout; line 3 leaves it alone.
+set(_batch_diverge_warning_re
+    "^mangadex-dl: warning: /[^\n]*/batch/clean-diverge\\.csv:3: out/Clean Title\\.epub: MangaDex lists 1 chapter this file lacks \\(Ch\\. 3\\), but the file holds 2 chapters MangaDex no longer lists \\(Ch\\. 1, Ch\\. 2\\); left it alone\n")
+set(_batch_diverge_dry_re
+    "${_batch_diverge_warning_re}mangadex-dl: warning: /[^\n]*/batch/clean-diverge\\.csv:3: out/Clean Title\\.epub would already be written by line 2; give one of them a 'title' column\n$")
+set(_batch_diverge_real_re
+    "${_batch_diverge_warning_re}mangadex-dl: warning: /[^\n]*/batch/clean-diverge\\.csv:3: out/Clean Title\\.epub was already written by line 2; give one of them a 'title' column\n$")
+cli_e2e_case(NAME diverge-dry-run
+             ARGS batch --dry-run ${_batch_clean_api} ${_batch_in}/clean-diverge.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "^out/Clean Title\\.epub\n$"
+             EXPECT_STDERR_REGEX "${_batch_diverge_dry_re}"
+             EXPECT_NO_ANSI
+             EXPECT_ABSENT out)
+cli_e2e_case(NAME diverge
+             ARGS batch ${_batch_clean_api} ${_batch_in}/clean-diverge.csv out
+             EXPECT_EXIT 0 EXPECT_STDOUT_REGEX "^out/Clean Title\\.epub\n$"
+             EXPECT_STDERR_REGEX "${_batch_diverge_real_re}"
+             EXPECT_NO_ANSI
+             EXPECT_FILES "out/Clean Title.epub"
+             EXPECT_EPUB "out/Clean Title.epub"
+             EXPECT_NO_GLOB "out/.*.part-*")
 
 # ---- same-path overlap under --overwrite (batch-spec rev4) ------------------------------------------
 # --overwrite never applies to a path an earlier row of the same run claimed: line 3 decides line 2's

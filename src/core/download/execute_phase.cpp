@@ -26,7 +26,8 @@
 // --overwrite applies per file (batch-spec rev4): a path an earlier title of the same
 // batch/mdlist run claimed (DownloadServices::claimed) is decided exactly as without --overwrite,
 // on disk in a real run, against planned_in_run (else DIR) in a dry run. Every other path is
-// replaced without being assessed.
+// replaced without being assessed. A diverged file at a claimed path is warned about without the
+// --overwrite advice (batch-spec rev7, diverged_remedy), with --overwrite or without it.
 //
 // Error classes, decided by Error::code:
 // - Errc::failure / Errc::io (a local file-system problem, or an exception on a worker) and
@@ -677,9 +678,10 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
     outcome.epub.chapters = held_chapters(*assessment.held);
 }
 
-/// --overwrite: does an earlier title of this run own `path` (DownloadServices::claimed)? Then
-/// --overwrite does not apply to the file: it is decided as without --overwrite
-/// (overwrites_file).
+/// Does an earlier title of this run own `path` (DownloadServices::claimed)? Then --overwrite
+/// does not apply to the file: it is decided as without --overwrite (overwrites_file), and its
+/// diverged warning gives no --overwrite advice (diverged_remedy). Asked at most once per file,
+/// by exactly one of the two.
 [[nodiscard]] bool claimed_in_run(const RunContext& ctx, std::string_view path) {
     return ctx.claimed != nullptr && *ctx.claimed && (*ctx.claimed)(path);
 }
@@ -690,6 +692,21 @@ void report_left_alone(const Assessment& assessment, FileResult& result) {
 /// options.overwrite.
 [[nodiscard]] bool overwrites_file(const RunContext& ctx, std::string_view path) {
     return ctx.options->overwrite && !claimed_in_run(ctx, path);
+}
+
+/// What the warning for `assessment` of the file at `path` advises (batch-spec rev7): none when
+/// an earlier title of the run claimed `path`, because --overwrite would not rebuild it there.
+/// Only a diverged file's warning reads it. Under --overwrite an assessed file is claimed by
+/// construction (produce and plan_file assess only when overwrites_file is false), so
+/// claimed_in_run is asked here only for a diverged file without --overwrite, which
+/// overwrites_file never asked: still at most once per file.
+[[nodiscard]] DivergedRemedy diverged_remedy(const RunContext& ctx, std::string_view path,
+                                             const Assessment& assessment) {
+    if (assessment.kind != ExistingKind::diverged) {
+        return DivergedRemedy::overwrite;
+    }
+    return ctx.options->overwrite || claimed_in_run(ctx, path) ? DivergedRemedy::none
+                                                               : DivergedRemedy::overwrite;
 }
 
 /// Dry run, a file decided as without --overwrite: the planned file an earlier row of this run
@@ -787,7 +804,8 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     EpubOutcome& outcome = result.outcome;
     if (epub.plan_error) {
         // The plan cannot be built, so neither can the update: failed, the existing file kept.
-        announce(*ctx.observer, outcome.path, assessment);
+        announce(*ctx.observer, outcome.path, assessment,
+                 diverged_remedy(ctx, outcome.path, assessment));
         report_update(assessment, outcome);
         outcome.error = *epub.plan_error;
         return result;
@@ -805,7 +823,8 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     }
     // The decision is final from here on (the pre-pass applied every fallback).
     const UpdateDecision& decision = *assessment.decision;
-    announce(*ctx.observer, outcome.path, assessment);
+    announce(*ctx.observer, outcome.path, assessment,
+             diverged_remedy(ctx, outcome.path, assessment));
     ctx.observer->on_verbose(1, updating_line(outcome.path, decision));
     report_update(assessment, outcome);
 
@@ -909,7 +928,8 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
     case ExistingKind::complete:
     case ExistingKind::diverged:
     case ExistingKind::foreign:
-        announce(*ctx.observer, result.outcome.path, assessment);
+        announce(*ctx.observer, result.outcome.path, assessment,
+                 diverged_remedy(ctx, result.outcome.path, assessment));
         report_left_alone(assessment, result);
         return result;
     case ExistingKind::unchecked: // assess never classifies a file as unchecked
@@ -926,7 +946,8 @@ void report_update(const Assessment& assessment, EpubOutcome& outcome) {
                                          const PlannedEpub& epub, FileResult& result) {
     EpubOutcome& outcome = result.outcome;
     outcome.existing = assessment.kind;
-    announce(*ctx.observer, outcome.path, assessment);
+    announce(*ctx.observer, outcome.path, assessment,
+             diverged_remedy(ctx, outcome.path, assessment));
     switch (assessment.kind) {
     case ExistingKind::none:
         return false;

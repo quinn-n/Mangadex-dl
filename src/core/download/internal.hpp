@@ -70,9 +70,11 @@ struct RunContext {
     /// resolve_title_dir, on the calling thread. Never reached by a FetchPool worker.
     TitleDirResolver* title_dir = nullptr;
     /// &DownloadServices::claimed (run_download always sets it; the function may be empty):
-    /// asked by the execute phase under --overwrite only, once per file, on the calling thread,
-    /// before anything is decided for it. A path it owns is decided exactly as without
-    /// --overwrite (batch-spec rev4). Never reached by a FetchPool worker.
+    /// asked by the execute phase on the calling thread, at most once per file: under --overwrite
+    /// before anything is decided for it (overwrites_file), without it only for a file assessed
+    /// as diverged (diverged_remedy). A path it owns is decided exactly as without --overwrite
+    /// (batch-spec rev4), and its diverged warning gives no --overwrite advice (rev7). Never
+    /// reached by a FetchPool worker.
     const std::function<bool(std::string_view)>* claimed = nullptr;
     /// &DownloadServices::planned_in_run (run_download always sets it; the function may be
     /// empty): asked by plan_file only (dry run), on the calling thread, for a file decided as

@@ -61,6 +61,13 @@ chapters`. Notes have no `warning:`, are never colored, are hidden by `-q` and a
 warning says it). Another book, the same book diverged, and the publish races (nothing found at a
 claimed path) keep the collision warning byte for byte. Exit codes, stdout, `--json`, help and
 goldens are unchanged. Marked **rev6 (same-book note)** inline.
+rev7 (diverged remedy) 2026-11-08: for a file at a path an earlier row (or item) of the same run
+claimed, the engine's diverged warning drops its trailing ` (pass --overwrite to rebuild it
+without it|them)` and ends at `left it alone`: since rev4 `--overwrite` decides that file exactly
+as without it, so the advice was false there. The collision line that follows names the fix. Dry
+runs read the same. `download`, a row whose path no earlier row claimed, stdout, `--json`, exit
+codes, flags, help and goldens are unchanged. Only `batch` meets it (`mdlist` and `follows` skip
+the same title twice as a duplicate). Marked **rev7 (diverged remedy)** inline.
 
 **Intent:** run the existing `download` engine once for each title listed in a CSV file (or on
 stdin), in file order. The CSV can override a few per-title options on each row. The run ends with
@@ -226,7 +233,9 @@ can write to. Each title costs several API requests: a long list is a long run.
   (updated), or nothing (a foreign file left alone: its own `left alone` warning says it); dry
   runs say `would already be up to date` / `would be updated with this line's chapters`. Notes have
   no `warning:`, are never colored and are hidden by `-q`. Another book and the same book diverged
-  keep the collision warning.
+  keep the collision warning. **rev7 (diverged remedy):** the same book diverged at a claimed path
+  is warned about without the `--overwrite` advice: the row's own warning ends at `left it alone`
+  (with or without `--overwrite`, in dry runs too), then the collision warning follows.
   Empty on full success. Otherwise one closing `error:` line (even with `-q`/`--json`), line list
   capped at 10:
   - `<n> of <m> titles did not complete (lines 4, 9, 12); run the same command again to retry them`
@@ -382,6 +391,10 @@ row and README rows.
     by `-q`, never colored, also printed with `--json`; a foreign file left alone gets no cross-row
     line. Another book and a diverged file keep the collision warning byte for byte; stdout,
     `--json` and exit codes are unchanged.
+    **rev7 (diverged remedy):** the second row's diverged warning ends at `; left it alone`, with
+    no `(pass --overwrite to rebuild it without …)`, dry and real, identical with `--overwrite`
+    (stdout, stderr and file bytes), nothing with `-q`; `--json` stays `exists`/`diverged`. A row
+    over a diverged file no earlier row claimed keeps the advice and gets no collision line.
 13. `[cli]` Row-scoped stderr lines carry `<file>:<line>: `; aggregated "already exist" warning
     once at end; `-q` suppresses warnings but keeps the closing error line.
 14. `[e2e]` `batch --help` golden (synopsis, CSV footer, exit table incl. 7, no `--api-base`).
