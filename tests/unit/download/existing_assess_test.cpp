@@ -614,6 +614,10 @@ namespace {
     return md::ManifestChapter{.id = "h", .volume = "2", .chapter = std::move(chapter)};
 }
 
+/// The diverged warning's remedies: the --overwrite advice, and none at a claimed path (rev7).
+constexpr detail::DivergedRemedy overwrite = detail::DivergedRemedy::overwrite;
+constexpr detail::DivergedRemedy no_remedy = detail::DivergedRemedy::none;
+
 } // namespace
 
 TEST_CASE("download existing: the diverged warning counts and names chapters, singular and plural",
@@ -626,19 +630,26 @@ TEST_CASE("download existing: the diverged warning counts and names chapters, si
         held_record("1"), held_record("3"), held_record("5"), held_record("6"),
         held_record("7"), held_record("8"), held_record("9"), held_record("10")};
     // One unlisted chapter: "without it".
-    CHECK(detail::diverged_warning("out/v.epub", decision, held) ==
+    CHECK(detail::diverged_warning("out/v.epub", decision, held, overwrite) ==
           "out/v.epub: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 "
           "chapter MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild "
           "it without it)");
+    // At a claimed path (batch-spec rev7): the same text, ending at "left it alone".
+    CHECK(detail::diverged_warning("out/v.epub", decision, held, no_remedy) ==
+          "out/v.epub: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 "
+          "chapter MangaDex no longer lists (Ch. 3); left it alone");
     // More than one: "without them".
     decision.chapters = {final_entry("2", md::ChapterSource::download, 1),
                          final_entry("2.5", md::ChapterSource::download, 2)};
     decision.missing = {1, 2};
     decision.extra = {0, 1, 2};
-    CHECK(detail::diverged_warning("v", decision, held) ==
+    CHECK(detail::diverged_warning("v", decision, held, overwrite) ==
           "v: MangaDex lists 2 chapters this file lacks (Ch. 2, Ch. 2.5), but the file holds 3 "
           "chapters MangaDex no longer lists (Ch. 1, Ch. 3, Ch. 5); left it alone (pass "
           "--overwrite to rebuild it without them)");
+    CHECK(detail::diverged_warning("v", decision, held, no_remedy) ==
+          "v: MangaDex lists 2 chapters this file lacks (Ch. 2, Ch. 2.5), but the file holds 3 "
+          "chapters MangaDex no longer lists (Ch. 1, Ch. 3, Ch. 5); left it alone");
 }
 
 TEST_CASE("download existing: the diverged warning shows at most 5 labels per side",
@@ -654,11 +665,15 @@ TEST_CASE("download existing: the diverged warning shows at most 5 labels per si
         held.push_back(held_record(std::to_string(n)));
         decision.extra.push_back(held.size() - 1);
     }
-    CHECK(detail::diverged_warning("v", decision, held) ==
+    CHECK(detail::diverged_warning("v", decision, held, overwrite) ==
           "v: MangaDex lists 7 chapters this file lacks (Ch. 11, Ch. 12, Ch. 13, Ch. 14, Ch. 15 "
           "and 2 more), but the file holds 8 chapters MangaDex no longer lists (Ch. 1, Ch. 2, Ch. "
           "3, Ch. 4, Ch. 5 and 3 more); left it alone (pass --overwrite to rebuild it without "
           "them)");
+    CHECK(detail::diverged_warning("v", decision, held, no_remedy) ==
+          "v: MangaDex lists 7 chapters this file lacks (Ch. 11, Ch. 12, Ch. 13, Ch. 14, Ch. 15 "
+          "and 2 more), but the file holds 8 chapters MangaDex no longer lists (Ch. 1, Ch. 2, Ch. "
+          "3, Ch. 4, Ch. 5 and 3 more); left it alone");
 }
 
 TEST_CASE("download existing: the diverged warning only counts what it cannot name",
@@ -670,17 +685,26 @@ TEST_CASE("download existing: the diverged warning only counts what it cannot na
                                 .missing = {0, 5},
                                 .extra = {0}};
     const std::vector<md::ManifestChapter> held{held_record("3")};
-    CHECK(detail::diverged_warning("v", decision, held) ==
+    CHECK(detail::diverged_warning("v", decision, held, overwrite) ==
           "v: MangaDex lists 2 chapters this file lacks, but the file holds 1 chapter MangaDex no "
           "longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it without it)");
+    CHECK(detail::diverged_warning("v", decision, held, no_remedy) ==
+          "v: MangaDex lists 2 chapters this file lacks, but the file holds 1 chapter MangaDex no "
+          "longer lists (Ch. 3); left it alone");
     decision.missing = {0};
     decision.extra = {0, 1};
-    CHECK(detail::diverged_warning("v", decision, held) ==
+    CHECK(detail::diverged_warning("v", decision, held, overwrite) ==
           "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
           "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)");
-    CHECK(detail::diverged_warning("v", decision, {}) ==
+    CHECK(detail::diverged_warning("v", decision, {}, overwrite) ==
           "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
           "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it without them)");
+    CHECK(detail::diverged_warning("v", decision, held, no_remedy) ==
+          "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
+          "MangaDex no longer lists; left it alone");
+    CHECK(detail::diverged_warning("v", decision, {}, no_remedy) ==
+          "v: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 chapters "
+          "MangaDex no longer lists; left it alone");
 }
 
 TEST_CASE("download existing: kept, re-pick and updating lines", "[download][existing][messages]") {
@@ -730,14 +754,14 @@ TEST_CASE("download existing: announce reports what each assessment found",
     Recorder observer;
     detail::Assessment assessment{};
     SECTION("none says nothing") {
-        detail::announce(observer, "p", assessment);
+        detail::announce(observer, "p", assessment, overwrite);
         CHECK(observer.warnings.empty());
         CHECK(observer.verbose.empty());
     }
     SECTION("foreign warns") {
         assessment.kind = md::ExistingKind::foreign;
         assessment.foreign = md::InspectFailure{.reason = md::ForeignReason::not_ours};
-        detail::announce(observer, "p", assessment);
+        detail::announce(observer, "p", assessment, overwrite);
         CHECK(observer.warnings ==
               std::vector<std::string>{
                   "p: left alone: not an EPUB made by mangadex-dl; use another DIR or --title"});
@@ -751,7 +775,7 @@ TEST_CASE("download existing: announce reports what each assessment found",
                                .extra = {1, 2}};
         assessment.held = md::HeldBook{};
         assessment.held->manifest.chapters = {held_record("1"), held_record("2"), held_record("3")};
-        detail::announce(observer, "p", assessment);
+        detail::announce(observer, "p", assessment, overwrite);
         CHECK(observer.warnings ==
               std::vector<std::string>{
                   "p: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 "
@@ -762,13 +786,47 @@ TEST_CASE("download existing: announce reports what each assessment found",
     SECTION("diverged without the held book still warns, with counts only for that side") {
         assessment.kind = md::ExistingKind::diverged;
         assessment.decision = md::UpdateDecision{.missing = {0}, .extra = {1, 2}};
-        detail::announce(observer, "p", assessment);
+        detail::announce(observer, "p", assessment, overwrite);
         CHECK(observer.warnings ==
               std::vector<std::string>{
                   "p: MangaDex lists 1 chapter this file lacks, but the file holds 2 chapters "
                   "MangaDex no longer lists; left it alone (pass --overwrite to rebuild it "
                   "without them)"});
         CHECK(observer.verbose.empty());
+    }
+    SECTION("diverged at a claimed path warns without the --overwrite advice") {
+        assessment.kind = md::ExistingKind::diverged;
+        assessment.decision =
+            md::UpdateDecision{.chapters = {final_entry("4", md::ChapterSource::download, 0)},
+                               .missing = {0},
+                               .extra = {1, 2}};
+        assessment.held = md::HeldBook{};
+        assessment.held->manifest.chapters = {held_record("1"), held_record("2"), held_record("3")};
+        detail::announce(observer, "p", assessment, no_remedy);
+        CHECK(observer.warnings ==
+              std::vector<std::string>{
+                  "p: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 2 "
+                  "chapters MangaDex no longer lists (Ch. 2, Ch. 3); left it alone"});
+        CHECK(observer.verbose.empty());
+    }
+    SECTION("only the diverged warning reads the remedy") {
+        assessment.kind = GENERATE(md::ExistingKind::none, md::ExistingKind::foreign,
+                                   md::ExistingKind::complete, md::ExistingKind::incomplete);
+        if (assessment.kind == md::ExistingKind::foreign) {
+            assessment.foreign = md::InspectFailure{.reason = md::ForeignReason::not_ours};
+        } else if (assessment.kind != md::ExistingKind::none) {
+            assessment.decision = md::UpdateDecision{
+                .kept = {md::KeptRelease{.held_id = "h", .planned_id = "p", .key_label = "Ch. 1"}},
+            };
+        }
+        Recorder advised;
+        detail::announce(advised, "p", assessment, overwrite);
+        detail::announce(observer, "p", assessment, no_remedy);
+        CHECK(observer.warnings == advised.warnings);
+        CHECK(observer.verbose == advised.verbose);
+        // Something was said for every kind but none, so the comparison is not vacuous.
+        CHECK((assessment.kind == md::ExistingKind::none) ==
+              (advised.warnings.empty() && advised.verbose.empty()));
     }
     SECTION("complete and incomplete list kept and re-picked releases at -v") {
         assessment.kind = GENERATE(md::ExistingKind::complete, md::ExistingKind::incomplete);
@@ -780,7 +838,7 @@ TEST_CASE("download existing: announce reports what each assessment found",
                                     .planned_group = "B",
                                     .key_label = "Ch. 2"}},
         };
-        detail::announce(observer, "f", assessment);
+        detail::announce(observer, "f", assessment, overwrite);
         CHECK(observer.warnings.empty());
         CHECK(observer.verbose ==
               std::vector<std::pair<int, std::string>>{

@@ -212,6 +212,7 @@ The check-to-rename window is microseconds, which is accepted for a user-owned D
   - Diverged: `warning: <path>: MangaDex lists N chapters this file lacks (Ch. 4, …), but the file holds M chapters MangaDex no longer lists (Ch. 3, …); left it alone (pass --overwrite to rebuild it without them)`.
     - Each list shows ≤ 5 labels, then `and K more`; a side whose chapters cannot all be named is counted only.
     - Singular: `1 chapter`, and `without it` when M == 1, e.g. `warning: <path>: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 chapter MangaDex no longer lists (Ch. 3); left it alone (pass --overwrite to rebuild it without it)`.
+    - In `batch`, at a path an earlier row of the same run claimed, the warning ends at `left it alone`, without the parenthesis: `--overwrite` would not rebuild the file there ([`batch-spec.md`](batch-spec.md) rev7).
   - Damaged held chapter: `warning: <path>: Ch. 3 in the existing file is damaged; downloading it again`.
   - Failed update: `error: <path>: <error> (the existing file was kept)`.
   - A file that appeared at the target name between inspection and a fresh publish (`status: exists`, `existing: null`): `warning: <path>: left alone: another file took this name while ours was being written, so ours was discarded; run the same command again to check it`. Added in T11 after review; reworded to the `left alone: <reason>; <remedy>` shape in the message polish.

@@ -304,6 +304,23 @@ public:
         return std::move(*report);
     }
 
+    /// run(), with DownloadServices::claimed set (a batch/mdlist/follows run's earlier titles);
+    /// must succeed. Member by member, as run_title builds its services.
+    [[nodiscard]] md::RunReport run_claimed(std::string_view name,
+                                            const md::DownloadOptions& options,
+                                            RecordingObserver& observer,
+                                            std::function<bool(std::string_view)> claimed) {
+        md::DownloadServices services{};
+        services.transport = tree(name).transport.get();
+        services.clock = clock_.get();
+        services.user_agent = "mangadex-dl/test";
+        services.claimed = std::move(claimed);
+        md::Result<md::RunReport> report = md::run_download(options, services, observer);
+        INFO((report ? std::string{} : report.error().message));
+        REQUIRE(report.has_value());
+        return std::move(*report);
+    }
+
     /// run() that must succeed.
     [[nodiscard]] md::RunReport run_ok(std::string_view name, const md::DownloadOptions& options,
                                        RecordingObserver& observer) {
@@ -1155,6 +1172,82 @@ TEST_CASE("download update: a diverged file is left alone and lists what it hold
     CHECK(observer.begins().empty());
     CHECK(t.transport("diverged").count_containing("/at-home/") == 0);
     CHECK(read_file(t.out() / clean_vol2) == vol2);
+}
+
+TEST_CASE("download update: a diverged file at a path an earlier title claimed gets no "
+          "--overwrite advice",
+          "[download][update][claimed]") {
+    // batch-spec rev7: --overwrite would decide a claimed path exactly as without it (rev4), so
+    // the warning ends at "left it alone". The question is asked at most once per file: without
+    // --overwrite only for the diverged file, under it once for every file (overwrites_file).
+    Trees t;
+    t.add("clean", mdx::clean_fixture());
+    t.add("diverged", mdx::clean_diverged_fixture());
+    static_cast<void>(t.run_ok("clean", t.options("clean")));
+    const std::string vol1 = (t.out() / clean_vol1).string();
+    const std::string vol2 = (t.out() / clean_vol2).string();
+    const std::string vol1_bytes = read_file(vol1);
+    const std::string vol2_bytes = read_file(vol2);
+    const std::string held_text =
+        std::format("{}: MangaDex lists 1 chapter this file lacks (Ch. 4), but the file holds 1 "
+                    "chapter MangaDex no longer lists (Ch. 3); left it alone",
+                    vol2);
+    const std::string advice = " (pass --overwrite to rebuild it without it)";
+    // Records every question; the vector outlives every run.
+    std::vector<std::string> asked{};
+    const auto claims = [log = &asked](std::optional<std::string> owner) {
+        return std::function<bool(std::string_view)>{
+            [log, owned = std::move(owner)](std::string_view path) {
+                log->emplace_back(path);
+                return owned.has_value() && path == *owned;
+            }};
+    };
+    md::DownloadOptions options = t.options("diverged");
+    options.dry_run = GENERATE(false, true);
+    INFO("dry run: " << options.dry_run);
+
+    SECTION("claimed, without --overwrite: no advice, asked once, for the diverged file only") {
+        RecordingObserver observer;
+        const md::RunReport report = t.run_claimed("diverged", options, observer, claims(vol2));
+        CHECK(statuses(report) == std::vector{md::EpubStatus::exists, md::EpubStatus::exists});
+        CHECK(existing(report) ==
+              std::vector{md::ExistingKind::complete, md::ExistingKind::diverged});
+        CHECK(observer.warnings() == std::vector{held_text});
+        CHECK(asked == std::vector{vol2});
+    }
+    SECTION("unclaimed, without --overwrite: today's advice, asked once, for the diverged file") {
+        RecordingObserver observer;
+        const md::RunReport report =
+            t.run_claimed("diverged", options, observer, claims(std::nullopt));
+        CHECK(existing(report) ==
+              std::vector{md::ExistingKind::complete, md::ExistingKind::diverged});
+        CHECK(observer.warnings() == std::vector{held_text + advice});
+        CHECK(asked == std::vector{vol2});
+    }
+    SECTION("an empty function claims nothing: today's advice") {
+        RecordingObserver observer;
+        const md::RunReport report = t.run_claimed("diverged", options, observer, {});
+        CHECK(existing(report) ==
+              std::vector{md::ExistingKind::complete, md::ExistingKind::diverged});
+        CHECK(observer.warnings() == std::vector{held_text + advice});
+    }
+    SECTION("claimed, under --overwrite: no advice, asked once per file") {
+        options.overwrite = true;
+        RecordingObserver observer;
+        const md::RunReport report = t.run_claimed("diverged", options, observer, claims(vol2));
+        // Vol. 01 is unclaimed, so --overwrite replaces it; Vol. 02 is decided as without it.
+        CHECK(existing(report) ==
+              std::vector{md::ExistingKind::unchecked, md::ExistingKind::diverged});
+        CHECK(report.epubs[0].replaced);
+        CHECK(report.epubs[1].status == md::EpubStatus::exists);
+        CHECK_FALSE(report.epubs[1].replaced);
+        CHECK(observer.warnings() == std::vector{held_text});
+        CHECK(asked == std::vector{vol1, vol2});
+    }
+    CHECK(read_file(vol2) == vol2_bytes);
+    if (options.dry_run) {
+        CHECK(read_file(vol1) == vol1_bytes);
+    }
 }
 
 TEST_CASE("download update: a complete file with extra held chapters reports all its pages",

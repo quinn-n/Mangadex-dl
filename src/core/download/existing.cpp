@@ -293,7 +293,7 @@ std::string foreign_warning(std::string_view path, const InspectFailure& failure
 }
 
 std::string diverged_warning(std::string_view path, const UpdateDecision& decision,
-                             std::span<const ManifestChapter> held) {
+                             std::span<const ManifestChapter> held, DivergedRemedy remedy) {
     // The chapters MangaDex lists that the file lacks: the final list's entries for `missing`.
     std::vector<Chapter> lacking{};
     lacking.reserve(decision.missing.size());
@@ -312,12 +312,21 @@ std::string diverged_warning(std::string_view path, const UpdateDecision& decisi
         }
     }
     const std::size_t extra = decision.extra.size();
-    return std::format("{}: MangaDex lists {} this file lacks{}, but the file holds {} MangaDex "
-                       "no longer lists{}; left it alone (pass --overwrite to rebuild it without "
-                       "{})",
-                       path, chapters_count(decision.missing.size()),
-                       labels_suffix(lacking, decision.missing.size()), chapters_count(extra),
-                       labels_suffix(unlisted, extra), extra == 1 ? "it" : "them");
+    std::string warning = std::format(
+        "{}: MangaDex lists {} this file lacks{}, but the file holds {} MangaDex no longer "
+        "lists{}; left it alone",
+        path, chapters_count(decision.missing.size()),
+        labels_suffix(lacking, decision.missing.size()), chapters_count(extra),
+        labels_suffix(unlisted, extra));
+    switch (remedy) {
+    case DivergedRemedy::overwrite:
+        warning +=
+            std::format(" (pass --overwrite to rebuild it without {})", extra == 1 ? "it" : "them");
+        return warning;
+    case DivergedRemedy::none:
+        return warning;
+    }
+    return warning; // only reachable through an out-of-range enum value: no advice
 }
 
 std::string damaged_warning(std::string_view path, const Chapter& chapter) {
@@ -354,7 +363,8 @@ std::string updating_line(std::string_view path, const UpdateDecision& decision)
                        chapters_count(fresh.size()), labels_suffix(fresh, fresh.size()), reused);
 }
 
-void announce(DownloadObserver& observer, std::string_view path, const Assessment& assessment) {
+void announce(DownloadObserver& observer, std::string_view path, const Assessment& assessment,
+              DivergedRemedy remedy) {
     switch (assessment.kind) {
     case ExistingKind::none:
     case ExistingKind::unchecked:
@@ -371,7 +381,7 @@ void announce(DownloadObserver& observer, std::string_view path, const Assessmen
                 assessment.held
                     ? std::span<const ManifestChapter>{assessment.held->manifest.chapters}
                     : std::span<const ManifestChapter>{};
-            observer.on_warning(diverged_warning(path, *assessment.decision, held));
+            observer.on_warning(diverged_warning(path, *assessment.decision, held, remedy));
         }
         return;
     case ExistingKind::complete:

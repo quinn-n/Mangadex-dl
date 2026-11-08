@@ -784,7 +784,8 @@ TEST_CASE("download --overwrite decides a path DownloadServices::claimed owns as
         CHECK(read_file(vol1) == "not an EPUB");
         CHECK(asked.size() == 4);
     }
-    SECTION("without --overwrite the question is never asked") {
+    SECTION("without --overwrite the question is asked only for a diverged file") {
+        // batch-spec rev7 (diverged_remedy): nothing is there, so nothing is diverged.
         RecordingObserver observer;
         const auto result = h.run_claimed(h.options(), observer, claims_vol1);
         REQUIRE(result.has_value());

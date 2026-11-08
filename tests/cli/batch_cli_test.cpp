@@ -1093,11 +1093,15 @@ TEST_CASE("batch: --dry-run over an earlier row's single file of other volumes w
         tree.csv("diverged.csv",
                  std::format("manga,volumes,layout\n{0},1,single\n{0},2,single\n", clean_id));
     const fs::path file = out / clean_single;
-    const std::string diverged =
-        std::format("mangadex-dl: warning: {}:3: {}: MangaDex lists 1 chapter this file lacks "
-                    "(Ch. 3), but the file holds 2 chapters MangaDex no longer lists (Ch. 1, Ch. "
-                    "2); left it alone (pass --overwrite to rebuild it without them)\n",
-                    list.string(), file.string());
+    // batch-spec rev7: line 2 claimed the path, so --overwrite would not rebuild the file there
+    // and the warning ends at "left it alone"; the collision line that follows names the fix.
+    const auto diverged_at = [&list](const fs::path& path) {
+        return std::format("mangadex-dl: warning: {}:3: {}: MangaDex lists 1 chapter this file "
+                           "lacks (Ch. 3), but the file holds 2 chapters MangaDex no longer lists "
+                           "(Ch. 1, Ch. 2); left it alone\n",
+                           list.string(), path.string());
+    };
+    const std::string diverged = diverged_at(file);
 
     SECTION("one stdout line; the diverged warning, then the collision line") {
         const DryThenReal r = dry_then_real(tree.args(list, out));
@@ -1107,6 +1111,44 @@ TEST_CASE("batch: --dry-run over an earlier row's single file of other volumes w
         CHECK(r.real.out == r.dry.out);
         CHECK(r.dry.err == diverged + csv_collision(list, 3, file, 2, true));
         CHECK(r.real.err == diverged + csv_collision(list, 3, file, 2, false));
+    }
+    SECTION("--overwrite: the same stdout, stderr and file bytes as without it, dry and real") {
+        // batch-spec rev4: --overwrite never applies to a path an earlier row claimed, so its
+        // advice would be false there (rev7). The run without --overwrite, into its own DIR, is
+        // the reference.
+        const fs::path plain_out = tree.path("plain");
+        const fs::path plain_file = plain_out / clean_single;
+        md::RawBatchArgs overwrite = tree.args(list, out);
+        overwrite.defaults.overwrite = true;
+        const DryThenReal without = dry_then_real(tree.args(list, plain_out));
+        const DryThenReal with = dry_then_real(overwrite);
+        for (const DryThenReal* r : {&without, &with}) {
+            CHECK(r->dry.exit_code == 0);
+            CHECK(r->real.exit_code == 0);
+        }
+        CHECK(without.dry.out == path_lines(plain_out, {clean_single}));
+        CHECK(without.real.out == without.dry.out);
+        CHECK(with.dry.out == path_lines(out, {clean_single}));
+        CHECK(with.real.out == with.dry.out);
+        CHECK(without.dry.err ==
+              diverged_at(plain_file) + csv_collision(list, 3, plain_file, 2, true));
+        CHECK(without.real.err ==
+              diverged_at(plain_file) + csv_collision(list, 3, plain_file, 2, false));
+        CHECK(with.dry.err == diverged + csv_collision(list, 3, file, 2, true));
+        CHECK(with.real.err == diverged + csv_collision(list, 3, file, 2, false));
+        // A bool, so a failure does not print two EPUBs.
+        const bool same_bytes = fs_util::read_file(file) == fs_util::read_file(plain_file);
+        CHECK(same_bytes);
+        CHECK(fs_util::list_dir(out) == std::vector<std::string>{std::string{clean_single}});
+    }
+    SECTION("-q: nothing on stderr in either run") {
+        const DryThenReal r =
+            dry_then_real(tree.args(list, out), Context{.globals = {.quiet = true}});
+        CHECK(r.dry.exit_code == 0);
+        CHECK(r.real.exit_code == 0);
+        CHECK(r.dry.err.empty());
+        CHECK(r.real.err.empty());
+        CHECK(r.real.out == r.dry.out);
     }
     SECTION("--color=always: both lines stay warnings with a colored `warning:`") {
         const DryThenReal r = dry_then_real(
@@ -1138,6 +1180,41 @@ TEST_CASE("batch: --dry-run over an earlier row's single file of other volumes w
         CHECK(left.at("existing") == "diverged");
         check_same_epub(left, real_doc.at("titles").at(1).at("report").at("epubs").at(0));
     }
+}
+
+TEST_CASE("batch: a row over a diverged file no earlier row claimed keeps the --overwrite advice",
+          "[cli][batch][collision]") {
+    // batch-spec rev7 drops the advice only at a claimed path. Here an earlier batch wrote Vol. 1's
+    // single file, and a one-row batch of Vol. 2 runs over it: --overwrite would rebuild the file,
+    // so the warning still says so, and no collision line follows.
+    const Tree tree{mdx::clean_fixture()};
+    const fs::path out = tree.path("out");
+    const fs::path first =
+        tree.csv("first.csv", std::format("manga,volumes,layout\n{0},1,single\n", clean_id));
+    const fs::path list =
+        tree.csv("second.csv", std::format("manga,volumes,layout\n{0},2,single\n", clean_id));
+    const fs::path file = out / clean_single;
+    const Captured setup = run_command(tree.args(first, out));
+    REQUIRE(setup.exit_code == 0);
+    REQUIRE(setup.err.empty());
+    const std::string before = fs_util::read_file(file);
+    const std::string diverged =
+        std::format("mangadex-dl: warning: {}:2: {}: MangaDex lists 1 chapter this file lacks "
+                    "(Ch. 3), but the file holds 2 chapters MangaDex no longer lists (Ch. 1, Ch. "
+                    "2); left it alone (pass --overwrite to rebuild it without them)\n",
+                    list.string(), file.string());
+
+    const DryThenReal r = dry_then_real(tree.args(list, out));
+    CHECK(r.dry.exit_code == 0);
+    CHECK(r.real.exit_code == 0);
+    // stdout lists only the files a run writes (or would write): nothing for a file left alone.
+    CHECK(r.dry.out.empty());
+    CHECK(r.real.out.empty());
+    CHECK(r.dry.err == diverged);
+    CHECK(r.real.err == diverged);
+    // A bool, so a failure does not print two EPUBs.
+    const bool unchanged = fs_util::read_file(file) == before;
+    CHECK(unchanged);
 }
 
 TEST_CASE("batch: a later row of the same book that leaves a foreign file alone gets no "

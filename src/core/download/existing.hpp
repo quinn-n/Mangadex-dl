@@ -133,14 +133,25 @@ struct Assessment {
 /// `<path>: left alone: <reason>[ (<strerror>)]; <remedy>`. The errno text only for unreadable.
 [[nodiscard]] std::string foreign_warning(std::string_view path, const InspectFailure& failure);
 
+/// What the diverged warning tells the user to do about the file (batch-spec rev7).
+enum class DivergedRemedy : std::uint8_t {
+    /// `(pass --overwrite to rebuild it without them)`: --overwrite would rebuild the file.
+    overwrite,
+    /// Nothing after "left it alone": an earlier title of the same run claimed the path, so
+    /// --overwrite would decide the file exactly as without it (batch-spec rev4).
+    none,
+};
+
 /// `<path>: MangaDex lists N chapters this file lacks (Ch. 4, ...), but the file holds M chapters
 /// MangaDex no longer lists (Ch. 3, ...); left it alone (pass --overwrite to rebuild it without
 /// them)`, with "1 chapter" and "without it" when the count is one. Each list shows at most 5
 /// labels, then "and K more". The lacking chapters are the final-list entries for
 /// `decision.missing`; the unlisted ones are `held[i]` for each i in `decision.extra`. A list is
-/// left out (counts only) unless every chapter it counts resolves to a label.
+/// left out (counts only) unless every chapter it counts resolves to a label. With
+/// DivergedRemedy::none the text ends at "left it alone" (no parenthesis).
 [[nodiscard]] std::string diverged_warning(std::string_view path, const UpdateDecision& decision,
-                                           std::span<const ManifestChapter> held);
+                                           std::span<const ManifestChapter> held,
+                                           DivergedRemedy remedy);
 
 /// `<path>: Ch. 3 in the existing file is damaged; downloading it again`.
 [[nodiscard]] std::string damaged_warning(std::string_view path, const Chapter& chapter);
@@ -157,7 +168,9 @@ struct Assessment {
 [[nodiscard]] std::string updating_line(std::string_view path, const UpdateDecision& decision);
 
 /// Tells `observer` what `assessment` found: the foreign or diverged warning, or for a complete
-/// or incomplete file one -v line per kept and per re-picked release. Nothing for none.
-void announce(DownloadObserver& observer, std::string_view path, const Assessment& assessment);
+/// or incomplete file one -v line per kept and per re-picked release. Nothing for none. Only the
+/// diverged warning reads `remedy` (diverged_warning).
+void announce(DownloadObserver& observer, std::string_view path, const Assessment& assessment,
+              DivergedRemedy remedy);
 
 } // namespace mangadex_dl::detail
