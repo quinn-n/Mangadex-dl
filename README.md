@@ -174,10 +174,10 @@ directory, so that file fails before anything is downloaded for it
 `failed` / `"foreign"`), the directory is left as it was, the other files are still written,
 and the run ends with exit 6. `--dry-run` reports it the same way (`... would fail`).
 
-In one `batch` or `mdlist` run, `--overwrite` never applies to a file an earlier row (or `mdlist`
-item) of the same run wrote or kept (or, with `--dry-run`, planned): that file is looked at
-exactly as above, as if
-`--overwrite` were not given (see [What a batch prints](#what-a-batch-prints-and-when-it-stops)).
+In one `batch`, `mdlist` or `follows` run, `--overwrite` never applies to a file an earlier row
+(or item) of the same run wrote or kept (or, with `--dry-run`, planned): that file is looked at
+exactly as above, as if `--overwrite` were not given (see
+[What a batch prints](#what-a-batch-prints-and-when-it-stops)).
 Files left by earlier runs are still replaced.
 
 The run still exits 0 when files are skipped or left alone. Files that are up to date are
@@ -189,10 +189,10 @@ mangadex-dl: 3 files are already up to date; pass --overwrite to download them a
 
 With exactly one file the note reads
 `mangadex-dl: 1 file is already up to date; pass --overwrite to download it again`.
-In `batch` and `mdlist`, a file an earlier row (or item) of the same run wrote or kept (or, with
-`--dry-run`, planned) is never counted, even when a later row finds it up to date: passing `--overwrite` would not download it
-again. So the note counts only files from earlier runs, each file once, and as a consequence it
-never appears with `--overwrite`.
+In `batch`, `mdlist` and `follows`, a file an earlier row (or item) of the same run wrote or kept
+(or, with `--dry-run`, planned) is never counted, even when a later row finds it up to date:
+passing `--overwrite` would not download it again. So the note counts only files from earlier
+runs, each file once, and as a consequence it never appears with `--overwrite`.
 
 Like every stderr line, the `-v` lines quoted below start with `mangadex-dl: `.
 

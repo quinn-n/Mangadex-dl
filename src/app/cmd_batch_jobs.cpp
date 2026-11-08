@@ -65,10 +65,13 @@ namespace {
     return "line"; // only reachable through an out-of-range enum value
 }
 
-/// Does `source` hand each row the run's OutputRegistry (RowContext::claimed), so a row with
-/// --overwrite never replaces a file an earlier row of the same run wrote? mdlist and follows
-/// do; csv keeps its current behaviour (pinned by a batch test). A switch rather than a
-/// comparison, so -Wswitch makes every new source decide (follows plan V27).
+/// Does `source` print one line per cross-row collision (RowContext::collision_line_for: the
+/// observer drops the engine's "holds a different book" warning for a path an earlier row
+/// claimed, and the runner's collision line says it instead)? mdlist and follows do; csv keeps
+/// both lines. Every source hands the engine the run's claimed paths (RowContext::registry), so
+/// --overwrite never replaces a file an earlier row of the same run wrote (batch-spec rev4). A
+/// switch rather than a comparison, so -Wswitch makes every new source decide (follows plan
+/// V27).
 [[nodiscard]] constexpr bool claims_paths(BatchSource source) noexcept {
     switch (source) {
     case BatchSource::csv:
