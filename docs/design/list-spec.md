@@ -12,13 +12,21 @@ rev2 (feature-board fixes, chosen by the user) 2026-10-27. These are message cha
 - In the `-v` list line, `\` and `"` in the name are escaped after the 64-byte cut.
 - The list-level not-found message shows the status received: `(HTTP 404)`, or `(HTTP 401)`/`(HTTP 403)` for an error body that names the CustomList.
 
-rev3 (bug fix, chosen by the user) 2026-10-27, `mdlist`-only, with `batch` and `download` byte-identical (`batch` gets the same fix later, separately):
+rev3 (bug fix, chosen by the user) 2026-10-27, `mdlist`-only, with `batch` and `download` byte-identical (`batch` gets the same fix later, separately; done in [`batch-spec.md`](batch-spec.md) rev4, below):
 - Flat mode with `--overwrite`: a path an earlier item of the same run claimed (written, planned or left alone as `exists`) is never replaced. The later item leaves it alone exactly as without `--overwrite` (status `exists`, existing `foreign`, only the collision line), in a dry run too, so stdout lists each path once. `--overwrite` still replaces files from earlier runs and every path not claimed in this run. The engine asks the run's `OutputRegistry` through `DownloadServices::claimed` before `--overwrite` replaces a file.
 
 rev4 (dry-run parity, with `batch`) 2026-10-28:
 - Flat mode `--dry-run` without `--overwrite`: a file an earlier item of the same run reported as planned counts as written, so a later item whose file has that path (another title with the same name) is reported exactly as the real run will report it: status `exists`, existing `foreign`, only the collision line. stdout lists each path once, `--json` carries those statuses (no new keys), `summary.files` moves with them, and exit codes equal the real run's.
 - In every dry run (`--overwrite` too) the collision line reads "would already be written by item 2" instead of "was already written by item 2". Real runs are byte-identical. `--overwrite --dry-run` is otherwise unchanged (rev3).
 - A `--dry-run` without `--overwrite` (flat or `--dir-per-title`) keeps each planned file's chapter list in memory for the run, roughly 60 KB per typical title (about what `--json` already keeps).
+
+batch-spec rev4 (`--overwrite` within one run, shared with `batch`) 2026-11-05: rev3's fix now comes from the rule `batch` uses, with `mdlist`'s output byte-identical:
+- Under `--overwrite`, a path an earlier item of the same run claimed is decided exactly as without `--overwrite`: assessed on disk in a real run and, in a dry run, against the earlier item's planned file (else DIR), instead of being left alone without a look. In flat mode that file always holds another title's book, so the assessment reports exactly what rev3 reported (status `exists`, existing `foreign`, the engine's "holds a different book" line, which the observer drops for a claimed path, then the collision line). `DownloadServices::claimed` is now set for `batch` too.
+- A `--dry-run --overwrite` now also keeps each planned file's chapter list in memory for the run, as without `--overwrite`.
+- With `--overwrite`, the end-of-run "already up to date" note is never printed (`batch` and `mdlist` alike). In flat `mdlist` runs no file can be up to date under `--overwrite`, so its output does not change.
+
+batch-spec rev5 (up-to-date note, shared with `batch`) 2026-11-05:
+- The end-of-run "N files are already up to date" note counts a file left alone as up to date only when no earlier item of the same run claimed its path (wrote, planned or left it alone), so it counts only files from earlier runs, each path once. The rev4 bullet above now follows from this rule. In flat mode the only change: when an earlier item left another title's file alone at a path and a later item (the title with the same name) finds its own file there up to date, that file is no longer counted (only the collision line is printed for it).
 
 Related: [`batch-spec.md`](batch-spec.md) (its engine is reused unchanged), [`download-spec.md`](download-spec.md),
 [`skip-existing-spec.md`](skip-existing-spec.md) (re-runs).

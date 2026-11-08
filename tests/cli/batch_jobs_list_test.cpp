@@ -710,11 +710,12 @@ TEST_CASE("mdlist runner: source csv, a real clash keeps both of batch's lines p
                       vol1, vol2));
 }
 
-TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchanged: the later "
-          "row replaces the file",
+TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles: the later row leaves the "
+          "earlier row's files alone, as without --overwrite",
           "[cli][mdlist][batch-jobs][csv][collision][overwrite]") {
-    // Pins what `batch` printed and wrote before mdlist's --overwrite rule (mdlist only): the
-    // run's claimed paths never reach the engine for a csv source.
+    // batch-spec rev4: --overwrite never applies to a file an earlier row of the same run claimed;
+    // line 2 decides line 1's files exactly as a run without --overwrite does (another book: the
+    // engine's "holds a different book" line, then the collision line).
     const Tree tree{CleanTwin{}};
     const fs::path csv = tree.path("titles.csv");
     write_file(csv, std::format("{}\n{}\n", clean_id, twin_id));
@@ -741,16 +742,21 @@ TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchang
     raw.defaults.dir = out.string();
     raw.defaults.api_base = tree.api_base();
     raw.defaults.overwrite = true;
-    const auto collisions_worded = [&csv, &out](std::string_view written) {
-        return std::format("mangadex-dl: warning: {0}:2: {1} {3} by line 1; give one of them a "
+    // Byte for byte what `batch` prints without --overwrite (the "a real clash keeps both of
+    // batch's lines per file" case): the engine's line for each file during line 2, then the
+    // collision line for each file after it.
+    const auto expected_err = [&csv, &out](std::string_view written) {
+        return std::format("mangadex-dl: warning: {0}:2: {1}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:2: {2}: left alone: holds a different "
+                           "book; use another DIR or --title\n"
+                           "mangadex-dl: warning: {0}:2: {1} {3} by line 1; give one of them a "
                            "'title' column\n"
                            "mangadex-dl: warning: {0}:2: {2} {3} by line 1; give one of them a "
                            "'title' column\n",
                            csv.string(), (out / clean_vol1).string(), (out / clean_vol2).string(),
                            written);
     };
-    const std::string collisions = collisions_worded("was already written");
-    const std::string dry_collisions = collisions_worded("would already be written");
     const auto run = [&raw](const app::GlobalOptions& globals) {
         std::ostringstream cmd_out;
         std::ostringstream cmd_err;
@@ -761,35 +767,92 @@ TEST_CASE("mdlist runner: `batch --overwrite` on two same-name titles is unchang
         result.err = cmd_err.str();
         return result;
     };
+    // A bool, so a failure does not print four EPUBs.
+    const auto clean_on_disk = [&out, &clean_files] {
+        return std::pair{read_file(out / clean_vol1), read_file(out / clean_vol2)} == clean_files;
+    };
 
-    SECTION("a real run: every path twice on stdout, the twin's bytes on disk") {
+    SECTION("a real run: every path once on stdout, line 1's bytes on disk") {
         const Captured r = run({});
         CHECK(r.exit_code == 0);
-        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2, clean_vol1, clean_vol2}));
-        CHECK(r.err == collisions);
-        // A bool, so a failure does not print four EPUBs.
-        const bool twin_on_disk =
-            std::pair{read_file(out / clean_vol1), read_file(out / clean_vol2)} == twin_files;
-        CHECK(twin_on_disk);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == expected_err("was already written"));
+        CHECK(clean_on_disk());
+        CHECK(listing(out) ==
+              std::vector<std::string>{std::string{clean_vol1}, std::string{clean_vol2}});
 
+        // A follow-on --json run on the same DIR: line 1 replaces its own files from the run
+        // before (nothing claims them yet), line 2 finds them and leaves them alone.
         const Captured json = run({.json = true});
         CHECK(json.exit_code == 0);
-        CHECK(json.err == collisions);
+        CHECK(json.err == expected_err("was already written"));
         const Json doc = parse_document(json.out);
         REQUIRE(!doc.is_discarded());
-        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+        CHECK(statuses(doc) == std::vector<std::string>{"ok", "ok"});
+        const Json& first = doc.at("titles").at(0).at("report").at("epubs");
+        const Json& second = doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(first.size() == 2);
+        REQUIRE(second.size() == 2);
+        for (const Json& epub : first) {
             CHECK(epub.at("status") == "written");
             CHECK(epub.at("replaced") == true);
             CHECK(epub.at("existing") == "unchecked");
         }
+        for (const Json& epub : second) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "foreign");
+            CHECK(epub.at("replaced") == false);
+        }
+        CHECK(clean_on_disk());
     }
-    SECTION("--dry-run: both rows plan every path") {
+    SECTION("--dry-run: line 2 would leave line 1's planned files alone; nothing is created") {
         raw.defaults.dry_run = true;
         const Captured r = run({});
         CHECK(r.exit_code == 0);
-        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2, clean_vol1, clean_vol2}));
-        CHECK(r.err == dry_collisions);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err == expected_err("would already be written"));
         CHECK(!fs::exists(out));
+
+        const Captured json = run({.json = true});
+        CHECK(json.exit_code == 0);
+        CHECK(json.err == expected_err("would already be written"));
+        const Json doc = parse_document(json.out);
+        REQUIRE(!doc.is_discarded());
+        const Json& second = doc.at("titles").at(1).at("report").at("epubs");
+        REQUIRE(second.size() == 2);
+        for (const Json& epub : second) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "foreign");
+            CHECK(epub.at("replaced") == false);
+        }
+        CHECK(!fs::exists(out));
+    }
+    SECTION("-q: nothing on stderr") {
+        const Captured r = run({.quiet = true});
+        CHECK(r.exit_code == 0);
+        CHECK(r.out == path_lines(out, {clean_vol1, clean_vol2}));
+        CHECK(r.err.empty());
+        CHECK(clean_on_disk());
+    }
+    SECTION("over an earlier run's stale files: line 1 replaces them, line 2 leaves them alone") {
+        REQUIRE(fs::create_directories(out));
+        write_file(out / clean_vol1, "stale");
+        write_file(out / clean_vol2, "stale");
+        const Captured r = run({.json = true});
+        CHECK(r.exit_code == 0);
+        CHECK(r.err == expected_err("was already written"));
+        const Json doc = parse_document(r.out);
+        REQUIRE(!doc.is_discarded());
+        for (const Json& epub : doc.at("titles").at(0).at("report").at("epubs")) {
+            CHECK(epub.at("status") == "written");
+            CHECK(epub.at("replaced") == true);
+            CHECK(epub.at("existing") == "unchecked");
+        }
+        for (const Json& epub : doc.at("titles").at(1).at("report").at("epubs")) {
+            CHECK(epub.at("status") == "exists");
+            CHECK(epub.at("existing") == "foreign");
+        }
+        CHECK(clean_on_disk());
     }
 }
 

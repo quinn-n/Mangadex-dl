@@ -65,10 +65,13 @@ namespace {
     return "line"; // only reachable through an out-of-range enum value
 }
 
-/// Does `source` hand each row the run's OutputRegistry (RowContext::claimed), so a row with
-/// --overwrite never replaces a file an earlier row of the same run wrote? mdlist and follows
-/// do; csv keeps its current behaviour (pinned by a batch test). A switch rather than a
-/// comparison, so -Wswitch makes every new source decide (follows plan V27).
+/// Does `source` print one line per cross-row collision (RowContext::collision_line_for: the
+/// observer drops the engine's "holds a different book" warning for a path an earlier row
+/// claimed, and the runner's collision line says it instead)? mdlist and follows do; csv keeps
+/// both lines. Every source hands the engine the run's claimed paths (RowContext::registry), so
+/// --overwrite never replaces a file an earlier row of the same run wrote (batch-spec rev4). A
+/// switch rather than a comparison, so -Wswitch makes every new source decide (follows plan
+/// V27).
 [[nodiscard]] constexpr bool claims_paths(BatchSource source) noexcept {
     switch (source) {
     case BatchSource::csv:
@@ -184,17 +187,17 @@ public:
         }
 
         // The observer copies the RowContext, prefix included (nothing borrows `prefix`); it
-        // and the engine borrow the registry (claimed: mdlist, follows; planned: every source) and
-        // only read it, before warn_collisions writes to it.
-        TitleRun run =
-            run_title(job.options, job.raw, *backend_, *agent_, *io_, *policy_,
-                      RowContext{.prefix = prefix,
-                                 .position = position,
-                                 .total = total,
-                                 .exists_notice = false,
-                                 .claimed = claims_paths(settings_->source) ? registry_ : nullptr,
-                                 .planned = registry_},
-                      title_dir);
+        // and the engine borrow the registry and only read it, before warn_collisions writes to
+        // it.
+        TitleRun run = run_title(
+            job.options, job.raw, *backend_, *agent_, *io_, *policy_,
+            RowContext{.prefix = prefix,
+                       .position = position,
+                       .total = total,
+                       .exists_notice = false,
+                       .registry = registry_,
+                       .collision_line_for = claims_paths(settings_->source) ? registry_ : nullptr},
+            title_dir);
 
         RowOutcome outcome{.exit_code = run.exit_code, .error = std::move(run.closing_error)};
         if (per_title) {
@@ -227,8 +230,9 @@ public:
                                   row_noun(settings_->source), job.duplicate_of.value_or(0)));
     }
 
-    /// Files left alone across every row so far because they hold every chapter: the count for
-    /// the single end-of-batch note.
+    /// Files left alone across every row so far because they hold every chapter, at a path no
+    /// earlier row claimed (ConsoleObserver::up_to_date): the count for the single end-of-batch
+    /// note.
     [[nodiscard]] std::size_t up_to_date() const noexcept { return up_to_date_; }
 
     [[nodiscard]] bool output_failed() override {
@@ -276,13 +280,13 @@ private:
 
     /// Every file this row produced (written, planned or already there) is claimed for its
     /// line; a path an earlier row claimed gets one warning. Failed files produced nothing.
-    /// mdlist and follows: this is the only line for such a path (the observer dropped the
-    /// engine's "holds a different book" warning for it, RowContext::claimed); batch also keeps
-    /// the engine's.
-    /// A dry run without --overwrite also records each planned file (the plan, or an update's
-    /// final plan; the latest row wins), so a later row decides that path as the real run will
-    /// find it (RowContext::planned). With --overwrite the real run replaces, so nothing is
-    /// recorded. A record keeps the file's chapter list until the run ends.
+    /// mdlist and follows: this is the only line for such a path (the observer dropped the engine's
+    /// "holds a different book" warning for it, RowContext::collision_line_for); batch also keeps
+    /// the engine's. A dry run also records each planned file (the plan, or an update's final plan;
+    /// the latest row wins), so a later row decides that path as the real run will find it
+    /// (RowContext::registry). Also under --overwrite: a later row decides a claimed path as
+    /// without --overwrite, and a record is consulted only for such a path, so an unclaimed one is
+    /// unaffected. A record keeps the file's chapter list until the run ends.
     void warn_collisions(const BatchJob& job, const std::string& prefix, const RunReport& report) {
         for (const EpubOutcome& file : report.epubs) {
             switch (file.status) {
@@ -293,7 +297,7 @@ private:
                         registry_->claim(file.path, job.line)) {
                     print_warning(*io_, *policy_, collision_message(prefix, file.path, *earlier));
                 }
-                if (file.status == EpubStatus::planned && !job.options.overwrite) {
+                if (file.status == EpubStatus::planned) {
                     registry_->record_planned(file.path, file.epub);
                 }
                 break;
@@ -346,6 +350,11 @@ template <class ToJson>
         // No JSON, no notice, no closing line: main() re-raises the signal (130/143).
         return batch_exit_code(result);
     }
+    // The count leaves out every path an earlier row claimed (ConsoleObserver, RowContext::
+    // registry), so the note names only files from earlier runs, which --overwrite would download
+    // again. --overwrite needs no special case: under it only a claimed path is ever decided as
+    // without it (overwrites_file), so nothing it leaves up to date is counted and no note is
+    // printed.
     if (const std::optional<std::string> note = up_to_date_notice(runner.up_to_date())) {
         print_note(io, policy, *note); // a note, like download's: no `warning:`, never colored
     }

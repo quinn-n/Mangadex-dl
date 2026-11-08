@@ -68,6 +68,7 @@ struct TitleRun {
     std::string closing_error{};
     /// Files left alone as up to date, counted by the observer on every path (also when the run
     /// ended with an Error and so has no report): what the "already up to date" note counts.
+    /// With a non-null row.registry, a path an earlier row claimed is not counted.
     std::size_t up_to_date = 0;
 };
 
@@ -78,13 +79,13 @@ struct TitleRun {
 /// prints nothing). Never prints JSON. `backend` and `io` must outlive the call; nothing is kept
 /// after it returns.
 ///
-/// `title_dir` (--dir-per-title rows of `batch`, `mdlist` and `follows` only; null for
-/// `download`) becomes DownloadServices::title_dir: borrowed for the call, called at most once by
-/// run_download on this thread, never stored past it. A non-null `row.claimed` (mdlist and follows)
-/// becomes DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite never replaces a
-/// path an earlier row claimed. A non-null `row.planned` (batch, mdlist and follows) becomes
-/// DownloadServices::planned_in_run (OutputRegistry::planned_at), so a dry run without
-/// --overwrite decides a path an earlier row planned as the real run will find it.
+/// `title_dir` (--dir-per-title rows of `batch`, `mdlist` and `follows` only; null for `download`)
+/// becomes DownloadServices::title_dir: borrowed for the call, called at most once by run_download
+/// on this thread, never stored past it. A non-null `row.registry` (batch, mdlist and follows)
+/// becomes both DownloadServices::claimed (OutputRegistry::claimed_by), so --overwrite decides a
+/// path an earlier row claimed exactly as a run without it, and DownloadServices::planned_in_run
+/// (OutputRegistry::planned_at), so a dry run decides a path an earlier row planned as the real
+/// run will find it.
 [[nodiscard]] TitleRun run_title(const DownloadOptions& options, const RawDownloadArgs& raw,
                                  const Backend& backend, const std::string& agent, Io& io,
                                  const OutputPolicy& policy, const RowContext& row,

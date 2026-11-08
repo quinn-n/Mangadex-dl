@@ -48,9 +48,9 @@ void print_note(Io& io, const OutputPolicy& policy, std::string_view message);
 ///   written by item <k> (another title with the same name); pass --dir-per-title to give each
 ///   title its own directory, or download one of them on its own with 'mangadex-dl download
 ///   <title> --title ...'" (the only line for that file: the engine's "holds a different book"
-///   warning for it is dropped), and the closing line says "item"/"items". Each row also gets the
-///   run's claimed paths, so with --overwrite a later row never replaces a file an earlier row of
-///   the same run wrote.
+///   warning for it is dropped), and the closing line says "item"/"items".
+/// Every source hands each row the run's claimed paths, so with --overwrite a later row never
+/// replaces a file an earlier row of the same run wrote (batch-spec rev4).
 /// Either way the -v start line is "<label>:<line>: <uuid>", and a dry run's collision line says
 /// "would already be written by" instead of "was already written by".
 ///

@@ -23,6 +23,31 @@ exactly as the real run will report it, and the collision line of every dry run 
 already be written by"; marked **rev3 (dry-run parity)** inline. Real runs, exit codes, flags
 and JSON keys are unchanged. Such a dry run keeps each planned file's chapter list in memory for
 the run, roughly 60 KB per typical title (about what `--json` already keeps).
+rev4 (--overwrite within one run) 2026-11-05: `--overwrite` does not apply to a file an earlier
+row of the same run claimed (wrote, planned or left alone): that file is decided exactly as a run
+without `--overwrite` decides it, on disk in a real run and, in a dry run, against the earlier
+row's planned file (else DIR). A different book is left alone (`exists`/`foreign`, the engine's
+`holds a different book` line, then the collision line); the same book is up to date
+(`exists`/`complete`, only the collision line), updated (the path listed again) or diverged, as
+without `--overwrite`. The "N files are already up to date" note is not printed with
+`--overwrite` (its remedy would be false; only a claimed path can be complete then; **rev5**: this
+now follows from the general rule below, not a special case). Files from earlier runs are still
+replaced unassessed. `download` is unchanged, and `mdlist` prints the same
+bytes as before (it only meets another book there, and drops the engine's line for it). Such a dry
+run now keeps each planned file's chapter list with `--overwrite` too. Marked **rev4 (--overwrite
+within one run)** inline; no exit code, flag, help or JSON key changes.
+rev5 (up-to-date note) 2026-11-05: the end-of-run note `N files are already up to date; pass
+--overwrite to download them again` (`batch` and `mdlist`) counts a file left alone as up to date
+(`exists`/`complete`) only when no earlier row (or `mdlist` item) of the same run claimed its path
+(wrote, planned or left it alone). So each distinct path counts at most once, and only for files
+from earlier runs, which `--overwrite` would download again. Before, a later row that found an
+earlier row's file up to date counted it too: `1 file is already up to date` about a file line 2
+wrote seconds earlier (a false remedy since rev4), and `3 files` for 2 distinct files on a re-run.
+rev4's "no note with `--overwrite`" now follows from this rule (under `--overwrite` only a claimed
+path can be complete) instead of being a special case. The `-v` `<path>: up to date (N chapters)`
+line, stdout, `--json` (the file stays `exists`/`complete`; `summary.files` is unchanged), exit
+codes and flags are unchanged, and `download` (no other rows) is unchanged. Marked **rev5
+(up-to-date note)** inline.
 
 **Intent:** run the existing `download` engine once for each title listed in a CSV file (or on
 stdin), in file order. The CSV can override a few per-title options on each row. The run ends with
@@ -176,6 +201,12 @@ can write to. Each title costs several API requests: a long list is a long run.
   colliding list still warns.) **rev3 (dry-run parity):** in every dry run (`--overwrite` too) it
   reads `<file>:<line>: <path> would already be written by line <k>; give one of them a 'title' column`,
   and without `--overwrite` a path an earlier row planned counts as written (see `--dry-run`).
+  **rev4 (--overwrite within one run):** with `--overwrite` too: a path an earlier row claimed is
+  decided as without `--overwrite`, so a later row never replaces it, and the end-of-batch "already
+  up to date" note is never printed with `--overwrite`. **rev5 (up-to-date note):** the note never
+  counts a file at a path an earlier row claimed, so it counts only files from earlier runs, each
+  path once; that it never appears with `--overwrite` follows from this. A later row that finds an
+  earlier row's file up to date prints only the collision line.
   Empty on full success. Otherwise one closing `error:` line (even with `-q`/`--json`), line list
   capped at 10:
   - `<n> of <m> titles did not complete (lines 4, 9, 12); run the same command again to retry them`
@@ -255,17 +286,21 @@ row and README rows.
     `<path>: left alone: holds a different book; use another DIR or --title` line, then the
     collision line;
   - the same book (same manga, language and unit, another selection): up to date
-    (`exists`/`complete`, counted in the "N files are already up to date" note), an update
+    (`exists`/`complete`, ~~counted in the "N files are already up to date" note~~ **rev5
+    (up-to-date note):** not counted in the note, as in the real run, because an earlier row
+    claimed the path), an update
     (`planned`/`incomplete`, `replaced: true`, the path listed again on stdout as the real update
     lists it, `-v` `would update …`), or diverged (`exists`/`diverged`, with the real diverged
     warning).
 
   So stdout lists what the real run will list, each clashing path once unless the later row would
   update it. `--json` carries the same statuses (no new keys) and `summary.files` moves with them;
-  exit codes equal the real run's. `--overwrite --dry-run` still lists a clashing path once per
-  row, because its real run replaces it. Still approximate: page counts come from MangaDex's
-  chapter list (the real run counts the image server's pages), and damaged pages in an existing
-  file are only found by a real run.
+  exit codes equal the real run's. ~~`--overwrite --dry-run` still lists a clashing path once per
+  row, because its real run replaces it.~~ **rev4 (--overwrite within one run):** the same holds
+  with `--overwrite`: a clashing path is decided as without it, because its real run no longer
+  replaces it. Still approximate: page counts come from MangaDex's chapter list (the real run
+  counts the image server's pages), and damaged pages in an existing file are only found by a
+  real run.
 - **Data/state:** writes only `download`'s outputs under DIR or DIR/<dir> via the existing atomic
   `OutputDir` publish. No state file. Threat model: CSV is untrusted; limited to titles,
   selection/lang/layout/direction, file title, and a lexically-contained subdirectory. Existing
@@ -311,6 +346,15 @@ row and README rows.
     both lines; still warns with `--overwrite`. **rev3 (dry-run parity):** `--dry-run`, with or
     without `--overwrite`, prints the real run's stdout, stderr and `--json` statuses (`planned`
     for `written`), apart from the wording `would already be written by line <k>`.
+    **rev4 (--overwrite within one run):** with `--overwrite`, the second row decides the clashing
+    file exactly as without it (another book: `exists`/`foreign` with the engine's line; the same
+    book: `exists`/`complete`, an update, or diverged), stdout and the file bytes equal the run
+    without `--overwrite`, and stderr lacks only the "already up to date" note.
+    **rev5 (up-to-date note):** stderr is now identical too: with or without `--overwrite` (and
+    `--dry-run`), the note does not count the clashing file, so a second row that finds the first
+    row's file up to date prints only the collision line. A re-run of the same list over a DIR an
+    earlier run filled counts each distinct file once (`2 files are already up to date` for two
+    files, not 3).
 13. `[cli]` Row-scoped stderr lines carry `<file>:<line>: `; aggregated "already exist" warning
     once at end; `-q` suppresses warnings but keeps the closing error line.
 14. `[e2e]` `batch --help` golden (synopsis, CSV footer, exit table incl. 7, no `--api-base`).
