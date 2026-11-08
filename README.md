@@ -277,7 +277,7 @@ mangadex-dl: warning: <path>: MangaDex lists N chapters this file lacks (Ch. 4, 
 
 Each list names at most five chapters, then `and K more`. With one chapter on a side the warning
 says `1 chapter`, and with one chapter MangaDex no longer lists it ends `without it)`.
-In `batch`, when an earlier row of the same run wrote the file, the warning ends at
+In `batch`, when an earlier row of the same run wrote or kept the file, the warning ends at
 `left it alone`: `--overwrite` would not rebuild it there, and the collision line that follows
 names the fix.
 
@@ -447,9 +447,9 @@ mangadex-dl batch titles.csv ~/Manga --json --fail-fast
   updated with this line's chapters (the same book as line 2)` when it adds some (with
   `--dry-run`, `would already be up to date` and `would be updated with this line's chapters`).
   A same-book file the later row leaves alone because updating it would drop chapters keeps the
-  warning, after that row's own "left it alone" warning, which then ends at `left it alone`
-  without the `--overwrite` advice (it would not rebuild the file, see below). A file both rows leave alone because it
-  is not theirs gets no cross-row line, only each row's own `left alone` warning.
+  warning, after that row's own "left it alone" warning (which then gives no `--overwrite`
+  advice: it would not rebuild the file, see below). A file both rows leave alone because it is
+  not theirs gets no cross-row line, only each row's own `left alone` warning.
 - **`--overwrite` never applies to a file an earlier row of the same run wrote.** That file is
   handled exactly as without `--overwrite`: a different book there (another title with the same
   name, or the same title in another language) is left alone, with
