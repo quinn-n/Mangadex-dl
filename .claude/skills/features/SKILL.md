@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 Build **every feature listed in the Markdown file at `$ARGUMENTS`**. Each feature gets its **own git worktree** and runs the same pipeline the `/feature` command runs, **concurrently across features**:
 
-design → plan → fact-check → parallel implement↔dual-review loops → installed-binary test → platform pass → review board → fix → golden gate
+design → plan → fact-check → parallel implement↔dual-review loops → simplify pass → installed-binary test → platform pass → review board → fix → golden gate
 
 Then open **one pull request per feature**.
 
@@ -151,7 +151,8 @@ Show me the final mapping: feature → branch → worktree path → envs install
   - the dual review by `quality-reviewer` + `memory-safety-reviewer`;
   - `build-fixer`, `cli-tester`, `platform-tester` (scope `local`);
   - the board: `security-reviewer`, `cli-ux-reviewer`, final quality and memory-safety;
-  - `bug-fixer`, `test-engineer`, `code-refactorer` as needed.
+  - `code-refactorer` for the simplify pass;
+  - `bug-fixer`, `test-engineer` as needed.
 - **Every command is `cd <wt> && nice pixi run <task>`.** The gate (`nice pixi run check`, plus `-e gcc check` if that env is installed) must go green **in that worktree**.
 - Hooks resolve the repo root from the edited file, so they are worktree-correct.
 - Honor the feature pipeline's rules:
@@ -159,6 +160,7 @@ Show me the final mapping: feature → branch → worktree path → envs install
   - serialization points;
   - the dual-review loop until **both** APPROVE (~3 combined rounds);
   - build-fixer routing;
+  - the feature step 4b simplify pass;
   - the board;
   - capped rounds.
 - Launch the current phase for all unblocked features in the same turn, so they progress concurrently.

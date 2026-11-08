@@ -5,7 +5,9 @@
 // format_version bump. Each row's `report` is the row's `download --json` document, built by
 // detail::report_json, so it is byte-identical to what `download --json` prints for that title.
 // The list plan's T5 adds the additive `list` object (mdlist only) right after `source`; a batch
-// document never carries it.
+// document never carries it. The follows plan's T14 adds the additive `follows` object (follows
+// only) in the same place; neither a batch nor an mdlist document ever carries it, and it never
+// holds a token, secret, password or client id (FollowsSummary has no field for one).
 #include "json_output.hpp"
 #include "mangadex_dl/batch.hpp"
 #include "mangadex_dl/report.hpp"
@@ -103,6 +105,24 @@ struct TitleCounts {
     return out;
 }
 
+/// The `follows` object: {username, titles, statuses (null without --status), selected}, in that
+/// order; all four keys always present.
+[[nodiscard]] Json follows_json(const FollowsSummary& follows) {
+    Json out = Json::object();
+    out["username"] = follows.username;
+    out["titles"] = follows.titles;
+    out["statuses"] = nullable(follows.statuses);
+    out["selected"] = follows.selected;
+    return out;
+}
+
+/// The one additive key a document may carry right after `source` (mdlist's `list`, follows'
+/// `follows`). `name` points at a string literal.
+struct ExtraKey {
+    std::string_view name{};
+    Json value{};
+};
+
 [[nodiscard]] Json summary_json(const BatchResult& result) {
     TitleCounts counts{};
     RunSummary files{};
@@ -137,6 +157,32 @@ struct TitleCounts {
     return out;
 }
 
+/// The document, with `extra` right after `source` when it has a value.
+[[nodiscard]] std::string document(const BatchResult& result, std::string_view source, bool dry_run,
+                                   std::optional<ExtraKey> extra) {
+    Json titles = Json::array();
+    for (const TitleResult& row : result.titles) {
+        titles.push_back(title_json(row));
+    }
+
+    Json doc = Json::object();
+    doc["format_version"] = format_version;
+    doc["dry_run"] = dry_run;
+    doc["source"] = source;
+    if (extra) {
+        doc[std::string{extra->name}] = std::move(extra->value);
+    }
+    doc["titles"] = std::move(titles);
+    doc["summary"] = summary_json(result);
+
+    // FILE (or LIST), DIR, the dir cells, the list name, the follows username and every report
+    // string are untrusted bytes. dump_document dumps with the replace handler, which applies at
+    // every depth (invalid UTF-8 becomes U+FFFD); nlohmann escapes the C0 controls (ESC included)
+    // and dump_document escapes DEL and the C1 controls (U+009B, the 8-bit CSI, included), so the
+    // document carries neither a 7-bit nor an 8-bit escape sequence.
+    return json_output::dump_document(doc);
+}
+
 } // namespace
 
 std::string_view title_status_name(TitleStatus status) noexcept {
@@ -167,27 +213,16 @@ std::string batch_to_json(const BatchResult& result, std::string_view source, bo
 
 std::string batch_to_json(const BatchResult& result, std::string_view source, bool dry_run,
                           const std::optional<ListSummary>& list) {
-    Json titles = Json::array();
-    for (const TitleResult& row : result.titles) {
-        titles.push_back(title_json(row));
+    if (!list) {
+        return document(result, source, dry_run, std::nullopt);
     }
+    return document(result, source, dry_run, ExtraKey{.name = "list", .value = list_json(*list)});
+}
 
-    Json doc = Json::object();
-    doc["format_version"] = format_version;
-    doc["dry_run"] = dry_run;
-    doc["source"] = source;
-    if (list) {
-        doc["list"] = list_json(*list);
-    }
-    doc["titles"] = std::move(titles);
-    doc["summary"] = summary_json(result);
-
-    // FILE (or LIST), DIR, the dir cells, the list name and every report string are untrusted
-    // bytes. dump_document dumps with the replace handler, which applies at every depth (invalid
-    // UTF-8 becomes U+FFFD); nlohmann escapes the C0 controls (ESC included) and dump_document
-    // escapes DEL and the C1 controls (U+009B, the 8-bit CSI, included), so the document carries
-    // neither a 7-bit nor an 8-bit escape sequence.
-    return json_output::dump_document(doc);
+std::string batch_to_json(const BatchResult& result, std::string_view source, bool dry_run,
+                          const FollowsSummary& follows) {
+    return document(result, source, dry_run,
+                    ExtraKey{.name = "follows", .value = follows_json(follows)});
 }
 
 } // namespace mangadex_dl
