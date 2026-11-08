@@ -17,6 +17,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <sstream>
 #include <string>
@@ -206,14 +207,19 @@ TEST_CASE("ConsoleObserver exists_notice=false leaves the up-to-date note to the
     CHECK(observer.up_to_date() == 2);
 }
 
-TEST_CASE("Io::stdin_fd: -1 (closed) by default, 0 for the real process", "[download-row-output]") {
+TEST_CASE("Io::stdin_fd: -1 (closed) by default, 0 for the real process unless its fd 0 is closed",
+          "[download-row-output]") {
     std::ostringstream out;
     std::ostringstream err;
     const app::Io io{.out = out, .err = err};
     CHECK(io.stdin_fd == -1);
     const app::Io with_fd{.out = out, .err = err, .stdin_fd = 7};
     CHECK(with_fd.stdin_fd == 7);
-    CHECK(app::process_io().stdin_fd == STDIN_FILENO);
+    // dup2(0, 0) returns 0 while fd 0 is open and fails with EBADF once it is closed, with no side
+    // effect, so the test also holds when its binary runs with `<&-` (io_test.cpp closes fd 0
+    // itself to cover that outcome).
+    const bool closed = ::dup2(STDIN_FILENO, STDIN_FILENO) == -1 && errno == EBADF;
+    CHECK(app::process_io().stdin_fd == (closed ? -1 : STDIN_FILENO));
 }
 
 TEST_CASE("run_cli takes a stdin_fd and leaves it open", "[download-row-output]") {

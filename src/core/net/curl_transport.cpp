@@ -7,16 +7,22 @@
 // everything, userdata pointers included), performs inside a SigpipeGuard, and returns the handle.
 // The response body is bounded by the write callback (after any content decoding), which is the
 // real cap; CURLOPT_MAXFILESIZE_LARGE only rejects an announced oversized Content-Length early.
+// A request may carry a secret (transport.hpp, "Secrets"): the Authorization line is built in a
+// Secret, the header list is wiped before it is freed, the POST body is borrowed rather than
+// copied, the value is never in an error message, it goes only over https or plain http to a
+// loopback host, redirects are never followed, and CURLOPT_VERBOSE is never set.
 #include "mangadex_dl/net/curl_transport.hpp"
 
 #include "mangadex_dl/error.hpp"
 #include "mangadex_dl/net/transport.hpp"
+#include "mangadex_dl/secret.hpp"
 #include "net/curl_api.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -32,6 +38,8 @@
 #include <vector>
 
 #include <curl/curl.h>
+// NOLINTNEXTLINE(modernize-deprecated-headers): explicit_bzero is a glibc extension of <string.h>
+#include <string.h>
 
 namespace mangadex_dl {
 namespace {
@@ -55,10 +63,21 @@ struct EasyCleanup {
 };
 using EasyPtr = std::unique_ptr<CURL, EasyCleanup>;
 
+/// Frees a request header list, wiping every node's text first: one may hold the Authorization
+/// line (a bearer token). curl_slist_append stores its own copy of each line in `data`, so the
+/// wipe is legal (V14). Best effort: the copies libcurl makes while sending are out of reach.
+/// Runs only after the handle was reset (see the declaration order in fetch()).
 struct SlistFree {
     const CurlApi* api = nullptr; ///< the owning transport's CurlApi
 
-    void operator()(curl_slist* list) const noexcept { api->slist_free_all(list); }
+    void operator()(curl_slist* list) const noexcept {
+        for (const curl_slist* node = list; node != nullptr; node = node->next) {
+            if (node->data != nullptr) {
+                ::explicit_bzero(node->data, std::strlen(node->data));
+            }
+        }
+        api->slist_free_all(list);
+    }
 };
 using SlistPtr = std::unique_ptr<curl_slist, SlistFree>;
 
@@ -216,6 +235,43 @@ template <class Rep> [[nodiscard]] long positive_long(Rep value) noexcept {
     return text.find_first_of(std::string_view{"\r\n\0", 3}) != std::string_view::npos;
 }
 
+/// Whether a request may carry an Authorization header to `url`: https, or plain http to a
+/// loopback host (127.0.0.1, localhost or [::1], the hosts --api-base accepts for http://; see
+/// options.cpp). Defense in depth: ApiClient only builds authorized requests for its own base.
+/// A URL with user information ('@' in the authority) is refused, so "http://127.0.0.1@host/"
+/// cannot pass for loopback.
+[[nodiscard]] bool may_carry_authorization(std::string_view url) noexcept {
+    constexpr std::string_view https = "https://";
+    constexpr std::string_view http = "http://";
+    if (url.size() >= https.size() && ascii_iequals(url.substr(0, https.size()), https)) {
+        return true;
+    }
+    if (url.size() < http.size() || !ascii_iequals(url.substr(0, http.size()), http)) {
+        return false;
+    }
+    const std::string_view rest = url.substr(http.size());
+    const std::string_view authority = rest.substr(0, rest.find_first_of("/?#"));
+    if (authority.contains('@')) {
+        return false;
+    }
+    // A bracketed IPv6 literal contains ':'; the port separator is the first ':' after it.
+    std::size_t host_size = authority.size();
+    if (authority.starts_with('[')) {
+        if (const std::size_t close = authority.find(']'); close != std::string_view::npos) {
+            host_size = close + 1;
+        }
+    } else if (const std::size_t colon = authority.find(':'); colon != std::string_view::npos) {
+        host_size = colon;
+    }
+    const std::string_view host = authority.substr(0, host_size);
+    const std::string_view after_host = authority.substr(host_size);
+    if (!after_host.empty() && !after_host.starts_with(':')) {
+        return false;
+    }
+    return ascii_iequals(host, "127.0.0.1") || ascii_iequals(host, "localhost") ||
+           ascii_iequals(host, "[::1]");
+}
+
 [[nodiscard]] TransportError make_error(TransportErrc kind, std::string message) {
     return TransportError{.kind = kind, .message = std::move(message)};
 }
@@ -304,8 +360,11 @@ template <class Rep> [[nodiscard]] long positive_long(Rep value) noexcept {
 }
 
 /// Applies the full option set for one request to a freshly reset handle. libcurl copies string
-/// options; the pointers set here (`state`, its error buffer, `headers`) stay valid until the
-/// handle is reset at the end of the fetch.
+/// options; the pointers set here (`state`, its error buffer, `headers`, and the borrowed
+/// POSTFIELDS `request.body`) stay valid until the handle is reset at the end of the fetch.
+///
+/// CURLOPT_VERBOSE is never set, and must not be: libcurl would print every request header,
+/// the Authorization bearer token included, to stderr (V12).
 [[nodiscard]] std::expected<void, TransportError>
 configure(const CurlApi& api, CURL* handle, const HttpRequest& request,
           const std::string& user_agent, std::chrono::milliseconds overall_timeout,
@@ -354,38 +413,61 @@ configure(const CurlApi& api, CURL* handle, const HttpRequest& request,
     apply(api.setopt_xfer_cb(handle, CURLOPT_XFERINFOFUNCTION, &on_progress), "XFERINFOFUNCTION");
     apply(api.setopt_ptr(handle, CURLOPT_XFERINFODATA, &state), "XFERINFODATA");
 
+    // On failure curl_slist_append leaves the list untouched, so ownership goes back. `line` is
+    // NUL-terminated; libcurl copies it into a new node.
+    const auto append_header = [&api, &headers](const char* line) {
+        curl_slist* const previous = headers.release();
+        curl_slist* const head = api.slist_append(previous, line);
+        headers.reset(head == nullptr ? previous : head);
+        return head != nullptr;
+    };
+    const auto out_of_memory = [] {
+        return std::unexpected(
+            make_error(TransportErrc::local, "out of memory building request headers"));
+    };
+
     switch (request.method) {
     case HttpMethod::get:
         apply(api.setopt_long(handle, CURLOPT_HTTPGET, 1L), "HTTPGET");
         break;
     case HttpMethod::post: {
         apply(api.setopt_long(handle, CURLOPT_POST, 1L), "POST");
-        // The size first, so COPYPOSTFIELDS copies exactly body.size() bytes (no strlen).
+        // The size first, so libcurl sends exactly body.size() bytes (no strlen). POSTFIELDS is
+        // borrowed, not copied: `request` is the caller's and outlives this fetch(), and the
+        // lease resets the handle (forgetting the pointer) before fetch() returns (V13).
         apply(api.setopt_off(handle, CURLOPT_POSTFIELDSIZE_LARGE, to_curl_off(request.body.size())),
               "POSTFIELDSIZE_LARGE");
-        apply(api.setopt_str(handle, CURLOPT_COPYPOSTFIELDS, request.body.c_str()),
-              "COPYPOSTFIELDS");
+        apply(api.setopt_borrowed(handle, CURLOPT_POSTFIELDS, request.body.data()), "POSTFIELDS");
         // "Expect:" suppresses the 100-continue round trip.
-        std::array<std::string, 2> lines{"Expect:", ""};
+        if (!append_header("Expect:")) {
+            return out_of_memory();
+        }
         if (!request.content_type.empty()) {
-            lines[1] = "Content-Type: " + request.content_type;
-        }
-        for (const std::string& line : lines) {
-            if (line.empty()) {
-                continue;
-            }
-            // On failure curl_slist_append leaves the list untouched, so ownership goes back.
-            curl_slist* const previous = headers.release();
-            curl_slist* const head = api.slist_append(previous, line.c_str());
-            headers.reset(head == nullptr ? previous : head);
-            if (head == nullptr) {
-                return std::unexpected(
-                    make_error(TransportErrc::local, "out of memory building request headers"));
+            const std::string line = "Content-Type: " + request.content_type;
+            if (!append_header(line.c_str())) {
+                return out_of_memory();
             }
         }
-        apply(api.setopt_slist(handle, CURLOPT_HTTPHEADER, headers.get()), "HTTPHEADER");
         break;
     }
+    }
+
+    if (!request.authorization.empty()) {
+        // Assembled in a Secret (wiped when it dies), never in a plain std::string temporary. The
+        // explicit trailing NUL makes the view a C string; reserved up front, so nothing grows.
+        constexpr std::string_view name = "Authorization: ";
+        Secret line{};
+        line.reserve(name.size() + request.authorization.size() + 1);
+        line.append(name);
+        line.append(request.authorization);
+        line.push_back('\0');
+        if (!append_header(line.reveal().data())) {
+            return out_of_memory();
+        }
+    }
+    // A GET without authorization has no list: exactly the options it always had.
+    if (headers != nullptr) {
+        apply(api.setopt_slist(handle, CURLOPT_HTTPHEADER, headers.get()), "HTTPHEADER");
     }
 
     if (rc != CURLE_OK) {
@@ -402,6 +484,16 @@ configure(const CurlApi& api, CURL* handle, const HttpRequest& request,
     }
     if (request.method == HttpMethod::post && has_header_breaking_char(request.content_type)) {
         return make_error(TransportErrc::local, "invalid Content-Type (contains CR, LF or NUL)");
+    }
+    // The value is never echoed: it holds a token.
+    if (has_header_breaking_char(request.authorization)) {
+        return make_error(TransportErrc::local,
+                          "invalid Authorization header (contains CR, LF or NUL)");
+    }
+    if (!request.authorization.empty() && !may_carry_authorization(request.url)) {
+        return make_error(TransportErrc::local,
+                          "refusing to send an Authorization header over plain http (only "
+                          "https, or http to 127.0.0.1, localhost or [::1])");
     }
     return std::nullopt;
 }
@@ -423,7 +515,8 @@ public:
             return std::unexpected(std::move(*invalid));
         }
         // Declaration order is load-bearing: the lease is destroyed first, so the handle is reset
-        // (forgetting &state and the header list) before either of them dies.
+        // (forgetting &state, the header list and the borrowed request.body) before `state` and
+        // `headers` die; SlistFree wipes the header lines only after that reset.
         TransferState state{.cap = request.max_body_bytes, .cancel = request.cancel};
         SlistPtr headers{nullptr, SlistFree{.api = api_.get()}};
         const HandleLease lease{*this, acquire()};
